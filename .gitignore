@@ -1,0 +1,38 @@
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+*.vcxproj
+*.vcxproj.filters
+*.slnx
+*.sln
+*.suo
+
+# Build output
+Release/
+Debug/
+Win32/
+x64/
+
+# NetCDF cache files
+netcdf-study/
+
+# Temporary build scripts
+*.bat
+*.log
+
+# Translation files
+*.mo
+
+# Flatpak/Android build files
+*.xml.in
+*.yaml
+*.sha256
+build_flatpak.cmake
+finish_tarball.cmake
+checksum.cmake
+*-conf-stamp
+copy_out
+
+# Installer files
+install_manifest.txt

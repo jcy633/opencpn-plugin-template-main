@@ -1,0 +1,155 @@
+
+# -------- Cmake setup ---------
+#
+cmake_minimum_required(VERSION 3.12.0)
+include(${CMAKE_SOURCE_DIR}/cmake/CmakeSetup.cmake NO_POLICY_SCOPE)
+message(STATUS "Cmake version: ${CMAKE_VERSION}.")
+
+set(CMAKE_PREFIX_PATH "${CMAKE_PREFIX_PATH};D:/netcdf/netCDF-32bit")
+
+
+# -------- Build setup  --------
+#
+include(PluginOptions)
+if (BUILD_TYPE)
+  message(STATUS "Building: ${BUILD_TYPE}")
+else ()
+  message(STATUS "Configuring")
+endif ()
+
+# -------- Plugin setup ----------
+#
+include(Plugin.cmake)
+
+# -------- Setup completed, build the plugin --------
+#
+project(${PKG_NAME} VERSION ${PKG_VERSION})
+include(PluginCompiler)
+
+add_library(${CMAKE_PROJECT_NAME} SHARED EXCLUDE_FROM_ALL ${SRC} ${HEADERS})
+include_directories(
+		BEFORE 
+		${CMAKE_SOURCE_DIR}/include
+		${CMAKE_SOURCE_DIR}/include/utils
+)
+
+if(WIN32)
+    if(DEFINED ENV{WXWIN})
+        set(wxWidgets_ROOT_DIR $ENV{WXWIN})
+        set(wxWidgets_LIB_DIR "$ENV{WXWIN}/lib/vc145_dll")
+    else()
+        set(wxWidgets_ROOT_DIR "${CMAKE_SOURCE_DIR}/cache/wxWidgets")
+        set(wxWidgets_LIB_DIR "${CMAKE_SOURCE_DIR}/cache/wxWidgets/lib/vc145_dll")
+    endif()
+    
+    if(NOT EXISTS "${wxWidgets_ROOT_DIR}")
+        set(wxWidgets_ROOT_DIR "d:/opencpn-plugin-template-main/cache/wxWidgets")
+        set(wxWidgets_LIB_DIR "d:/opencpn-plugin-template-main/cache/wxWidgets/lib/vc145_dll")
+    endif()
+    
+    set(wxWidgets_USE_DEBUG OFF)
+    set(wxWidgets_USE_UNICODE ON)
+    set(wxWidgets_USE_UNIVERSAL OFF)
+    set(wxWidgets_USE_STATIC OFF)
+    
+    find_package(wxWidgets REQUIRED base core net xml html adv stc aui gl)
+    include(${wxWidgets_USE_FILE})
+    
+    target_link_libraries(${CMAKE_PROJECT_NAME} ${wxWidgets_LIBRARIES})
+    
+    include_directories("D:/netcdf/netCDF-32bit/include")
+    target_link_libraries(${CMAKE_PROJECT_NAME} 
+        "D:/netcdf/netCDF-32bit/lib/netcdf.lib"
+        "D:/netcdf/netCDF-32bit/lib/hdf5.lib"
+        "D:/netcdf/netCDF-32bit/lib/hdf5_hl.lib"
+        "D:/netcdf/netCDF-32bit/lib/zlib.lib"
+    )
+    
+    target_link_libraries(${CMAKE_PROJECT_NAME} opengl32 glu32)
+endif()
+
+add_subdirectory("opencpn-libs/${PKG_API_LIB}")
+target_link_libraries(${CMAKE_PROJECT_NAME} ocpn::api)
+
+set(VERSION_MAJOR ${PROJECT_VERSION_MAJOR})
+set(VERSION_MINOR ${PROJECT_VERSION_MINOR})
+set(VERSION_PATCH ${PROJECT_VERSION_PATCH})
+if (PROJECT_VERSION_TWEAK STREQUAL "")
+  set(PROJECT_VERSION_TWEAK 0)
+endif ()
+
+
+set(PACKAGE_NAME ${CMAKE_PROJECT_NAME})
+
+# Create the minimim ocpn version id string like ov50
+string(REGEX REPLACE "\([0-9]\)\.\([0-9]\).*" "ov\\1\\2"
+       OCPN_MIN_VERSION ${API_OCPN_MIN_VERSION})
+
+if (COMMAND late_init)
+  late_init()
+endif ()
+
+# Configure the flatpak manifest
+file(
+  GLOB manifest ${PROJECT_SOURCE_DIR}/flatpak/org.opencpn.OpenCPN.Plugin.*.yaml
+)
+include(ConfigureManifest)
+configure_manifest(${manifest} _new_manifest)
+
+# Set up targets. Targets sets up new targets with BUILD_TYPE set to
+# 'flatpak', 'android' or 'tarball'. The initial call without BUILD_TYPE ends
+# here.
+#
+include(Targets)
+create_targets(${_new_manifest})
+
+if ("${BUILD_TYPE}" STREQUAL "")
+  return ()
+endif ()
+
+ 
+if (NOT ${BUILD_TYPE} STREQUAL "flatpak")
+  # Build package as required (flatpak already dealt with).
+  #
+  if (APPLE)
+    include(MacosWxwidgets)
+  endif ()
+  include(PluginInstall)
+  if (QT_ANDROID)
+    include(AndroidLibs)
+  else ()
+    include(PluginLibs)
+  endif ()
+  include(PluginLocalization)
+
+  include_directories(BEFORE ${CMAKE_BINARY_DIR}/include)
+ 
+  if (COMMAND add_plugin_libraries)
+    add_plugin_libraries()
+  endif ()
+
+endif ()
+
+configure_file(
+  ${CMAKE_SOURCE_DIR}/config.h.in ${CMAKE_BINARY_DIR}/include/config.h
+  @ONLY
+)
+
+configure_file(
+  # The cloudsmith upload script
+  ${CMAKE_SOURCE_DIR}/ci/upload.sh.in ${CMAKE_BINARY_DIR}/upload.sh
+  @ONLY
+)
+configure_file(
+  # The cloudsmith upload script, windows bat file.
+  ${CMAKE_SOURCE_DIR}/ci/upload.bat.in ${CMAKE_BINARY_DIR}/upload.bat
+  @ONLY
+)
+
+set(checksum "@checksum@")
+configure_file(
+  # The XML metadata file
+  ${CMAKE_SOURCE_DIR}/plugin.xml.in
+  ${CMAKE_BINARY_DIR}/${pkg_displayname}.xml.in
+  @ONLY
+)
