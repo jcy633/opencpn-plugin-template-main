@@ -1,0 +1,202 @@
+0:000> !analyze -v
+................................................................
+................................................................
+...............................................
+Loading unloaded module list
+....................
+*******************************************************************************
+*                                                                             *
+*                        Exception Analysis                                   *
+*                                                                             *
+*******************************************************************************
+
+*** WARNING: Unable to verify checksum for wxmsw32u_core_vc14x.dll
+*** WARNING: Unable to verify checksum for wxbase32u_vc14x.dll
+
+************* Symbol Loading Error Summary **************
+Module name            Error
+opencpn                The system cannot find the file specified
+
+You can troubleshoot most symbol related issues by turning on symbol loading diagnostics (!sym noisy) and repeating the command that caused symbols to be loaded.
+You should also verify that your symbol search path (.sympath) is correct.
+
+KEY_VALUES_STRING: 1
+
+    Key  : Analysis.CPU.mSec
+    Value: 1015
+
+    Key  : Analysis.Elapsed.mSec
+    Value: 7043
+
+    Key  : Analysis.IO.Other.Mb
+    Value: 0
+
+    Key  : Analysis.IO.Read.Mb
+    Value: 1
+
+    Key  : Analysis.IO.Write.Mb
+    Value: 0
+
+    Key  : Analysis.Init.CPU.mSec
+    Value: 640
+
+    Key  : Analysis.Init.Elapsed.mSec
+    Value: 33509
+
+    Key  : Analysis.Memory.CommitPeak.Mb
+    Value: 141
+
+    Key  : Analysis.Version.DbgEng
+    Value: 10.0.29547.1002
+
+    Key  : Analysis.Version.Description
+    Value: 10.2602.27.2 x86fre
+
+    Key  : Analysis.Version.Ext
+    Value: 1.2602.27.2
+
+    Key  : Failure.Bucket
+    Value: HEAP_CORRUPTION_c0000374_opencpn.exe!heap_corruption
+
+    Key  : Failure.Exception.Code
+    Value: 0xc0000374
+
+    Key  : Failure.Exception.IP.Address
+    Value: 0x7770c80f
+
+    Key  : Failure.Exception.IP.Module
+    Value: ntdll
+
+    Key  : Failure.Exception.IP.Offset
+    Value: 0xfc80f
+
+    Key  : Failure.Hash
+    Value: {6814734d-55eb-4b24-7e34-5e198639f483}
+
+    Key  : Failure.ProblemClass.Primary
+    Value: HEAP_CORRUPTION
+
+    Key  : Faulting.IP.Type
+    Value: Paged
+
+    Key  : Timeline.OS.Boot.DeltaSec
+    Value: 188743
+
+    Key  : Timeline.Process.Start.DeltaSec
+    Value: 46
+
+    Key  : WER.OS.Branch
+    Value: ge_release
+
+    Key  : WER.OS.Version
+    Value: 10.0.26100.1
+
+    Key  : WER.Process.Version
+    Value: 5.14.0.0
+
+
+FILE_IN_CAB:  opencpn.exe.22604.dmp
+
+NTGLOBALFLAG:  0
+
+APPLICATION_VERIFIER_FLAGS:  0
+
+CONTEXT:  (.ecxr)
+eax=01afe4bc ebx=00000000 ecx=01afe4ec edx=77746970 esi=00000002 edi=00000000
+eip=7770c80f esp=01afe494 ebp=01afe4cc iopl=0         nv up ei pl zr na pe nc
+cs=0023  ss=002b  ds=002b  es=002b  fs=0053  gs=002b             efl=00000246
+ntdll!RtlReportFatalFailure+0x16:
+7770c80f eb33            jmp     ntdll!RtlReportFatalFailure+0x4b (7770c844)
+Resetting default scope
+
+EXCEPTION_RECORD:  (.exr -1)
+ExceptionAddress: 7770c80f (ntdll!RtlReportFatalFailure+0x00000016)
+   ExceptionCode: c0000374
+  ExceptionFlags: 00000001
+NumberParameters: 1
+   Parameter[0]: 77746970
+
+PROCESS_NAME:  opencpn.exe
+
+ERROR_CODE: (NTSTATUS) 0xc0000374 - <Unable to get error code text>
+
+EXCEPTION_CODE_STR:  c0000374
+
+EXCEPTION_PARAMETER1:  77746970
+
+FAULTING_THREAD:  ffffffff
+
+STACK_TEXT:  
+00000000 00000000 opencpn.exe!heap_corruption+0x0
+00000000 00000000 unknown![~0s]+0x0
+777469a0 77713ae9 ntdll!RtlpLogHeapFailure+0x0
+777469a4 776a288e ntdll!RtlpFreeNTHeapInternal+0x0
+777469a8 7764edca ntdll!RtlFreeHeap+0x0
+777469ac 76dc00eb ucrtbase!_free_base+0x0
+777469b0 76dc00b8 ucrtbase!free+0x0
+777469b4 7ac0ba67 wxmsw32u_core_vc14x+0x0
+777469b8 7a9ae404 wxmsw32u_core_vc14x+0x0
+777469bc 7aac02fe wxmsw32u_core_vc14x+0x0
+777469c0 7a6568d0 wxbase32u_vc14x!wxAppConsoleBase::HandleEvent+0x0
+
+
+IP_IN_PAGED_CODE: 
+ntdll!RtlReportFatalFailure+16
+7770c80f eb33            jmp     ntdll!RtlReportFatalFailure+0x4b (7770c844)
+
+SYMBOL_NAME:  opencpn.exe!heap_corruption
+
+MODULE_NAME: opencpn
+
+IMAGE_NAME:  opencpn.exe
+
+STACK_COMMAND: !heap ; .process /r /p 0x4d8bec8b; ** Pseudo Context ** Pseudo ** Value: ffffffff ** ; kb
+
+FAILURE_BUCKET_ID:  HEAP_CORRUPTION_c0000374_opencpn.exe!heap_corruption
+
+OS_VERSION:  10.0.26100.1
+
+BUILDLAB_STR:  ge_release
+
+OSPLATFORM_TYPE:  x86
+
+OSNAME:  Windows 10
+
+IMAGE_VERSION:  5.14.0.0
+
+FAILURE_ID_HASH:  {6814734d-55eb-4b24-7e34-5e198639f483}
+
+Followup:     MachineOwner
+---------
+
+0:000> .excr
+eax=01afe4bc ebx=00000000 ecx=01afe4ec edx=77746970 esi=00000002 edi=00000000
+eip=7770c80f esp=01afe494 ebp=01afe4cc iopl=0         nv up ei pl zr na pe nc
+cs=0023  ss=002b  ds=002b  es=002b  fs=0053  gs=002b             efl=00000246
+ntdll!RtlReportFatalFailure+0x16:
+7770c80f eb33            jmp     ntdll!RtlReportFatalFailure+0x4b (7770c844)
+0:000> kb
+  *** Stack trace for last set context - .thread/.cxr resets it
+ # ChildEBP RetAddr      Args to Child              
+00 01afe4cc 7770c7e1     d45ce4f3 00000000 00000002 ntdll!RtlReportFatalFailure+0x16
+01 01afe560 77715d51     00000001 777469a0 7771418e ntdll!RtlReportCriticalFailure+0x84
+02 01afe56c 7771418e     d45ce40f 00000000 01afe6cc ntdll!RtlpReportHeapFailure+0x2f
+03 01afe59c 77713ae9     00000009 01ce0000 01afe6cc ntdll!RtlpHpHeapHandleError+0x8e
+04 01afe5b4 776a288e     01afe6cc 00000000 00000000 ntdll!RtlpLogHeapFailure+0x43
+05 01afe60c 7764edca     00000000 d45ce7d3 0a62f3d4 ntdll!RtlpFreeNTHeapInternal+0x71
+06 01afe640 76dc00eb     01ce0000 00000000 01afe6cc ntdll!RtlFreeHeap+0xca
+07 01afe654 76dc00b8     01afe6cc 00000000 01afe670 ucrtbase!_free_base+0x1b
+08 01afe664 7ac0ba67     01afe6cc 01afe69c 7a9ae404 ucrtbase!free+0x18
+WARNING: Stack unwind information not available. Following frames may be wrong.
+09 01afe670 7a9ae404     01afe6cc 00000264 ae1f21cb wxmsw32u_core_vc14x!wxMDIChildFrame::GetDefaultIcon+0x43207
+0a 01afe69c 7aac02fe     00000001 167ee030 7a9541d5 wxmsw32u_core_vc14x!wxDirDialog::wxDirDialog+0x4d4
+0b 01afe9e0 7a6568d0     01afeaac 7a654ee7 167ee030 wxmsw32u_core_vc14x!wxWindowBase::Destroy+0x1e
+0c 01afe9e8 7a654ee7     167ee030 16d8663d 00000000 wxbase32u_vc14x!wxAppConsoleBase::HandleEvent+0x10
+0d 01afeb18 7a9a466e     7a95ddc9 00000000 ffff868d wxbase32u_vc14x!wxAppConsoleBase::CallEventHandler+0x27
+0e 01afeb1c 7a95ddc9     00000000 ffff868d ae1f2cfb wxmsw32u_core_vc14x!wxButton::MSWCommand+0xe
+0f 01afeb48 7a756946     01afed30 7641bff0 0f577c3e wxmsw32u_core_vc14x!wxWindow::HandleCommand+0x99
+10 01afeb60 6cf7962c     00061666 00000000 6cf795f0 wxbase32u_vc14x!wxEvtHandler::TryAfter+0x46
+11 01afec18 764193d3     00061666 00000215 00061666 comctl32!Button_WndProc+0x3c
+12 01afec54 76408687     76408617 78b14a36 6cf795f0 user32!_InternalCallWinProc+0x2b
+13 01afec58 76408617     78b14a36 6cf795f0 00061666 user32!UserCallWinProcCheckWow+0x5a7
+14 00000000 00000000     00000000 00000000 00000000 user32!UserCallWinProcCheckWow+0x537

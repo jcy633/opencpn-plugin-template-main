@@ -35,14 +35,46 @@
 
 using namespace std;
 
-MainDialog::MainDialog(wxWindow *parent) : ncdfDialog( parent )
+void ncdfLog(const char* format, ...) {
+    FILE *logFile = fopen("C:\\ProgramData\\opencpn\\ncdf_debug.log", "a");
+    if (logFile) {
+        va_list args;
+        va_start(args, format);
+        vfprintf(logFile, format, args);
+        va_end(args);
+        fflush(logFile);
+        fclose(logFile);
+    }
+}
+
+static void ncdfLogW(const wchar_t* format, ...) {
+    FILE *logFile = fopen("C:\\ProgramData\\opencpn\\ncdf_debug.log", "a");
+    if (logFile) {
+        va_list args;
+        va_start(args, format);
+        vfwprintf(logFile, format, args);
+        va_end(args);
+        fflush(logFile);
+        fclose(logFile);
+    }
+}
+
+MainDialog::MainDialog(wxWindow *parent) : ncdfDialog( parent ), m_isTreeUpdating(false)
 {
+	ncdfLog("[ncdf] MainDialog constructor: started\n");
+	
 	this->my_ncdfReader = new ncdfReader(this);
+	
+	ncdfLog("[ncdf] MainDialog constructor: ncdfReader created\n");
+	
 	this->m_parent = parent;
 	selectionRectangle.bottomLat = selectionRectangle.bottomLon
 	= selectionRectangle.topLat = selectionRectangle.topLon = ncdf_NOTDEF;
 
 	log_window_m = NULL;
+	m_lastSelectedTimeIndex = -1;
+	gridu = NULL;
+	gridv = NULL;
 
 	m_bpPrev->SetBitmap(wxBitmap(prev1));
 	m_bpNext->SetBitmap(wxBitmap(next1));
@@ -50,21 +82,58 @@ MainDialog::MainDialog(wxWindow *parent) : ncdfDialog( parent )
 
 	BuildHelpPage();
 
+	/* Ensure dialog and its contents can be resized */
+	this->SetWindowStyleFlag(this->GetWindowStyleFlag() | wxRESIZE_BORDER);
+	this->SetSizeHints(280, 460, -1, -1);
+	this->Layout();
 }
 
 MainDialog::~MainDialog()
 {
+	ncdfLog("[ncdf] ~MainDialog: started\n");
+	
 	if(log_window_m)
 		delete log_window_m;
+	
+	ncdfLog("[ncdf] ~MainDialog: log_window_m deleted\n");
+	
+	if (gridu) {
+		for (wxUint32 i = 0; i < myMessage.noPointsMeridian; ++i) {
+			delete[] gridu[i];
+		}
+		delete[] gridu;
+	}
+	if (gridv) {
+		for (wxUint32 i = 0; i < myMessage.noPointsMeridian; ++i) {
+			delete[] gridv[i];
+		}
+		delete[] gridv;
+	}
+	
 	delete my_ncdfReader;
-	pPlugIn->m_choice = m_choiceArea->GetSelection();
+	
+	ncdfLog("[ncdf] ~MainDialog: my_ncdfReader deleted\n");
+	
+	pPlugIn->m_choice = m_choiceTime->GetSelection();
+	pPlugIn->m_bShowCurrentDir = m_checkBoxDCurrent->GetValue();
+	pPlugIn->m_bShowCurrentForce = m_checkBoxBmpCurrentForce->GetValue();
+	
+	ncdfLog("[ncdf] ~MainDialog: settings saved\n");
+	
+	myDataVector.clear();
+	
+	ncdfLog("[ncdf] ~MainDialog: myDataVector cleared\n");
+	
+	ncdfLog("[ncdf] ~MainDialog: completed\n");
 }
 
 void MainDialog::setPlugIn(ncdf_pi *p)
 {
   this->pPlugIn = p;
   this->m_textCtrlDir->SetValue(pPlugIn->m_ncdf_dir);
-  m_choiceArea->SetSelection(pPlugIn->m_choice);
+  m_choiceTime->SetSelection(pPlugIn->m_choice);
+  m_checkBoxDCurrent->SetValue(pPlugIn->m_bShowCurrentDir);
+  m_checkBoxBmpCurrentForce->SetValue(pPlugIn->m_bShowCurrentForce);
 }
 
 void MainDialog::SetCursorLatLon(double lat, double lon)
@@ -100,13 +169,12 @@ void MainDialog::printCurrentData()
 				if (dir < 0) dir = 360 + dir;
 				t.Printf(_T("%3.1f"), dir);
 				this->m_textCtrlCurrentDir->AppendText(t);
-				pPlugIn->ddir = dir;
-				pPlugIn->dfor = force;
 			}
 }
 
-void MainDialog::getCurrentData(double lat, double lon)
+CurrentData MainDialog::getCurrentData(double lat, double lon)
 {
+	CurrentData result = {0, 0};
 	wxString t;
 	double cDir;
 	double cForce;
@@ -116,12 +184,12 @@ void MainDialog::getCurrentData(double lat, double lon)
 
 	if ((cDir != ncdf_NOTDEF) && (cForce != ncdf_NOTDEF))
 	{
-		double force = sqrt(cDir*cDir + cForce*cForce)*3.6 / 1.852;
-		double dir = 90. + (atan2(cForce, -cDir)  * 180. / PI) - 180;
-		if (dir < 0) dir = 360 + dir;
-		pPlugIn->ddir = dir;
-		pPlugIn->dfor = force;
+		result.force = sqrt(cDir*cDir + cForce*cForce)*3.6 / 1.852;
+		result.dir = 90. + (atan2(cForce, -cDir)  * 180. / PI) - 180;
+		if (result.dir < 0) result.dir = 360 + result.dir;
 	}
+	
+	return result;
 }
 
 
@@ -210,16 +278,97 @@ void MainDialog::onNext(wxCommandEvent& event) {
 }
 
 void MainDialog::readData(wxTreeItemId itemId) {
+    FILE *logFile = fopen("C:\\ProgramData\\opencpn\\ncdf_debug.log", "a");
+    if (logFile) {
+        fwprintf(logFile, L"[ncdf] readData: started, itemId=%p\n", itemId.m_pItem);
+        fflush(logFile);
+    }
+    
 	MyTreeItemData *data = (MyTreeItemData *) this->m_treeCtrl->GetItemData(itemId);
-	if (data != NULL)
-	{
-		this->my_ncdfReader->readncdfFile(data->myData);
-		pPlugIn->GetncdfOverlayFactory()->renderSelectionRectangle = false;
-		RequestRefresh(m_parent);
+	
+	if (logFile) {
+        fwprintf(logFile, L"[ncdf] readData: data=%p\n", data);
+        fflush(logFile);
+    }
+	
+	if (data == NULL) {
+		if (logFile) {
+			fwprintf(logFile, L"[ncdf] readData: data is NULL, returning\n");
+			fflush(logFile);
+			fclose(logFile);
+		}
+		return;
 	}
+
+	int idx = data->m_index;
+	if (logFile) {
+        fwprintf(logFile, L"[ncdf] readData: index=%d, m_lastSelectedTimeIndex=%d, vectorSize=%d\n", 
+            idx, m_lastSelectedTimeIndex, (int)myDataVector.size());
+        fflush(logFile);
+    }
+	
+	if (idx < 0 || idx >= (int)myDataVector.size()) {
+		if (logFile) {
+            fwprintf(logFile, L"[ncdf] readData: index out of range\n");
+            fflush(logFile);
+            fclose(logFile);
+        }
+		return;
+	}
+	
+	if (m_lastSelectedTimeIndex >= 0 && m_lastSelectedTimeIndex < (int)myDataVector.size()) {
+		if (logFile) {
+            fwprintf(logFile, L"[ncdf] readData: clearing myDataVector[%d]\n", m_lastSelectedTimeIndex);
+            fflush(logFile);
+        }
+		myDataVector[m_lastSelectedTimeIndex].clear();
+	}
+	
+	if (logFile) {
+        fwprintf(logFile, L"[ncdf] readData: calling readTimeStepData for index=%d\n", idx);
+        fflush(logFile);
+    }
+	if (!readTimeStepData(myDataVector[idx])) {
+		if (logFile) {
+            fwprintf(logFile, L"[ncdf] readData: readTimeStepData failed\n");
+            fflush(logFile);
+            fclose(logFile);
+        }
+		return;
+	}
+	
+	if (logFile) {
+        fwprintf(logFile, L"[ncdf] readData: readTimeStepData succeeded\n");
+        fflush(logFile);
+    }
+	
+	m_lastSelectedTimeIndex = idx;
+	
+	if (logFile) {
+        fwprintf(logFile, L"[ncdf] readData: updated m_lastSelectedTimeIndex=%d\n", m_lastSelectedTimeIndex);
+        fflush(logFile);
+    }
+	
+	if (logFile) {
+        fwprintf(logFile, L"[ncdf] readData: calling readncdfFile\n");
+        fflush(logFile);
+    }
+	this->my_ncdfReader->readncdfFile(myDataVector[idx]);
+	
+	if (logFile) {
+        fwprintf(logFile, L"[ncdf] readData: readncdfFile returned\n");
+        fflush(logFile);
+    }
+	
+	pPlugIn->GetncdfOverlayFactory()->renderSelectionRectangle = false;
+	RequestRefresh(m_parent);
+	
+	if (logFile) {
+        fwprintf(logFile, L"[ncdf] readData: completed\n");
+        fflush(logFile);
+        fclose(logFile);
+    }
 }
-
-
 
 void MainDialog::OnCloseFrame(wxCloseEvent& event) {
 
@@ -236,390 +385,943 @@ void MainDialog::OnExitClick(wxCommandEvent& event) {
 
 void MainDialog::onFileButtonClick(wxCommandEvent& event)
 {
-	wxDirDialog fd(this,_("Select a directory"),pPlugIn->m_ncdf_dir);
+    ncdfLog("[ncdf] onFileButtonClick: started\n");
+    
+    wxDirDialog fd(this,_("Select a directory"),pPlugIn->m_ncdf_dir);
+    ncdfLog("[ncdf] onFileButtonClick: dialog created\n");
 
-	if(fd.ShowModal() != wxID_OK) return;
-	pPlugIn->m_ncdf_dir = fd.GetPath();
-	this->m_textCtrlDir->SetValue(pPlugIn->m_ncdf_dir);
-	fd.Destroy();
+    if(fd.ShowModal() != wxID_OK) {
+        ncdfLog("[ncdf] onFileButtonClick: user canceled\n");
+        return; 
+    }
+    
+    ncdfLog("[ncdf] onFileButtonClick: directory selected\n");
+    
+    ncdfLog("[ncdf] onFileButtonClick: pPlugIn=%p\n", pPlugIn);
+    
+    pPlugIn->m_ncdf_dir = fd.GetPath();
+    
+    ncdfLog("[ncdf] onFileButtonClick: pPlugIn->m_ncdf_dir set\n");
+    
+    ncdfLog("[ncdf] onFileButtonClick: m_textCtrlDir=%p\n", m_textCtrlDir);
+    
+    this->m_textCtrlDir->SetValue(pPlugIn->m_ncdf_dir);
+    
+    ncdfLog("[ncdf] onFileButtonClick: m_textCtrlDir->SetValue done\n");
+    
+    ncdfLog("[ncdf] onFileButtonClick: completed\n");
+}
+
+/* Helper: read a text attribute from a variable. Caller must delete[] the result. */
+static char* read_var_att_text(int ncid, int varid, const char* attname) {
+    size_t attlen;
+    if (nc_inq_attlen(ncid, varid, attname, &attlen) != NC_NOERR) return NULL;
+    char* text = new char[attlen + 1];
+    if (nc_get_att_text(ncid, varid, attname, text) != NC_NOERR) {
+        delete[] text;
+        return NULL;
+    }
+    text[attlen] = '\0';
+    return text;
+}
+
+/* CF-compliant variable finder with three-tier priority:
+   P1 (gold standard): exact standard_name match
+   P2 (disambiguation): if multiple matches, return first with warning
+   P3 (fallback): try long_name, then variable name, with WARNING log */
+static int find_var_by_cf(int ncid,
+                           const char* target_std_name,
+                           const char** alt_std_names,
+                           const char** long_name_hints,
+                           const char** var_name_hints) {
+    int nvars;
+    if (nc_inq(ncid, NULL, &nvars, NULL, NULL) != NC_NOERR) return -1;
+    
+    /* ===== Priority 1: standard_name exact match ===== */
+    int best_varid = -1;
+    int match_count = 0;
+    
+    for (int i = 0; i < nvars; i++) {
+        char* std_name = read_var_att_text(ncid, i, "standard_name");
+        if (!std_name) continue;
+        
+        if (strcmp(std_name, target_std_name) == 0) {
+            if (best_varid == -1) best_varid = i;
+            match_count++;
+        }
+        delete[] std_name;
+    }
+    
+    if (match_count == 1) return best_varid;
+    
+    /* ===== Priority 2: multiple matches ===== */
+    if (match_count > 1) {
+        ncdfLog("[ncdf] find_var_by_cf: WARNING - %d vars with standard_name='%s', using first (varid=%d)\n",
+                match_count, target_std_name, best_varid);
+        return best_varid;
+    }
+    
+    /* ===== Try alternative standard_names ===== */
+    if (alt_std_names) {
+        for (const char** alt = alt_std_names; *alt; alt++) {
+            for (int i = 0; i < nvars; i++) {
+                char* std_name = read_var_att_text(ncid, i, "standard_name");
+                if (!std_name) continue;
+                if (strcmp(std_name, *alt) == 0) {
+                    delete[] std_name;
+                    ncdfLog("[ncdf] find_var_by_cf: matched alt standard_name='%s' (target was '%s')\n",
+                            *alt, target_std_name);
+                    return i;
+                }
+                delete[] std_name;
+            }
+        }
+    }
+    
+    /* ===== Priority 3a: fallback to long_name ===== */
+    if (long_name_hints) {
+        for (const char** hint = long_name_hints; *hint; hint++) {
+            for (int i = 0; i < nvars; i++) {
+                char* long_name = read_var_att_text(ncid, i, "long_name");
+                if (long_name && strcmp(long_name, *hint) == 0) {
+                    ncdfLog("[ncdf] find_var_by_cf: WARNING - no standard_name, matched long_name='%s' for target='%s'\n",
+                            *hint, target_std_name);
+                    delete[] long_name;
+                    return i;
+                }
+                if (long_name) delete[] long_name;
+            }
+        }
+    }
+    
+    /* ===== Priority 3b: fallback to variable name ===== */
+    if (var_name_hints) {
+        for (const char** hint = var_name_hints; *hint; hint++) {
+            int varid;
+            if (nc_inq_varid(ncid, *hint, &varid) == NC_NOERR) {
+                ncdfLog("[ncdf] find_var_by_cf: WARNING - no standard_name, matched variable name='%s' for target='%s'\n",
+                        *hint, target_std_name);
+                return varid;
+            }
+        }
+    }
+    
+    return -1;
+}
+
+static int find_dim_by_var(int ncid, int varid, int dim_idx) {
+    int ndims;
+    nc_inq_varndims(ncid, varid, &ndims);
+    if (dim_idx >= ndims) return -1;
+    
+    int* dimids = new int[ndims];
+    nc_inq_var(ncid, varid, NULL, NULL, NULL, dimids, NULL);
+    int dimid = dimids[dim_idx];
+    delete[] dimids;
+    return dimid;
+}
+
+/* CF-compliant time unit parser.
+   Parses strings like "hours since 1950-01-01 00:00:00" or "days since 1950-01-01".
+   Returns seconds_per_unit and the epoch datetime. */
+struct CFTimeInfo {
+    wxDateTime baseDateTime;
+    double secondsPerUnit;
+    bool valid;
+    CFTimeInfo() : secondsPerUnit(0.0), valid(false) {}
+};
+
+static CFTimeInfo ParseCFTimeUnits(const char* unitsStr) {
+    CFTimeInfo info;
+    wxString units(unitsStr);
+    
+    int sincePos = units.Find(" since ");
+    if (sincePos == wxNOT_FOUND) return info;
+    
+    wxString unitPart = units.Left(sincePos).Trim().Lower();
+    wxString datePart = units.Mid(sincePos + 7).Trim();
+    
+    if (unitPart.Contains("second") || unitPart == "secs" || unitPart == "sec" || unitPart == "s")
+        info.secondsPerUnit = 1.0;
+    else if (unitPart.Contains("minute") || unitPart == "mins" || unitPart == "min")
+        info.secondsPerUnit = 60.0;
+    else if (unitPart.Contains("hour") || unitPart == "hrs" || unitPart == "hr" || unitPart == "h")
+        info.secondsPerUnit = 3600.0;
+    else if (unitPart.Contains("day") || unitPart == "d")
+        info.secondsPerUnit = 86400.0;
+    else
+        return info;
+    
+    /* Strip trailing timezone (e.g. " UTC", " +00:00", "Z") and fractional seconds */
+    wxString cleanDate;
+    for (size_t j = 0; j < datePart.Len(); j++) {
+        wxChar c = datePart[j];
+        if (c == 'Z' || c == 'z') continue;  // skip Z
+        if (c == '+' || c == '-') {
+            /* Check if this is a timezone offset like "+00:00" or "-05:00" */
+            if (j > 0 && datePart[j-1] == ' ') {
+                break;  // timezone after space
+            }
+            if (j > 0 && datePart[j-1] == 'T') {
+                /* This could be a negative timezone like T-05:00 */
+                cleanDate += c;
+                continue;
+            }
+        }
+        cleanDate += c;
+    }
+    /* Remove trailing whitespace */
+    cleanDate = cleanDate.Trim();
+    
+    if (info.baseDateTime.ParseFormat(cleanDate, "%Y-%m-%d %H:%M:%S") ||
+        info.baseDateTime.ParseFormat(cleanDate, "%Y-%m-%dT%H:%M:%S") ||
+        info.baseDateTime.ParseFormat(cleanDate, "%Y-%m-%d") ||
+        info.baseDateTime.ParseFormat(cleanDate, "%Y-%m-%dT%H:%M:%SZ") ||
+        info.baseDateTime.ParseFormat(cleanDate, "%Y-%m-%dT%H:%M:%S%z") ||
+        info.baseDateTime.ParseFormat(cleanDate, "%Y-%m-%d %H:%M:%S %z")) {
+        info.valid = true;
+    }
+    
+    return info;
 }
 
 int MainDialog::nc_get(wxString filestr){
 
+	ncdfLog("[ncdf] nc_get: started\n");
+
+	ncdfLog("[ncdf] nc_get: clearing myDataVector...\n");
+	myDataVector.clear();
+	ncdfLog("[ncdf] nc_get: myDataVector cleared\n");
+
+	m_lastSelectedTimeIndex = -1;
+
+	ncdfLog("[ncdf] nc_get: declaring variables...\n");
 	int ncid;
 	int time_varid, lat_varid, lon_varid;
 	int u_varid, v_varid;
 	int retval;
 
-	/* We will learn about the data file and store results in these
-	program variables. */
 	int ndims_in, nvars_in, ngatts_in, unlimdimid_in;
 
-	char* filename = const_cast<char*>((const char*)filestr.mb_str()); // "c:/plugins/Current.grb2";
+	ncdfLog("[ncdf] nc_get: processing filename...\n");
+	wxString filenameStr = filestr;
+	ncdfLog("[ncdf] nc_get: filenameStr wxChar length=%d\n", (int)filenameStr.length());
+	
+	const wxCharBuffer mbBuf = filenameStr.mb_str();
+	size_t mbLen = strlen(mbBuf);
+	char* filename = new char[mbLen + 1];
+	ncdfLog("[ncdf] nc_get: filename allocated, mbLen=%d\n", (int)mbLen);
+	
+	strcpy(filename, mbBuf);
+	ncdfLog("[ncdf] nc_get: filename copied: %s\n", filename);
 
-	/* Open the file. */
-	if ((retval = nc_open(filename, NC_NOWRITE, &ncid)))
-		ERR(retval);
-	/*
-	There are a number of inquiry functions in netCDF which can be
-	used to learn about an unknown netCDF file. NC_INQ tells how
-	many netCDF variables, dimensions, and global attributes are in
-	the file; also the dimension id of the unlimited dimension, if
-	there is one.
-	*/
-
-	if ((retval = nc_inq(ncid, &ndims_in, &nvars_in, &ngatts_in, &unlimdimid_in)))
-		ERR(retval);
-
-	if (ndims_in != 3 || unlimdimid_in != -1 || nvars_in != 5) return 2;
-
-	int status, latid, lonid, timeid;
-	size_t timelength, latlength, lonlength;
-
-	status = nc_inq_dimid(ncid, "time", &timeid);
-	status = nc_inq_dimlen(ncid, timeid, &timelength);
-
-	status = nc_inq_dimid(ncid, "latitude", &latid);
-	status = nc_inq_dimlen(ncid, latid, &latlength);
-
-	status = nc_inq_dimid(ncid, "longitude", &lonid);
-	status = nc_inq_dimlen(ncid, lonid, &lonlength);
-
-	if (pPlugIn->m_choice == IS) {
-		if (latlength != NLATIS || lonlength != NLONIS) {
-			nc_close(ncid);
-			return 3;
-		}
-	} else if (pPlugIn->m_choice == EC) {
-		if (latlength != NLATEC || lonlength != NLONEC) {
-			nc_close(ncid);
-			return 3;
-		}
-	} else if (pPlugIn->m_choice == SB) {
-		if (latlength != NLATSB || lonlength != NLONSB) {
-			nc_close(ncid);
-			return 3;
-		}
-	} else if (pPlugIn->m_choice == NS) {
-		if (latlength != NLATNS || lonlength != NLONNS) {
-			nc_close(ncid);
-			return 3;
-		}
-	} else if (pPlugIn->m_choice == BS) {
-		if (latlength != NLATBS || lonlength != NLONBS) {
-			nc_close(ncid);
-			return 3;
-		}
-	} else if (pPlugIn->m_choice == WI) {
-		if (latlength != NLATWI || lonlength != NLONWI) {
-			nc_close(ncid);
-			return 3;
-		}
+	/* Try opening without NC_NETCDF4 first (compatible with NetCDF3 classic format).
+	   If that fails, retry with NC_NETCDF4 for HDF5-based NetCDF4 files. */
+	retval = nc_open(filename, NC_NOWRITE, &ncid);
+	if (retval != NC_NOERR) {
+		retval = nc_open(filename, NC_NOWRITE | NC_NETCDF4, &ncid);
 	}
-	//
-	// Obtain the identifiers for variables
-	if ((retval = nc_inq_varid(ncid, V_NAME, &v_varid))){
-		ERR(retval);
+	if (retval != NC_NOERR) {
+		ncdfLog("[ncdf] nc_get: nc_open failed, retval=%d\n", retval);
+		delete[] filename;
+		return retval;
 	}
-	if ((retval = nc_inq_varid(ncid, U_NAME, &u_varid))){
-		ERR(retval);
+
+	if ((retval = nc_inq(ncid, &ndims_in, &nvars_in, &ngatts_in, &unlimdimid_in))) {
+		nc_close(ncid);
+		delete[] filename;
+		return retval;
 	}
-	if ((retval = nc_inq_varid(ncid, TIME_NAME, &time_varid))){
-		ERR(retval);
+
+	if (ndims_in < 3 || ndims_in > 4) {
+		ncdfLog("[ncdf] nc_get: unsupported ndims=%d (need 3-4)\n", ndims_in);
+		nc_close(ncid);
+		delete[] filename;
+		return 2;
 	}
-	if ((retval = nc_inq_varid(ncid, LAT_NAME, &lat_varid))){
-		ERR(retval);
+
+	ncdfLog("[ncdf] nc_get: searching for variables using CF conventions...\n");
+
+	/* u: eastward_sea_water_velocity */
+	{
+		const char* alt_std[] = {"surface_eastward_sea_water_velocity", NULL};
+		const char* long_hints[] = {"Eastward Current Velocity", "u-velocity component of current", NULL};
+		const char* var_hints[] = {"u", "uo", "current_u", "curr_u", "u10", "u100", NULL};
+		u_varid = find_var_by_cf(ncid, "eastward_sea_water_velocity", alt_std, long_hints, var_hints);
 	}
-	if ((retval = nc_inq_varid(ncid, LON_NAME, &lon_varid))){
-		ERR(retval);
+	
+	/* v: northward_sea_water_velocity */
+	{
+		const char* alt_std[] = {"surface_northward_sea_water_velocity", NULL};
+		const char* long_hints[] = {"Northward Current Velocity", "v-velocity component of current", NULL};
+		const char* var_hints[] = {"v", "vo", "current_v", "curr_v", "v10", "v100", NULL};
+		v_varid = find_var_by_cf(ncid, "northward_sea_water_velocity", alt_std, long_hints, var_hints);
 	}
-	// End of identifiers
-	//
+	
+	/* lat: latitude */
+	{
+		const char* alt_std[] = {"projection_y_coordinate", NULL};
+		const char* long_hints[] = {"Latitude", "latitude coordinate", NULL};
+		const char* var_hints[] = {"lat", "latitude", "nav_lat", NULL};
+		lat_varid = find_var_by_cf(ncid, "latitude", alt_std, long_hints, var_hints);
+	}
+	
+	/* lon: longitude */
+	{
+		const char* alt_std[] = {"projection_x_coordinate", NULL};
+		const char* long_hints[] = {"Longitude", "longitude coordinate", NULL};
+		const char* var_hints[] = {"lon", "longitude", "nav_lon", NULL};
+		lon_varid = find_var_by_cf(ncid, "longitude", alt_std, long_hints, var_hints);
+	}
+	
+	/* time */
+	{
+		const char* alt_std[] = {NULL};
+		const char* long_hints[] = {"Time", "time coordinate", NULL};
+		const char* var_hints[] = {"time", "t", "Time", NULL};
+		time_varid = find_var_by_cf(ncid, "time", alt_std, long_hints, var_hints);
+	}
+	
+	/* depth - commented out */
+	/*int depth_varid = -1;
+	{
+		const char* alt_std[] = {"depth", "z", "depth_below_sea_level", NULL};
+		const char* long_hints[] = {"Depth", "depth coordinate", "vertical level", NULL};
+		const char* var_hints[] = {"depth", "z", "Depth", "level", NULL};
+		depth_varid = find_var_by_cf(ncid, "depth", alt_std, long_hints, var_hints);
+	}*/
+
+	ncdfLog("[ncdf] nc_get: result - u_varid=%d, v_varid=%d, lat_varid=%d, lon_varid=%d, time_varid=%d\n",
+		u_varid, v_varid, lat_varid, lon_varid, time_varid);
+
+	if (u_varid == -1 || v_varid == -1) {
+		ncdfLog("[ncdf] nc_get: u or v variable not found\n");
+		nc_close(ncid);
+		delete[] filename;
+		return 2;
+	}
+
+	if (lat_varid == -1) {
+		ncdfLog("[ncdf] nc_get: lat variable not found\n");
+		nc_close(ncid);
+		delete[] filename;
+		return 2;
+	}
+
+	if (lon_varid == -1) {
+		ncdfLog("[ncdf] nc_get: lon variable not found\n");
+		nc_close(ncid);
+		delete[] filename;
+		return 2;
+	}
+
+	if (time_varid == -1) {
+		ncdfLog("[ncdf] nc_get: time variable not found\n");
+		nc_close(ncid);
+		delete[] filename;
+		return 2;
+	}
+
+	int timeid = find_dim_by_var(ncid, time_varid, 0);
+	int latid = find_dim_by_var(ncid, lat_varid, 0);
+	int lonid = find_dim_by_var(ncid, lon_varid, 0);
+	/* depth - commented out */
+	/*int depthid = -1;
+	if (depth_varid != -1) {
+		depthid = find_dim_by_var(ncid, depth_varid, 0);
+	}*/
+
+	if (timeid == -1 || latid == -1 || lonid == -1) {
+		ncdfLog("[ncdf] nc_get: invalid dimension id (timeid=%d, latid=%d, lonid=%d)\n", timeid, latid, lonid);
+		nc_close(ncid);
+		delete[] filename;
+		return 2;
+	}
+
+	size_t timelength = 0, latlength = 0, lonlength = 0/*, depthlength = 0*/;
+	int status;
+
+	if ((status = nc_inq_dimlen(ncid, timeid, &timelength)) != NC_NOERR) {
+		ncdfLog("[ncdf] nc_get: failed to get time dimension length\n");
+		nc_close(ncid);
+		delete[] filename;
+		return 2;
+	}
+	if ((status = nc_inq_dimlen(ncid, latid, &latlength)) != NC_NOERR) {
+		ncdfLog("[ncdf] nc_get: failed to get lat dimension length\n");
+		nc_close(ncid);
+		delete[] filename;
+		return 2;
+	}
+	if ((status = nc_inq_dimlen(ncid, lonid, &lonlength)) != NC_NOERR) {
+		ncdfLog("[ncdf] nc_get: failed to get lon dimension length\n");
+		nc_close(ncid);
+		delete[] filename;
+		return 2;
+	}
+
+	ncdfLog("[ncdf] nc_get: timelength=%d, latlength=%d, lonlength=%d\n", 
+		(int)timelength, (int)latlength, (int)lonlength);
+
+	wxDouble* lats = (wxDouble*)calloc(latlength, sizeof(wxDouble));
+	wxDouble* lons = (wxDouble*)calloc(lonlength, sizeof(wxDouble));
+	double* time_out = (double*)calloc(timelength, sizeof(double));
+
+	if (!lats || !lons || !time_out) {
+		if (lats) free(lats);
+		if (lons) free(lons);
+		if (time_out) free(time_out);
+		nc_close(ncid);
+		delete[] filename;
+		return 1;
+	}
+
+	if (nc_get_var_double(ncid, lat_varid, (double*)lats) != NC_NOERR) {
+		float* lat_float = (float*)calloc(latlength, sizeof(float));
+		if (!lat_float) { free(lats); free(lons); free(time_out); nc_close(ncid); delete[] filename; return 1; }
+		if (nc_get_var_float(ncid, lat_varid, lat_float) == NC_NOERR) {
+			for (size_t i = 0; i < latlength; i++) {
+				lats[i] = lat_float[i];
+			}
+		}
+		free(lat_float);
+	}
+	
+	if (nc_get_var_double(ncid, lon_varid, (double*)lons) != NC_NOERR) {
+		float* lon_float = (float*)calloc(lonlength, sizeof(float));
+		if (!lon_float) { free(lons); free(lats); free(time_out); nc_close(ncid); delete[] filename; return 1; }
+		if (nc_get_var_float(ncid, lon_varid, lon_float) == NC_NOERR) {
+			for (size_t i = 0; i < lonlength; i++) {
+				lons[i] = lon_float[i];
+			}
+		}
+		free(lon_float);
+	}
+	
+	if (nc_get_var_double(ncid, time_varid, time_out) != NC_NOERR) {
+		float* time_float = (float*)calloc(timelength, sizeof(float));
+		if (!time_float) { free(time_out); free(lats); free(lons); nc_close(ncid); delete[] filename; return 1; }
+		if (nc_get_var_float(ncid, time_varid, time_float) == NC_NOERR) {
+			for (size_t i = 0; i < timelength; i++) {
+				time_out[i] = time_float[i];
+			}
+		}
+		free(time_float);
+	}
+	
+	ncdfLog("[ncdf] nc_get: first time value = %f\n", timelength > 0 ? time_out[0] : 0.0);
+	
+	/* depth - commented out */
+	/*wxDouble* depths = NULL;
+	if (depth_varid != -1 && depthid != -1) {
+		if ((status = nc_inq_dimlen(ncid, depthid, &depthlength)) != NC_NOERR) {
+			ncdfLog("[ncdf] nc_get: failed to get depth dimension length, assuming surface data\n");
+			depthlength = 0;
+		} else {
+			if (depthlength > 0) {
+				depths = (wxDouble*)calloc(depthlength, sizeof(wxDouble));
+				if (depths) {
+					if (nc_get_var_double(ncid, depth_varid, (double*)depths) != NC_NOERR) {
+						float* depth_float = (float*)calloc(depthlength, sizeof(float));
+						if (depth_float) {
+							if (nc_get_var_float(ncid, depth_varid, depth_float) == NC_NOERR) {
+								for (size_t i = 0; i < depthlength; i++) {
+									depths[i] = depth_float[i];
+								}
+							}
+							free(depth_float);
+						}
+					}
+					ncdfLog("[ncdf] nc_get: depth length=%d, first depth value=%f\n", 
+						(int)depthlength, depths[0]);
+				}
+			} else {
+				ncdfLog("[ncdf] nc_get: depth dimension length is 0, assuming surface data\n");
+				depthlength = 0;
+			}
+		}
+	} else {
+		depthlength = 0;
+	}*/
+
 	float firstGridPointLat;
 	float firstGridPointLon;
 	float lastGridPointLat;
 	float lastGridPointLon;
-	float scale_factor;
+	float scale_factor = 1.0f;
 
-	// Some additional data from the file
-	status = nc_get_att_float(ncid, NC_GLOBAL, "latitude_min", &firstGridPointLat);
-	status = nc_get_att_float(ncid, NC_GLOBAL, "longitude_min", &firstGridPointLon);
-	status = nc_get_att_float(ncid, NC_GLOBAL, "latitude_max", &lastGridPointLat);
-	status = nc_get_att_float(ncid, NC_GLOBAL, "longitude_max", &lastGridPointLon);
-	status = nc_get_att_float(ncid, u_varid, "scale_factor", &scale_factor);
-	//
-	//
-	int nbr_uv;
+	if (nc_get_att_float(ncid, NC_GLOBAL, "latitude_min", &firstGridPointLat) != NC_NOERR &&
+		nc_get_att_float(ncid, NC_GLOBAL, "lat_min", &firstGridPointLat) != NC_NOERR &&
+		nc_get_att_float(ncid, NC_GLOBAL, "min_lat", &firstGridPointLat) != NC_NOERR) {
+		firstGridPointLat = lats[0];
+	}
 
-	static size_t start[] = { 0, 0, 0 };
-	//
-	// count for each area
-	static size_t count_ec[] = { 1, NLATEC, NLONEC };
-	static size_t count_is[] = { 1, NLATIS, NLONIS };
-	static size_t count_sb[] = { 1, NLATSB, NLONSB };
-	static size_t count_ns[] = { 1, NLATNS, NLONNS };
-	static size_t count_bs[] = { 1, NLATBS, NLONBS };
-	static size_t count_wi[] = { 1, NLATWI, NLONWI };
-	// End of counts
-	//
-	float* u_vals = 0;
-	float* v_vals = 0;
+	if (nc_get_att_float(ncid, NC_GLOBAL, "longitude_min", &firstGridPointLon) != NC_NOERR &&
+		nc_get_att_float(ncid, NC_GLOBAL, "lon_min", &firstGridPointLon) != NC_NOERR &&
+		nc_get_att_float(ncid, NC_GLOBAL, "min_lon", &firstGridPointLon) != NC_NOERR) {
+		firstGridPointLon = lons[0];
+	}
 
-	int nlatsel;   /// int used to hold NLAT needed for an area
-	int nlonsel;
+	if (nc_get_att_float(ncid, NC_GLOBAL, "latitude_max", &lastGridPointLat) != NC_NOERR &&
+		nc_get_att_float(ncid, NC_GLOBAL, "lat_max", &lastGridPointLat) != NC_NOERR &&
+		nc_get_att_float(ncid, NC_GLOBAL, "max_lat", &lastGridPointLat) != NC_NOERR) {
+		lastGridPointLat = lats[latlength - 1];
+	}
 
-	if (pPlugIn->m_choice == IS){
-
-		nbr_uv = NLATIS * NLONIS;
-
-		u_vals = (float*)calloc(nbr_uv, sizeof(float));
-		if (!u_vals) { nc_close(ncid); return -1; }
-		v_vals = (float*)calloc(nbr_uv, sizeof(float));
-		if (!v_vals) { free(u_vals); nc_close(ncid); return -1; }
-
-		nlatsel = NLATIS;
-		nlonsel = NLONIS;
-
-	} else
-		if (pPlugIn->m_choice == EC){
-
-			nbr_uv = NLATEC * NLONEC;
-
-			u_vals = (float*)calloc(nbr_uv, sizeof(float));
-			if (!u_vals) { nc_close(ncid); return -1; }
-			v_vals = (float*)calloc(nbr_uv, sizeof(float));
-			if (!v_vals) { free(u_vals); nc_close(ncid); return -1; }
-
-			nlatsel = NLATEC;
-			nlonsel = NLONEC;
-		}else
-			if (pPlugIn->m_choice == SB){
-
-				nbr_uv = NLATSB * NLONSB;
-
-				u_vals = (float*)calloc(nbr_uv, sizeof(float));
-				if (!u_vals) { nc_close(ncid); return -1; }
-				v_vals = (float*)calloc(nbr_uv, sizeof(float));
-				if (!v_vals) { free(u_vals); nc_close(ncid); return -1; }
-
-				nlatsel = NLATSB;
-				nlonsel = NLONSB;
-			}else
-				if (pPlugIn->m_choice == NS){
-
-					nbr_uv = NLATNS * NLONNS;
-
-					u_vals = (float*)calloc(nbr_uv, sizeof(float));
-					if (!u_vals) { nc_close(ncid); return -1; }
-					v_vals = (float*)calloc(nbr_uv, sizeof(float));
-					if (!v_vals) { free(u_vals); nc_close(ncid); return -1; }
-
-					nlatsel = NLATNS;
-					nlonsel = NLONNS;
-				}
-				else
-					if (pPlugIn->m_choice == BS){
-
-						nbr_uv = NLATBS * NLONBS;
-
-						u_vals = (float*)calloc(nbr_uv, sizeof(float));
-						if (!u_vals) { nc_close(ncid); return -1; }
-						v_vals = (float*)calloc(nbr_uv, sizeof(float));
-						if (!v_vals) { free(u_vals); nc_close(ncid); return -1; }
-
-						nlatsel = NLATBS;
-						nlonsel = NLONBS;
-					}
-					else
-						if (pPlugIn->m_choice == WI){
-
-							nbr_uv = NLATWI * NLONWI;
-
-							u_vals = (float*)calloc(nbr_uv, sizeof(float));
-							if (!u_vals) { nc_close(ncid); return -1; }
-							v_vals = (float*)calloc(nbr_uv, sizeof(float));
-							if (!v_vals) { free(u_vals); nc_close(ncid); return -1; }
-
-							nlatsel = NLATWI;
-							nlonsel = NLONWI;
+	if (nc_get_att_float(ncid, NC_GLOBAL, "longitude_max", &lastGridPointLon) != NC_NOERR &&
+		nc_get_att_float(ncid, NC_GLOBAL, "lon_max", &lastGridPointLon) != NC_NOERR &&
+		nc_get_att_float(ncid, NC_GLOBAL, "max_lon", &lastGridPointLon) != NC_NOERR) {
+		lastGridPointLon = lons[lonlength - 1];
+	}
+	
+	if (nc_get_att_float(ncid, u_varid, "scale_factor", &scale_factor) != NC_NOERR) {
+		scale_factor = 1.0f;
+	}
+	
+	/* Read CF time units and parse epoch + unit */
+	CFTimeInfo timeInfo;
+	{
+		char* timeUnits = read_var_att_text(ncid, time_varid, "units");
+		if (!timeUnits) {
+			timeUnits = read_var_att_text(ncid, NC_GLOBAL, "units");
+			if (timeUnits) ncdfLog("[ncdf] nc_get: found time units from NC_GLOBAL: '%s'\n", timeUnits);
+		}
+		
+		if (!timeUnits && timelength > 0) {
+			double firstTimeValue = time_out[0];
+			double timeStep = timelength > 1 ? time_out[1] - time_out[0] : 1.0;
+			
+			bool canDetermine = false;
+			const int MAX_YEAR = 2050;
+			
+			if (firstTimeValue >= 0 && firstTimeValue <= 2000000000.0) {
+				if (timeStep >= 3600.0 || timeStep >= 86400.0) {
+					CFTimeInfo unixInfo = ParseCFTimeUnits("seconds since 1970-01-01");
+					if (unixInfo.valid) {
+						wxDateTime testDate = unixInfo.baseDateTime;
+						testDate.Add(wxTimeSpan::Seconds((long long)(firstTimeValue * unixInfo.secondsPerUnit)));
+						if (testDate.GetYear() <= MAX_YEAR) {
+							ncdfLog("[ncdf] nc_get: WARNING - no units, guessed Unix timestamp, first date=%s (valid, <=%d)\n", 
+								(const char*)testDate.Format("%Y-%m-%d").mb_str(), MAX_YEAR);
+							timeInfo = unixInfo;
+							canDetermine = true;
+						} else {
+							ncdfLog("[ncdf] nc_get: WARNING - no units, guessed Unix timestamp but first date=%s (>%d), rejecting\n", 
+								(const char*)testDate.Format("%Y-%m-%d").mb_str(), MAX_YEAR);
 						}
-
-
-	int count_records = 0;
-	int startminutes = 0;
-	int *time_out;
-
-	time_out = (int*)calloc(timelength + 1, sizeof(int));
-	if (!time_out) {
-		nc_close(ncid);
-		return -1;
-	}
-
-	nc_get_var_int(ncid, time_varid, time_out);
-
-	float* lats = 0, *lons = 0;
-
-	lats = (float*)calloc(latlength + 1, sizeof(float));
-	if (!lats) {
-		free(time_out);
-		nc_close(ncid);
-		return -1;
-	}
-	lons = (float*)calloc(lonlength + 1, sizeof(float));
-	if (!lons) {
-		free(lats);
-		free(time_out);
-		nc_close(ncid);
-		return -1;
-	}
-
-	nc_get_var_float(ncid, lat_varid, lats);
-	nc_get_var_float(ncid, lon_varid, lons);
-
-	size_t i;
-	int j, k;
-	for (i = 0; i < timelength; i++) {
-
-		start[0] = i;
-		count_records = 0;
-
-		if (pPlugIn->m_choice == EC){
-			status = nc_get_vara_float(ncid, u_varid, start, count_ec, (float*)u_vals);
-			status = nc_get_vara_float(ncid, v_varid, start, count_ec, (float*)v_vals);
-		}
-		else
-			if (pPlugIn->m_choice == IS){
-				status = nc_get_vara_float(ncid, u_varid, start, count_is, (float*)u_vals);
-				status = nc_get_vara_float(ncid, v_varid, start, count_is, (float*)v_vals);
-			}
-			else
-				if (pPlugIn->m_choice == SB){
-					status = nc_get_vara_float(ncid, u_varid, start, count_sb, (float*)u_vals);
-					status = nc_get_vara_float(ncid, v_varid, start, count_sb, (float*)v_vals);
-				}
-				else
-					if (pPlugIn->m_choice == NS){
-						status = nc_get_vara_float(ncid, u_varid, start, count_ns, (float*)u_vals);
-						status = nc_get_vara_float(ncid, v_varid, start, count_ns, (float*)v_vals);
 					}
-					else
-						if (pPlugIn->m_choice == BS){
-							status = nc_get_vara_float(ncid, u_varid, start, count_bs, (float*)u_vals);
-							status = nc_get_vara_float(ncid, v_varid, start, count_bs, (float*)v_vals);
+				}
+			}
+			
+			if (!canDetermine && firstTimeValue >= 0 && firstTimeValue <= 700000.0) {
+				if (timeStep >= 1.0 && timeStep <= 24.0) {
+					CFTimeInfo cmemsInfo = ParseCFTimeUnits("hours since 1950-01-01");
+					if (cmemsInfo.valid) {
+						wxDateTime testDate = cmemsInfo.baseDateTime;
+						testDate.Add(wxTimeSpan::Seconds((long long)(firstTimeValue * cmemsInfo.secondsPerUnit)));
+						if (testDate.GetYear() <= MAX_YEAR) {
+							ncdfLog("[ncdf] nc_get: WARNING - no units, guessed CMEMS hours, first date=%s (valid, <=%d)\n", 
+								(const char*)testDate.Format("%Y-%m-%d").mb_str(), MAX_YEAR);
+							timeInfo = cmemsInfo;
+							canDetermine = true;
+						} else {
+							ncdfLog("[ncdf] nc_get: WARNING - no units, guessed CMEMS hours but first date=%s (>%d), rejecting\n", 
+								(const char*)testDate.Format("%Y-%m-%d").mb_str(), MAX_YEAR);
 						}
-				else
-					if (pPlugIn->m_choice == WI){
-						status = nc_get_vara_float(ncid, u_varid, start, count_wi, (float*)u_vals);
-						status = nc_get_vara_float(ncid, v_varid, start, count_wi, (float*)v_vals);
 					}
-
-		if (myncdfData.ucurr) free(myncdfData.ucurr);
-		if (myncdfData.vcurr) free(myncdfData.vcurr);
-		if (myncdfData.uvlats) free(myncdfData.uvlats);
-		if (myncdfData.uvlons) free(myncdfData.uvlons);
-
-		myncdfData.ucurr = NULL;
-		myncdfData.vcurr = NULL;
-		myncdfData.uvlats = NULL;
-		myncdfData.uvlons = NULL;
-
-		myncdfData.ucurr = (double*)calloc(nbr_uv + 1, sizeof(double));
-		if (!myncdfData.ucurr) {
-			free(lons);
-			free(lats);
-			free(time_out);
-			free(u_vals);
-			free(v_vals);
-			nc_close(ncid);
-			return -1;
-		}
-		myncdfData.vcurr = (double*)calloc(nbr_uv + 1, sizeof(double));
-		if (!myncdfData.vcurr) {
-			free(myncdfData.ucurr);
-			free(lons);
-			free(lats);
-			free(time_out);
-			free(u_vals);
-			free(v_vals);
-			nc_close(ncid);
-			return -1;
-		}
-		myncdfData.uvlats = (double*)calloc(nbr_uv + 1, sizeof(double));
-		if (!myncdfData.uvlats) {
-			free(myncdfData.vcurr);
-			free(myncdfData.ucurr);
-			free(lons);
-			free(lats);
-			free(time_out);
-			free(u_vals);
-			free(v_vals);
-			nc_close(ncid);
-			return -1;
-		}
-		myncdfData.uvlons = (double*)calloc(nbr_uv + 1, sizeof(double));
-		if (!myncdfData.uvlons) {
-			free(myncdfData.uvlats);
-			free(myncdfData.vcurr);
-			free(myncdfData.ucurr);
-			free(lons);
-			free(lats);
-			free(time_out);
-			free(u_vals);
-			free(v_vals);
-			nc_close(ncid);
-			return -1;
-		}
-
-		for (j = 0; j < nlatsel; j++){
-			for (k = 0; k < nlonsel; k++){
-				if (u_vals[count_records] != -32767 && v_vals[count_records] != -32767){
-					myncdfData.uvlats[count_records] = (double)lats[j];
-					myncdfData.uvlons[count_records] = (double)lons[k];
-					myncdfData.ucurr[count_records] = (double)u_vals[count_records] / 1000;
-					myncdfData.vcurr[count_records] = (double)v_vals[count_records] / 1000;
 				}
-				else{
-					myncdfData.uvlats[count_records] = ncdf_NOTDEF;
-					myncdfData.uvlons[count_records] = ncdf_NOTDEF;
-					myncdfData.ucurr[count_records] = ncdf_NOTDEF;
-					myncdfData.vcurr[count_records] = ncdf_NOTDEF;
-				}
-				count_records++;
 			}
+			
+			if (!canDetermine) {
+				ncdfLog("[ncdf] nc_get: WARNING - no units, time value=%.0f, step=%.0f, cannot reliably determine time unit, using sequential labels\n", firstTimeValue, timeStep);
+				timeInfo.valid = false;
+			}
+		} else if (!timeUnits) {
+			ncdfLog("[ncdf] nc_get: WARNING - no units and no time data, using sequential labels\n");
+			timeInfo.valid = false;
+		} else {
+			ncdfLog("[ncdf] nc_get: time units = '%s'\n", timeUnits);
+			timeInfo = ParseCFTimeUnits(timeUnits);
+			delete[] timeUnits;
 		}
-
-        wxDateTime dt;
-		dt = GetDateFromHours(time_out[i]);
-
-		myncdfData.dataDateTime = dt;
-		myncdfData.minutesAfterStart = startminutes;
-		myncdfData.numberOfPoints = count_records - 1;
-		myncdfData.noPointsParallel = nlonsel;
-		myncdfData.noPointsMeridian = nlatsel;
+		if (timeInfo.valid) {
+			wxString fmt = timeInfo.baseDateTime.Format("%Y-%m-%d %H:%M:%S");
+			ncdfLog("[ncdf] nc_get: time epoch = %s, secondsPerUnit=%f\n",
+				(const char*)fmt.mb_str(), timeInfo.secondsPerUnit);
+		} else {
+			ncdfLog("[ncdf] nc_get: WARNING - failed to parse time units, using fallback\n");
+		}
+	}
+	
+	// 
+	wxDouble iDirectionIncr = (lastGridPointLon - firstGridPointLon) / (lonlength > 1 ? lonlength - 1 : 1);
+	wxDouble jDirectionIncr = (lastGridPointLat - firstGridPointLat) / (latlength > 1 ? latlength - 1 : 1);
+	
+	// Create message for each timestep (metadata only)
+	for (size_t i = 0; i < timelength; i++) {
+		
+		myncdfData.clear();
+		myncdfData.timeValid = timeInfo.valid;
+		
+		if (timeInfo.valid) {
+			wxTimeSpan span = wxTimeSpan::Seconds((long long)(time_out[i] * timeInfo.secondsPerUnit));
+			myncdfData.dataDateTime = timeInfo.baseDateTime;
+			myncdfData.dataDateTime.Add(span);
+			myncdfData.minutesAfterStart = (int)(time_out[i] * timeInfo.secondsPerUnit / 60.0);
+			
+			wxString dateStr = myncdfData.dataDateTime.Format("%Y-%m-%d %H:%M:%S");
+			ncdfLog("[ncdf] nc_get: timestep=%d, raw_time=%f, calculated_date=%s\n",
+				(int)i, time_out[i], (const char*)dateStr.mb_str());
+		} else {
+			myncdfData.dataDateTime = wxDateTime();
+			myncdfData.minutesAfterStart = (int)(i * 60);
+			ncdfLog("[ncdf] nc_get: timestep=%d, raw_time=%f, timeValid=false, using sequential label, minutesAfterStart=%d\n",
+				(int)i, time_out[i], myncdfData.minutesAfterStart);
+		}
+		myncdfData.numberOfPoints = (int)(latlength * lonlength);
+		myncdfData.noPointsParallel = (wxUint32)lonlength;
+		myncdfData.noPointsMeridian = (wxUint32)latlength;
 		myncdfData.firstGridPointLat = firstGridPointLat;
 		myncdfData.firstGridPointLong = firstGridPointLon;
 		myncdfData.lastGridPointLat = lastGridPointLat;
 		myncdfData.lastGridPointLong = lastGridPointLon;
-		myncdfData.iDirectionIncr = 0.02777863;
-		myncdfData.jDirectionIncr = 0.02777863;
+		myncdfData.iDirectionIncr = iDirectionIncr;
+		myncdfData.jDirectionIncr = jDirectionIncr;
 		myncdfData.fileName = filename;
-
+		myncdfData.timeIndex = (int)i;
+		myncdfData.timeLength = timelength;
+		myncdfData.latLength = latlength;
+		myncdfData.lonLength = lonlength;
+		/*myncdfData.depthLength = depthlength;*/
+		
+		myncdfData.latValues = (wxDouble*)calloc(latlength, sizeof(wxDouble));
+		myncdfData.lonValues = (wxDouble*)calloc(lonlength, sizeof(wxDouble));
+		myncdfData.timeValues = (double*)calloc(timelength, sizeof(double));
+		
+		/*if (depthlength > 0 && depths) {
+			myncdfData.depthValues = (wxDouble*)calloc(depthlength, sizeof(wxDouble));
+			memcpy(myncdfData.depthValues, depths, depthlength * sizeof(wxDouble));
+		}*/
+		
+		memcpy(myncdfData.latValues, lats, latlength * sizeof(wxDouble));
+		memcpy(myncdfData.lonValues, lons, lonlength * sizeof(wxDouble));
+		memcpy(myncdfData.timeValues, time_out, timelength * sizeof(double));
+		
 		myDataVector.push_back(myncdfData);
-
-		startminutes = startminutes + 60;
 	}
-
-	/* Close the file. */
-	if ((retval = nc_close(ncid)))
-		ERR(retval);
-
-	free(u_vals);
-	free(v_vals);
+	
+	nc_close(ncid);
+	
+	free(time_out);
 	free(lats);
 	free(lons);
-	free(time_out);
-
+	/*if (depths) {
+		free(depths);
+	}*/
+	
+	delete[] filename;
+	
 	return 0;
+}
+
+bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
+	ncdfLog("[ncdf] readTimeStepData: timeIndex=%d, latLength=%d, lonLength=%d\n", 
+		dataMessage.timeIndex, (int)dataMessage.latLength, (int)dataMessage.lonLength);
+		
+	if (!dataMessage.latValues || !dataMessage.lonValues) {
+		ncdfLog("[ncdf] readTimeStepData: latValues or lonValues is NULL\n");
+		return false;
+	}
+	
+	ncdfLog("[ncdf] readTimeStepData: freeing existing data\n");
+	if (dataMessage.ucurr) {
+		ncdfLog("[ncdf] readTimeStepData: freeing ucurr=%p\n", dataMessage.ucurr);
+		free(dataMessage.ucurr);
+		dataMessage.ucurr = NULL;
+	}
+	if (dataMessage.vcurr) {
+		ncdfLog("[ncdf] readTimeStepData: freeing vcurr=%p\n", dataMessage.vcurr);
+		free(dataMessage.vcurr);
+		dataMessage.vcurr = NULL;
+	}
+	if (dataMessage.uvlats) {
+		ncdfLog("[ncdf] readTimeStepData: freeing uvlats=%p\n", dataMessage.uvlats);
+		free(dataMessage.uvlats);
+		dataMessage.uvlats = NULL;
+	}
+	if (dataMessage.uvlons) {
+		ncdfLog("[ncdf] readTimeStepData: freeing uvlons=%p\n", dataMessage.uvlons);
+		free(dataMessage.uvlons);
+		dataMessage.uvlons = NULL;
+	}
+
+	int ncid;
+	int u_varid, v_varid;
+	int retval;
+	
+	wxString filenameStr = dataMessage.fileName;
+	const wxCharBuffer mbBuf = filenameStr.mb_str();
+	size_t mbLen = strlen(mbBuf);
+	char* filename = new char[mbLen + 1];
+	strcpy(filename, mbBuf);
+	
+	retval = nc_open(filename, NC_NOWRITE, &ncid);
+	if (retval != NC_NOERR) {
+		retval = nc_open(filename, NC_NOWRITE | NC_NETCDF4, &ncid);
+	}
+	if (retval != NC_NOERR) {
+		ncdfLog("[ncdf] readTimeStepData: nc_open failed, retval=%d\n", retval);
+		delete[] filename;
+		return false;
+	}
+	
+	ncdfLog("[ncdf] readTimeStepData: searching for u/v using CF conventions...\n");
+	
+	{
+		const char* alt_std[] = {"surface_eastward_sea_water_velocity", NULL};
+		const char* long_hints[] = {"Eastward Current Velocity", "u-velocity component of current", NULL};
+		const char* var_hints[] = {"u", "uo", "current_u", "curr_u", "u10", "u100", NULL};
+		u_varid = find_var_by_cf(ncid, "eastward_sea_water_velocity", alt_std, long_hints, var_hints);
+	}
+	
+	{
+		const char* alt_std[] = {"surface_northward_sea_water_velocity", NULL};
+		const char* long_hints[] = {"Northward Current Velocity", "v-velocity component of current", NULL};
+		const char* var_hints[] = {"v", "vo", "current_v", "curr_v", "v10", "v100", NULL};
+		v_varid = find_var_by_cf(ncid, "northward_sea_water_velocity", alt_std, long_hints, var_hints);
+	}
+	
+	if (u_varid == -1 || v_varid == -1) {
+		ncdfLog("[ncdf] readTimeStepData: u or v variable not found\n");
+		nc_close(ncid);
+		delete[] filename;
+		return false;
+	}
+	
+	ncdfLog("[ncdf] readTimeStepData: variables found, u_varid=%d, v_varid=%d\n", u_varid, v_varid);
+	
+	float fill_value_u = -32767.0f;
+	float fill_value_v = -32767.0f;
+	
+	if (nc_get_att_float(ncid, u_varid, "_FillValue", &fill_value_u) != NC_NOERR) {
+		double fill_val_double;
+		if (nc_get_att_double(ncid, u_varid, "_FillValue", &fill_val_double) == NC_NOERR) {
+			fill_value_u = (float)fill_val_double;
+		} else {
+			fill_value_u = -32767.0f;
+		}
+	}
+	
+	if (nc_get_att_float(ncid, v_varid, "_FillValue", &fill_value_v) != NC_NOERR) {
+		double fill_val_double;
+		if (nc_get_att_double(ncid, v_varid, "_FillValue", &fill_val_double) == NC_NOERR) {
+			fill_value_v = (float)fill_val_double;
+		} else {
+			fill_value_v = -32767.0f;
+		}
+	}
+	
+	int ndims;
+	if ((retval = nc_inq_varndims(ncid, u_varid, &ndims))) {
+		nc_close(ncid);
+		delete[] filename;
+		return false;
+	}
+	
+	int* dimids = (int*)calloc(ndims, sizeof(int));
+	if (!dimids) { nc_close(ncid); delete[] filename; return false; }
+	
+	if ((retval = nc_inq_var(ncid, u_varid, NULL, NULL, NULL, dimids, NULL))) {
+		free(dimids); nc_close(ncid); delete[] filename; return false;
+	}
+	
+	int time_dimid = -1, lat_dimid = -1, lon_dimid = -1, depth_dimid = -1;
+	
+	nc_inq_dimid(ncid, "time", &time_dimid);
+	nc_inq_dimid(ncid, "latitude", &lat_dimid);
+	if (lat_dimid == -1) nc_inq_dimid(ncid, "lat", &lat_dimid);
+	nc_inq_dimid(ncid, "longitude", &lon_dimid);
+	if (lon_dimid == -1) nc_inq_dimid(ncid, "lon", &lon_dimid);
+	nc_inq_dimid(ncid, "depth", &depth_dimid);
+	if (depth_dimid == -1) nc_inq_dimid(ncid, "z", &depth_dimid);
+	
+	int time_idx = -1, lat_idx = -1, lon_idx = -1, depth_idx = -1;
+	
+	for (int i = 0; i < ndims; i++) {
+		if (dimids[i] == time_dimid) time_idx = i;
+		else if (dimids[i] == lat_dimid) lat_idx = i;
+		else if (dimids[i] == lon_dimid) lon_idx = i;
+		else if (dimids[i] == depth_dimid) depth_idx = i;
+	}
+	
+	free(dimids);
+	
+	if (time_idx == -1 || lat_idx == -1 || lon_idx == -1) {
+		nc_close(ncid);
+		delete[] filename;
+		return false;
+	}
+	
+	bool lat_before_lon = (lat_idx < lon_idx);
+	
+	ncdfLog("[ncdf] readTimeStepData: dims - time_idx=%d, lat_idx=%d, lon_idx=%d, depth_idx=%d, lat_before_lon=%d\n",
+		time_idx, lat_idx, lon_idx, depth_idx, (int)lat_before_lon);
+	
+	size_t start[4] = {0, 0, 0, 0};
+	size_t count[4] = {1, 1, 1, 1};
+	
+	start[time_idx] = dataMessage.timeIndex;
+	count[time_idx] = 1;
+	
+	start[lat_idx] = 0;
+	count[lat_idx] = dataMessage.latLength;
+	
+	start[lon_idx] = 0;
+	count[lon_idx] = dataMessage.lonLength;
+	
+	if (depth_idx != -1) {
+		start[depth_idx] = 0;
+		count[depth_idx] = 1;
+	}
+	
+	size_t nbr_uv = dataMessage.latLength * dataMessage.lonLength;
+	
+	float* u_vals = (float*)calloc(nbr_uv, sizeof(float));
+	if (!u_vals) { nc_close(ncid); delete[] filename; return false; }
+	
+	float* v_vals = (float*)calloc(nbr_uv, sizeof(float));
+	if (!v_vals) { free(u_vals); nc_close(ncid); delete[] filename; return false; }
+	
+	nc_type u_type, v_type;
+	nc_inq_vartype(ncid, u_varid, &u_type);
+	nc_inq_vartype(ncid, v_varid, &v_type);
+	
+	ncdfLog("[ncdf] readTimeStepData: reading data, u_type=%d, v_type=%d, nbr_uv=%zu\n", 
+		(int)u_type, (int)v_type, nbr_uv);
+	
+	if (u_type == NC_DOUBLE) {
+		double* u_vals_double = (double*)calloc(nbr_uv, sizeof(double));
+		if (!u_vals_double) { free(u_vals); free(v_vals); nc_close(ncid); delete[] filename; return false; }
+		if ((retval = nc_get_vara_double(ncid, u_varid, start, count, u_vals_double))) {
+			free(u_vals_double); free(u_vals); free(v_vals); nc_close(ncid); delete[] filename; return false;
+		}
+		for (size_t i = 0; i < nbr_uv; i++) {
+			u_vals[i] = (float)u_vals_double[i];
+		}
+		free(u_vals_double);
+	} else {
+		if ((retval = nc_get_vara_float(ncid, u_varid, start, count, u_vals))) {
+			free(u_vals);
+			free(v_vals);
+			nc_close(ncid);
+			delete[] filename;
+			return false;
+		}
+	}
+	
+	if (v_type == NC_DOUBLE) {
+		double* v_vals_double = (double*)calloc(nbr_uv, sizeof(double));
+		if (!v_vals_double) { free(u_vals); free(v_vals); nc_close(ncid); delete[] filename; return false; }
+		if ((retval = nc_get_vara_double(ncid, v_varid, start, count, v_vals_double))) {
+			free(v_vals_double); free(u_vals); free(v_vals); nc_close(ncid); delete[] filename; return false;
+		}
+		for (size_t i = 0; i < nbr_uv; i++) {
+			v_vals[i] = (float)v_vals_double[i];
+		}
+		free(v_vals_double);
+	} else {
+		if ((retval = nc_get_vara_float(ncid, v_varid, start, count, v_vals))) {
+			free(u_vals);
+			free(v_vals);
+			nc_close(ncid);
+			delete[] filename;
+			return false;
+		}
+	}
+	
+	nc_close(ncid);
+	delete[] filename;
+	
+	ncdfLog("[ncdf] readTimeStepData: data read successfully, allocating output arrays\n");
+	
+	dataMessage.ucurr = (double*)calloc(nbr_uv, sizeof(double));
+	if (!dataMessage.ucurr) {
+		free(u_vals);
+		free(v_vals);
+		return false;
+	}
+	
+	dataMessage.vcurr = (double*)calloc(nbr_uv, sizeof(double));
+	if (!dataMessage.vcurr) {
+		free(dataMessage.ucurr);
+		free(u_vals);
+		free(v_vals);
+		return false;
+	}
+	
+	dataMessage.uvlats = (double*)calloc(nbr_uv, sizeof(double));
+	if (!dataMessage.uvlats) {
+		free(dataMessage.vcurr);
+		free(dataMessage.ucurr);
+		free(u_vals);
+		free(v_vals);
+		return false;
+	}
+	
+	dataMessage.uvlons = (double*)calloc(nbr_uv, sizeof(double));
+	if (!dataMessage.uvlons) {
+		free(dataMessage.uvlats);
+		free(dataMessage.vcurr);
+		free(dataMessage.ucurr);
+		free(u_vals);
+		free(v_vals);
+		return false;
+	}
+	
+	// 
+	size_t count_records = 0;
+	if (lat_before_lon) {
+		for (size_t j = 0; j < dataMessage.latLength; j++) {
+			for (size_t k = 0; k < dataMessage.lonLength; k++) {
+				if (u_vals[count_records] != fill_value_u && v_vals[count_records] != fill_value_v) {
+					dataMessage.uvlats[count_records] = dataMessage.latValues[j];
+					dataMessage.uvlons[count_records] = dataMessage.lonValues[k];
+					dataMessage.ucurr[count_records] = (double)u_vals[count_records];
+					dataMessage.vcurr[count_records] = (double)v_vals[count_records];
+				} else {
+					dataMessage.uvlats[count_records] = ncdf_NOTDEF;
+					dataMessage.uvlons[count_records] = ncdf_NOTDEF;
+					dataMessage.ucurr[count_records] = ncdf_NOTDEF;
+					dataMessage.vcurr[count_records] = ncdf_NOTDEF;
+				}
+				count_records++;
+			}
+		}
+	} else {
+		for (size_t k = 0; k < dataMessage.lonLength; k++) {
+			for (size_t j = 0; j < dataMessage.latLength; j++) {
+				if (u_vals[count_records] != fill_value_u && v_vals[count_records] != fill_value_v) {
+					dataMessage.uvlats[count_records] = dataMessage.latValues[j];
+					dataMessage.uvlons[count_records] = dataMessage.lonValues[k];
+					dataMessage.ucurr[count_records] = (double)u_vals[count_records];
+					dataMessage.vcurr[count_records] = (double)v_vals[count_records];
+				} else {
+					dataMessage.uvlats[count_records] = ncdf_NOTDEF;
+					dataMessage.uvlons[count_records] = ncdf_NOTDEF;
+					dataMessage.ucurr[count_records] = ncdf_NOTDEF;
+					dataMessage.vcurr[count_records] = ncdf_NOTDEF;
+				}
+				count_records++;
+			}
+		}
+	}
+	
+	free(u_vals);
+	free(v_vals);
+	
+	ncdfLog("[ncdf] readTimeStepData: completed successfully, count_records=%zu\n", count_records);
+	
+	return true;
 }
 
 wxDateTime MainDialog::GetDateFromHours(int hours_in){
@@ -638,45 +1340,111 @@ wxDateTime MainDialog::GetDateFromHours(int hours_in){
 
 void MainDialog::onDirChanged(wxCommandEvent& event)
 {
+    ncdfLogW(L"[ncdf] onDirChanged: started, value=%ls\n", (const wchar_t*)this->m_textCtrlDir->GetValue().c_str());
+	
 	wxStandardPathsBase &std_path = wxStandardPathsBase::Get();
 	wxString std = std_path.GetDocumentsDir();
 
-	if(this->m_textCtrlDir->GetValue().length() != 0 && pPlugIn->m_ncdf_dir != std_path.GetDocumentsDir())
+	if(this->m_textCtrlDir->GetValue().length() != 0 && pPlugIn->m_ncdf_dir != std_path.GetDocumentsDir()){
+	    ncdfLog("[ncdf] onDirChanged: calling fillDirTree\n");
 		fillDirTree(this->m_textCtrlDir->GetValue(), true, 0);
-	else
+	    ncdfLog("[ncdf] onDirChanged: fillDirTree returned\n");
+	}
+	else{
+	    ncdfLog("[ncdf] onDirChanged: deleting all tree items\n");
 		this->m_treeCtrl->DeleteAllItems();
+	}
 }
 
 void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 {
-	if(this->my_ncdfReader->isReading == true){ncdfDialog::onTreeSelectionChanged(event); return; }
-
- 	if(this->m_treeCtrl->GetRootItem() == event.GetItem())
+    ncdfLog("[ncdf] onTreeSelectionChanged: started\n");
+	
+	if (m_isTreeUpdating) {
+		ncdfLog("[ncdf] onTreeSelectionChanged: m_isTreeUpdating=true, returning\n");
 		return;
+	}
 	
-	wxString filename = this->m_treeCtrl->GetItemText(event.GetItem());
-	
-	MyTreeItemData *data = (MyTreeItemData *) this->m_treeCtrl->GetItemData(event.GetItem());
-
-	if(data != NULL)
-	{
-		if (this->m_treeCtrl->HasChildren(event.GetItem())){ 
-			ncdfDialog::onTreeSelectionChanged(event); return; 
-	    }
-		this->my_ncdfReader->readncdfFile(data->myData);
-		//pPlugIn->GetncdfOverlayFactory()->renderSelectionRectangle = false;
-		RequestRefresh(m_parent);
+	if(this->my_ncdfReader->isReading == true){
+	    ncdfLog("[ncdf] onTreeSelectionChanged: isReading=true, returning\n");
+		ncdfDialog::onTreeSelectionChanged(event); 
+		return; 
 	}
 
+ 	if(this->m_treeCtrl->GetRootItem() == event.GetItem()){
+	    ncdfLog("[ncdf] onTreeSelectionChanged: root item selected, returning\n");
+		return;
+	}
+	
+	if (this->m_treeCtrl->HasChildren(event.GetItem())){ 
+	    ncdfLog("[ncdf] onTreeSelectionChanged: has children, returning\n");
+		ncdfDialog::onTreeSelectionChanged(event); 
+		return; 
+    }
+
 	ncdfDialog::onTreeSelectionChanged(event);
+	
+	MyTreeItemData* data = (MyTreeItemData*)this->m_treeCtrl->GetItemData(event.GetItem());
+	if (data) {
+		int idx = data->m_index;
+		ncdfLog("[ncdf] onTreeSelectionChanged: got MyTreeItemData=%p, index=%d, vectorSize=%d\n", 
+			data, idx, (int)myDataVector.size());
+		
+		if (idx < 0 || idx >= (int)myDataVector.size()) {
+			ncdfLog("[ncdf] onTreeSelectionChanged: index out of range\n");
+			ncdfLog("[ncdf] onTreeSelectionChanged: completed\n");
+			return;
+		}
+		
+		if (m_lastSelectedTimeIndex >= 0 && m_lastSelectedTimeIndex < (int)myDataVector.size()) {
+			myDataVector[m_lastSelectedTimeIndex].clear();
+		}
+		
+		myData = myDataVector[idx];
+		m_lastSelectedTimeIndex = idx;
+		
+		wxString timeText;
+		if (myData.timeValid) {
+			timeText = myData.dataDateTime.Format(_T("%Y-%m-%d %H:%M"));
+		} else {
+			timeText = wxString::Format(_("时间%d"), idx + 1);
+		}
+		m_staticTextDateTime->SetLabel(timeText);
+		
+		if (readTimeStepData(myData)) {
+			ncdfLog("[ncdf] onTreeSelectionChanged: readTimeStepData succeed, calling readncdfFile\n");
+			this->my_ncdfReader->readncdfFile(myData);
+			pPlugIn->GetncdfOverlayFactory()->renderSelectionRectangle = false;
+			ncdfLog("[ncdf] onTreeSelectionChanged: requesting refresh\n");
+			RequestRefresh(m_parent);
+		} else {
+			ncdfLog("[ncdf] onTreeSelectionChanged: readTimeStepData failed\n");
+		}
+	} else {
+		ncdfLog("[ncdf] onTreeSelectionChanged: GetItemData returned NULL\n");
+	}
+	
+	ncdfLog("[ncdf] onTreeSelectionChanged: completed\n");
 }
 
-void MainDialog::onAreaChange(wxCommandEvent& event){
-
-	pPlugIn->m_choice = m_choiceArea->GetSelection();
-	fillDirTree(this->m_textCtrlDir->GetValue(), true, 0);  // Refill tree to show different area
-	pPlugIn->b_showODAS = false; // If using tidal arrows cancel them
-	m_ArrowList.clear();
+void MainDialog::onTimeChange(wxCommandEvent& event){
+    int selectedIndex = m_choiceTime->GetSelection();
+    
+    if (selectedIndex >= 0 && selectedIndex < (int)myDataVector.size()) {
+        myData = myDataVector[selectedIndex];
+        m_lastSelectedTimeIndex = selectedIndex;
+        
+        wxString timeText;
+        if (myData.timeValid) {
+            timeText = myData.dataDateTime.Format(_T("%Y-%m-%d %H:%M"));
+        } else {
+            timeText = wxString::Format(_("时间%d"), selectedIndex + 1);
+        }
+        m_staticTextDateTime->SetLabel(timeText);
+        
+        readTimeStepData(myData);
+        RequestRefresh(m_parent);
+    }
 }
 
 void MainDialog::onTreeItemRightClick(wxTreeEvent& event)
@@ -699,64 +1467,119 @@ void MainDialog::onBmpCurrentForceClick(wxCommandEvent& event)
 
 void MainDialog::fillDirTree(wxString path, bool start, wxTreeItemId id)
 {
-    wxString file ;
+    ncdfLogW(L"[ncdf] fillDirTree: started, path=%ls, start=%d\n", (const wchar_t*)path.c_str(), (int)start);
 
 	if(start == true)
 	{
+		ncdfLog("[ncdf] fillDirTree: deleting all tree items\n");
+		
+		m_isTreeUpdating = true;
+		m_treeCtrl->Freeze();
 		this->m_treeCtrl->DeleteAllItems();
+		
 		id = this->m_treeCtrl->AddRoot(_T(""));
 		this->m_treeCtrl->SetItemText(id,_("ncdf-Files"));
 		this->m_treeCtrl->SelectItem(id);
+		m_isTreeUpdating = false;
+		m_treeCtrl->Thaw();
+		
+		ncdfLog("[ncdf] fillDirTree: root item created\n");
 	}
 
 	wxDir dir(path);
 	if(dir.IsOpened() && dir.HasFiles())
 	{
+		ncdfLog("[ncdf] fillDirTree: directory opened successfully\n");
 		wxString s;
-		dir.GetFirst(&s);
-		file = path +_("/") + s;
-
-		ncdfDataMessage dm;
-		wxTreeItemId iid = this->m_treeCtrl->AppendItem(id,s);
-		this->m_treeCtrl->SetItemData(iid, new MyTreeItemData(NULL, 0, &dm, &file));
-
-
-		addChildren(iid,s);
-
-		while(dir.GetNext(&s))
-		{
-			file = path +_("/") + s;
-			wxTreeItemId iid = this->m_treeCtrl->AppendItem(id,s);
-			this->m_treeCtrl->SetItemData(iid, new MyTreeItemData(NULL, 0, &dm, &file));
-			addChildren(iid, s);
+		if (dir.GetFirst(&s, wxEmptyString, wxDIR_FILES)) {
+			do {
+				wxString ext = s.Mid(s.find_last_of('.') + 1).Lower();
+				if (ext == "nc" || ext == "nc4") {
+					ncdfLogW(L"[ncdf] fillDirTree: adding file: %ls\n", (const wchar_t*)s.c_str());
+					
+					wxTreeItemId iid = this->m_treeCtrl->AppendItem(id, s);
+					
+					ncdfLogW(L"[ncdf] fillDirTree: calling addChildren for %ls\n", (const wchar_t*)s.c_str());
+					addChildren(iid, s);
+					
+					ncdfLog("[ncdf] fillDirTree: addChildren returned\n");
+				}
+			} while (dir.GetNext(&s));
 		}
-		this->m_treeCtrl->Expand(id);
 	}
+	
+	ncdfLog("[ncdf] fillDirTree: completed\n");
 }
 
 void MainDialog::addChildren(wxTreeItemId id, wxString fn)
 {
-	char s[2] = {'m','h'};
-	wxFileOffset fp = 0;
+    ncdfLogW(L"[ncdf] addChildren: started, fn=%ls\n", (const wchar_t*)fn.c_str());
+
 	wxDateTime dt;
-	wxUint32 hours = 0;
 	wxString fileName;
 
-	fileName = this->m_textCtrlDir->GetValue()+_("/")+fn;
+	fileName = this->m_textCtrlDir->GetValue()+_("\\")+fn;
+	
+	ncdfLogW(L"[ncdf] addChildren: fileName=%ls\n", (const wchar_t*)fileName.c_str());
+	
+	/* Save existing data in case nc_get fails */
+	std::vector<ncdfDataMessage> savedVector = myDataVector;
+	int savedIndex = m_lastSelectedTimeIndex;
+	
 	myDataVector.clear();
-	nc_get(fileName);  //The important bit for making a data message
+	m_lastSelectedTimeIndex = -1;
+	m_choiceTime->Clear();
+	
+	ncdfLog("[ncdf] addChildren: calling nc_get\n");
+	
+	int ret = nc_get(fileName);
+	
+	if (ret != 0) {
+		/* Restore previous data on failure */
+		myDataVector = savedVector;
+		m_lastSelectedTimeIndex = savedIndex;
+		ncdfLog("[ncdf] addChildren: nc_get failed with return code=%d, restored existing data (size=%d)\n", 
+			ret, (int)myDataVector.size());
+		return;
+	}
+	
+	ncdfLog("[ncdf] addChildren: nc_get returned, myDataVector size=%d\n", (int)myDataVector.size());
 
+	int timeIndex = 0;
 	for (vector<ncdfDataMessage>::iterator it = myDataVector.begin(); it != myDataVector.end(); it++){
 
-		int fromStart;
-		fromStart = (*it).minutesAfterStart;
 		dt = (*it).dataDateTime;
-		myData = (*it);
 
 		wxTreeItemId itemId = this->m_treeCtrl->AppendItem(id, _T(""));
-		this->m_treeCtrl->SetItemText(itemId, wxString::Format(_("%03i %s Forecast"), fromStart, "m"));
-		this->m_treeCtrl->SetItemData(itemId, new MyTreeItemData(&dt, fromStart, &myData, &fileName));
+		wxString timeText;
+		
+		if ((*it).timeValid) {
+			timeText = dt.Format(_T("%Y-%m-%d %H:%M"));
+		} else {
+			timeText = wxString::Format(_("时间%d"), timeIndex + 1);
+		}
+		
+		/* depth - commented out */
+		/*wxString itemText;
+		if ((*it).depthValues && (*it).depthLength > 0) {
+			wxString depthText = wxString::Format(_("%.1f m"), (*it).depthValues[(*it).depthIndex]);
+			itemText = wxString::Format(_("%s (%s)"), timeText.c_str(), depthText.c_str());
+		} else {
+			itemText = timeText;
+		}*/
+		wxString itemText = timeText;
+		
+		this->m_treeCtrl->SetItemText(itemId, itemText);
+		
+		MyTreeItemData* treeItemData = new MyTreeItemData(timeIndex);
+		this->m_treeCtrl->SetItemData(itemId, treeItemData);
+		
+		m_choiceTime->Append(itemText);
+		
+		timeIndex++;
 	}
+	
+	ncdfLog("[ncdf] addChildren: completed\n");
 
 }
 
@@ -796,16 +1619,5 @@ void MainDialog::BuildHelpPage(){
 	wxString myHelp;
 	myHelp = _("This page is intended to help users download \nthe areas to use with the ncdf plugin.\n\nThe display Areas for ncdf Tidal Currents\n are as follows:\n\nFormat: \nLat(Min), Lat(Max), Lon(Min), Lon(Max)\n\nEnglish Channel:           48, 51, -7, -2\nIrish Sea:                         50, 56, -9, -2\nSouthern Brittany:         46.5, 48.5, -5.5, -0.5\nNorth Sea:                      51, 56, -2.5, 5\nBiscay South:                 43, 47, -9.5, -0.5\nWestern Ireland:            50, 56, -12, -8               ");
 	m_staticText6->SetLabel(myHelp);
-}
-
-
-MyTreeItemData::MyTreeItemData(wxDateTime *dt, wxUint32 hour, ncdfDataMessage *myData, wxString *myFile)
-{
-	this->hour = hour; this->myData = *myData; this->myFile;
-	if(dt)
-	{
-		this->dt = wxDateTime(*dt);
-		wxString d = this->dt.FormatDate();
-	}
 }
 

@@ -485,6 +485,8 @@ double ncdfDataMessage::getInterpolatedValue(ncdfDataMessage g2message, double**
 	
 
 	double pi, pj;     // coord. in grid unit
+	if (fabs(g2message.iDirectionIncr) < 1e-10 || fabs(g2message.jDirectionIncr) < 1e-10)
+		return ncdf_NOTDEF;
 	pi = (px - g2message.firstGridPointLong) / g2message.iDirectionIncr;//(px-Lo1)/Di;
 	pj = (py - g2message.firstGridPointLat) / g2message.jDirectionIncr;//(py-La1)/Dj;
 

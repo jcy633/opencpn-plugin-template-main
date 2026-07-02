@@ -43,7 +43,7 @@ class ncdfDialog : public wxDialog
 	protected:
 	wxNotebook* m_notebook1;
 	wxPanel* m_panel1;
-	wxChoice* m_choiceArea;
+	wxChoice* m_choiceTime;
 	wxBitmapButton* m_bpNext;
 	wxBitmapButton* m_bpPrev;
 	wxStaticLine* m_staticline1;
@@ -65,7 +65,7 @@ class ncdfDialog : public wxDialog
 	virtual void onTreeSelectionChanged( wxTreeEvent& event ) { event.Skip(); }
 	virtual void onDCurrentClick( wxCommandEvent& event ) { event.Skip(); }
 	virtual void onBmpCurrentForceClick( wxCommandEvent& event ) { event.Skip(); }
-	virtual void onAreaChange( wxCommandEvent& event ) { event.Skip(); }
+	virtual void onTimeChange( wxCommandEvent& event ) { event.Skip(); }
 
 
 	public:

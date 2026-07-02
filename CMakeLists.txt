@@ -57,12 +57,12 @@ if(WIN32)
     
     target_link_libraries(${CMAKE_PROJECT_NAME} ${wxWidgets_LIBRARIES})
     
-    include_directories("D:/netcdf/netCDF-32bit/include")
+    include_directories("${CMAKE_SOURCE_DIR}/netcdf")
     target_link_libraries(${CMAKE_PROJECT_NAME} 
-        "D:/netcdf/netCDF-32bit/lib/netcdf.lib"
-        "D:/netcdf/netCDF-32bit/lib/hdf5.lib"
-        "D:/netcdf/netCDF-32bit/lib/hdf5_hl.lib"
-        "D:/netcdf/netCDF-32bit/lib/zlib.lib"
+        "${CMAKE_SOURCE_DIR}/netcdf/netcdf.lib"
+        "${CMAKE_SOURCE_DIR}/netcdf/hdf5.lib"
+        "${CMAKE_SOURCE_DIR}/netcdf/hdf5_hl.lib"
+        "${CMAKE_SOURCE_DIR}/netcdf/zlib1.lib"
     )
     
     target_link_libraries(${CMAKE_PROJECT_NAME} opengl32 glu32)

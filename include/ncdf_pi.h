@@ -90,9 +90,12 @@ public:
 	  double GetCursorLat(void) { return m_pncdfDialog->m_cursor_lat; }
 	  double GetCursorLon(void) { return m_pncdfDialog->m_cursor_lon; }	
 
-	  double dlat, dlon, ddir, dfor;
+	  double dlat, dlon;
 
 	  bool b_showODAS;
+
+      bool              m_bShowCurrentDir;
+      bool              m_bShowCurrentForce;
 
 private:
       bool LoadConfig(void);

@@ -1,3 +1,21 @@
+# ============ IDE / Editor ============
+.vs/
+*.suo
+*.user
+*.aps
+*.ncb
+*.opendb
+*.opensdf
+*.sdf
+
+# ============ Build directories ============
+build/
+buildwin/
+Release/
+Debug/
+Win32/
+x64/
+
 # CMake generated files
 CMakeCache.txt
 CMakeFiles/
@@ -6,25 +24,33 @@ cmake_install.cmake
 *.vcxproj.filters
 *.slnx
 *.sln
-*.suo
+cmake_final_output.txt
+cmake_output.txt
 
-# Build output
-Release/
-Debug/
-Win32/
-x64/
+# ============ Third-party dependencies (不修改) ============
+netcdf/
+opencpn-libs/
+wxWidgets/
+cache/
+build-deps/
+wxWidgetsDLL.7z
+wxWidgetsDev.7z
+wxWidgetsHeaders.7z
 
-# NetCDF cache files
-netcdf-study/
+# ============ Binary / Library files ============
+*.dll
+*.lib
+*.exp
+*.pdb
+*.ilk
 
-# Temporary build scripts
-*.bat
-*.log
+# ============ Crash dumps ============
+CrashDumps/
 
-# Translation files
+# ============ Translation files ============
 *.mo
 
-# Flatpak/Android build files
+# ============ Flatpak/Android build ============
 *.xml.in
 *.yaml
 *.sha256
@@ -34,5 +60,8 @@ checksum.cmake
 *-conf-stamp
 copy_out
 
-# Installer files
+# ============ Log files ============
+*.log
+
+# ============ Installer ============
 install_manifest.txt

@@ -55,7 +55,7 @@ public:
             ncdfOverlayFactory();
             ~ncdfOverlayFactory();
 
-			void setData(MainDialog *gui, ncdfDataMessage g2data, int numberOfPoints, wxDouble tlat, wxDouble tlon, wxDouble blat, wxDouble blon);
+			void setData(MainDialog *gui, ncdf_pi *plugin, ncdfDataMessage g2data, int numberOfPoints, wxDouble tlat, wxDouble tlon, wxDouble blat, wxDouble blon);
      void reset();
      void setSelectionRectangle(Selection *rect);
      bool isReadyToRender(){ return m_bReadyToRender; }
@@ -102,6 +102,7 @@ private:
 	 ncdfDataMessage g2data;
 	 int numberOfPoints;
      MainDialog		*gui;
+     ncdf_pi        *plugin;
      double 		m_last_vp_scale;
      wxDouble		tlon,tlat,blon,blat;
      wxDouble		incrLon, incrLat;

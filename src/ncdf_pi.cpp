@@ -91,6 +91,8 @@ int ncdf_pi::Init(void)
 	  ::wxDisplaySize(&m_display_width, &m_display_height);
 	  m_choice = 0;
 	  b_showODAS = false;
+	  m_bShowCurrentDir = true;
+	  m_bShowCurrentForce = true;
 
       //    Get a pointer to the opencpn configuration object
       m_pconfig = GetOCPNConfigObject();
@@ -204,17 +206,16 @@ void ncdf_pi::OnContextMenuItemCallback(int id)
 	if (!m_pncdfDialog)
 		return;
 
-	if (id == m_position_menu_id)
-
+	if (id == m_position_menu_id) {
 		m_pncdfDialog->m_cursor_lat = GetCursorLat();
 		m_pncdfDialog->m_cursor_lon = GetCursorLon();
 
 		wxString myLat = wxString::Format(wxT("%5.2f"), (double)m_pncdfDialog->m_cursor_lat);
 
-	if (m_pncdfDialog) {
-		m_pncdfDialog->OnContextMenu(m_pncdfDialog->m_cursor_lat, m_pncdfDialog->m_cursor_lon);
+		if (m_pncdfDialog) {
+			m_pncdfDialog->OnContextMenu(m_pncdfDialog->m_cursor_lat, m_pncdfDialog->m_cursor_lon);
+		}
 	}
-
 }
 int ncdf_pi::GetToolbarToolCount(void)
 {
@@ -301,8 +302,8 @@ bool ncdf_pi::RenderOverlayArrow(wxDC *dc, PlugIn_ViewPort *vp)
 
 			double myLat = (*it)->m_lat;
 			double myLon = (*it)->m_lon;
-			m_pncdfDialog->getCurrentData(myLat, myLon);
-			m_pncdfOverlayFactory->DrawAllCurrentsInViewPort(myLat, myLon, ddir, dfor, *dc, vp);
+			CurrentData data = m_pncdfDialog->getCurrentData(myLat, myLon);
+			m_pncdfOverlayFactory->DrawAllCurrentsInViewPort(myLat, myLon, data.dir, data.force, *dc, vp);
 		}
 	}
 
@@ -321,8 +322,8 @@ bool ncdf_pi::RenderGLOverlayArrow(wxGLContext *pcontext, PlugIn_ViewPort *vp)
 
 			double myLat = (*it)->m_lat;
 			double myLon = (*it)->m_lon;
-			m_pncdfDialog->getCurrentData(myLat, myLon);
-			m_pncdfOverlayFactory->DrawAllGLCurrentsInViewPort(myLat, myLon, ddir, dfor, pcontext, vp);
+			CurrentData data = m_pncdfDialog->getCurrentData(myLat, myLon);
+			m_pncdfOverlayFactory->DrawAllGLCurrentsInViewPort(myLat, myLon, data.dir, data.force, pcontext, vp);
 		}
 	}
 
@@ -348,6 +349,8 @@ bool ncdf_pi::LoadConfig(void)
             pConf->SetPath ( _T( "/Settings" ) );
             pConf->Read ( _T( "ncdfUseHiDef" ),  &m_bncdfUseHiDef, 0 );
             pConf->Read ( _T( "ShowncdfIcon" ),  &m_bncdfShowIcon, 1 );
+            pConf->Read ( _T( "ShowCurrentDir" ), &m_bShowCurrentDir, 1 );
+            pConf->Read ( _T( "ShowCurrentForce" ), &m_bShowCurrentForce, 1 );
 
 
             m_ncdf_dialog_sx = pConf->Read ( _T ( "ncdfDialogSizeX" ), 270L );
@@ -382,6 +385,8 @@ bool ncdf_pi::SaveConfig(void)
 
             pConf->Write ( _T ( "ncdfUseHiDef" ), m_bncdfUseHiDef );
             pConf->Write ( _T ( "ShowncdfIcon" ), m_bncdfShowIcon );
+            pConf->Write ( _T ( "ShowCurrentDir" ), m_bShowCurrentDir );
+            pConf->Write ( _T ( "ShowCurrentForce" ), m_bShowCurrentForce );
 
             pConf->Write ( _T ( "ncdfDialogSizeX" ),  m_ncdf_dialog_sx );
             pConf->Write ( _T ( "ncdfDialogSizeY" ),  m_ncdf_dialog_sy );

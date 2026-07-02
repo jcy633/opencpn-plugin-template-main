@@ -32,32 +32,6 @@
 #include <list>
 
 #define NDIMS 3
-#define NTIME 192
-
-#define NLATEC 105
-#define NLONEC 315
-
-#define NLATIS 210
-#define NLONIS 245
-
-#define NLATSB 70
-#define NLONSB 175
-
-#define NLATNS 175
-#define NLONNS 260
-
-#define NLATBS 140
-#define NLONBS 315
-
-#define NLATWI 210
-#define NLONWI 140
-
-#define EC 0
-#define IS 1
-#define SB 2
-#define NS 3
-#define BS 4
-#define WI 5
 
 #define LAT_NAME "latitude"
 #define LON_NAME "longitude"
@@ -77,14 +51,6 @@
 using namespace std;
 
 
-struct treeItems
-{
-	long startDate;
-	int stepRange[192];
-	int numberOfItems;
-	int messageCount;
-};
-
 struct Selection
 {
     wxDouble topLat;
@@ -96,6 +62,11 @@ struct Selection
 class ncdf_pi;
 class ncdfDataMessage;
 class Arrow;
+
+struct CurrentData {
+	double dir;
+	double force;
+};
 
 class MainDialog : public ncdfDialog {
 public:
@@ -121,6 +92,7 @@ public:
 
 	ncdfDataMessage myncdfData, myData, myMessage;
 	vector<ncdfDataMessage> myDataVector;
+	int m_lastSelectedTimeIndex;
 	int ncdf_get_data(wxString filestr);
 	int ncdf_get_keys(wxString filestr);
 	int nc_get(wxString filestr);
@@ -130,8 +102,11 @@ public:
 	int np;
 	void OnContextMenu(double m_lat, double m_lon);
 	void BuildHelpPage();
-	void getCurrentData(double lat, double lon);
+	CurrentData getCurrentData(double lat, double lon);
 	std::list<Arrow*> m_ArrowList;
+	
+	bool readTimeStepData(ncdfDataMessage& dataMessage);
+	bool m_isTreeUpdating;
 
 private:
 	void UpdateTrackingControls();
@@ -150,7 +125,7 @@ protected:
 	virtual void onCloseDialog( wxCloseEvent& event );
 	virtual void OnExitClick( wxCommandEvent& event );
 	virtual void onFileButtonClick(wxCommandEvent& event);
-	virtual void onAreaChange(wxCommandEvent& event);
+	virtual void onTimeChange(wxCommandEvent& event);
 	virtual void onPrev(wxCommandEvent& event);
 	virtual void onNext(wxCommandEvent& event);
 
@@ -171,12 +146,8 @@ protected:
 class MyTreeItemData : public wxTreeItemData
 {
 public:
-	MyTreeItemData(wxDateTime *dt, wxUint32 hour, ncdfDataMessage *myData, wxString *myFile);
-
-	wxString myFile;
-	ncdfDataMessage myData;
-	wxUint32 hour;
-	wxDateTime dt;
+	MyTreeItemData(int index) : m_index(index) {}
+	int m_index;
 };
 
 

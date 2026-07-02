@@ -28,6 +28,7 @@
 
 #include "ncdfoverlayfactory.h"
 #include "ncdf.h"
+#include "ncdf_pi.h"
 #include "IsoLine2.h"
 #include <wx/colour.h>
 #include <wx/dynarray.h>
@@ -64,13 +65,14 @@ ncdfOverlayFactory::~ncdfOverlayFactory()
 	renderSelectionRectangle = false;
 }
 
-void ncdfOverlayFactory::setData(MainDialog *gui, ncdfDataMessage g2data, int numberOfPoints, wxDouble tlat, wxDouble tlon, wxDouble blat, wxDouble blon)
+void ncdfOverlayFactory::setData(MainDialog *gui, ncdf_pi *plugin, ncdfDataMessage g2data, int numberOfPoints, wxDouble tlat, wxDouble tlon, wxDouble blat, wxDouble blon)
 {
 
 	this->g2data = g2data;
 	this->numberOfPoints = numberOfPoints;
     this->tlat = tlat; this->tlon = tlon; this->blat = blat; this->blon = blon;
     this->gui = gui;
+    this->plugin = plugin;
     
     this->m_bReadyToRender = true;
 }
@@ -134,11 +136,10 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 	if (!m_bReadyToRender) return false;
 
 
-	if(gui->m_checkBoxBmpCurrentForce->GetValue())
-
+	if(plugin->m_bShowCurrentForce)
       RenderncdfCurrentBmp();    
 	
-	if(gui->m_checkBoxDCurrent->GetValue())
+	if(plugin->m_bShowCurrentDir)
       RenderncdfCurrent();    
 
     m_last_vp_scale = vp->view_scale_ppm;
@@ -203,7 +204,7 @@ void ncdfOverlayFactory::RenderncdfCurrent()
 
 		  GetGlobalColor(_T("UBLCK"), &colour);
 		
-		  if (g2data.ucurr[mi] != NULL && g2data.vcurr[mi] != NULL){
+		  if (g2data.ucurr[mi] != ncdf_NOTDEF && g2data.vcurr[mi] != ncdf_NOTDEF){
 			  GetCanvasPixLL(vp, &p, lat, lon);
 			  if (PointInLLBox(vp, lon, lat))
 			  {
@@ -254,14 +255,7 @@ bool ncdfOverlayFactory::RenderncdfCurrentBmp()
 					  }
 
 					  //    This could take a while....
-			      double **currentDir = (double **) g2data.ucurr;
-				  if (currentDir == NULL){ 
-					  return false;
-				  }
-
-			      
-			      double **currentForce = (double **) g2data.vcurr;
-				  if (currentForce == NULL){					 
+			      if (g2data.ucurr == NULL || g2data.vcurr == NULL){
 					  return false;
 				  }
                               wxImage gr_image(width, height);
