@@ -6,7 +6,7 @@
 #define PLUGIN_VERSION_TWEAK 0
 
 #define PKG_PRERELEASE ""
-#define PKG_BUILD_INFO "2606301034.db2f43e"
+#define PKG_BUILD_INFO "2607031213.28caee7"
 
 #define PLUGIN
 

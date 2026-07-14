@@ -468,7 +468,7 @@ bool ncdfData::hasValue(double** grid, wxUint32 nolat, wxUint32 nolon, unsigned 
 
 
 
-double ncdfDataMessage::getInterpolatedValue(ncdfDataMessage g2message, double** grid, double px, double py, bool numericalInterpolation) const
+double ncdfDataMessage::getInterpolatedValue(const ncdfDataMessage& g2message, double** grid, double px, double py, bool numericalInterpolation) const
 {
 	double val;
 
@@ -642,7 +642,7 @@ double ncdfDataMessage::getInterpolatedValue(ncdfDataMessage g2message, double**
 	return val;
 }
 
-bool ncdfDataMessage::isPointInMap(ncdfDataMessage g2message, double x, double y) const
+bool ncdfDataMessage::isPointInMap(const ncdfDataMessage& g2message, double x, double y) const
 {
 	return isXInMap(g2message, x) && isYInMap(g2message, y);
 	/*    if (Dj < 0)
@@ -651,7 +651,7 @@ bool ncdfDataMessage::isPointInMap(ncdfDataMessage g2message, double x, double y
 	return x>=Lo1 && y>=La1 && x<=Lo1+(Ni-1)*Di && y<=La1+(Nj-1)*Dj;*/
 }
 
-bool ncdfDataMessage::isXInMap(ncdfDataMessage g2message, double x) const
+bool ncdfDataMessage::isXInMap(const ncdfDataMessage& g2message, double x) const
 {
 	wxDouble lastlon;
 
@@ -664,7 +664,7 @@ bool ncdfDataMessage::isXInMap(ncdfDataMessage g2message, double x) const
 		return x >= lastlon && x <= g2message.firstGridPointLong;
 }
 
-bool ncdfDataMessage::isYInMap(ncdfDataMessage g2message, double y) const
+bool ncdfDataMessage::isYInMap(const ncdfDataMessage& g2message, double y) const
 {
 	if (g2message.jDirectionIncr < 0)
 		return y <= g2message.firstGridPointLat && y >= g2message.lastGridPointLat;

@@ -93,6 +93,8 @@ int ncdf_pi::Init(void)
 	  b_showODAS = false;
 	  m_bShowCurrentDir = true;
 	  m_bShowCurrentForce = true;
+	  m_bShowParticles = false;
+	  m_iParticleDensity = 5;
 
       //    Get a pointer to the opencpn configuration object
       m_pconfig = GetOCPNConfigObject();
@@ -136,6 +138,8 @@ bool ncdf_pi::DeInit(void)
       {
 		 m_pncdfOverlayFactory->m_bReadyToRender = false;
 		 m_pncdfDialog->Close();
+		 delete m_pncdfDialog;
+		 m_pncdfDialog = NULL;
       }
      
 	delete m_pncdfOverlayFactory;
@@ -351,6 +355,8 @@ bool ncdf_pi::LoadConfig(void)
             pConf->Read ( _T( "ShowncdfIcon" ),  &m_bncdfShowIcon, 1 );
             pConf->Read ( _T( "ShowCurrentDir" ), &m_bShowCurrentDir, 1 );
             pConf->Read ( _T( "ShowCurrentForce" ), &m_bShowCurrentForce, 1 );
+            pConf->Read ( _T( "ShowParticles" ), &m_bShowParticles, 0 );
+            pConf->Read ( _T( "ParticleDensity" ), &m_iParticleDensity, 5 );
 
 
             m_ncdf_dialog_sx = pConf->Read ( _T ( "ncdfDialogSizeX" ), 270L );
@@ -387,6 +393,8 @@ bool ncdf_pi::SaveConfig(void)
             pConf->Write ( _T ( "ShowncdfIcon" ), m_bncdfShowIcon );
             pConf->Write ( _T ( "ShowCurrentDir" ), m_bShowCurrentDir );
             pConf->Write ( _T ( "ShowCurrentForce" ), m_bShowCurrentForce );
+            pConf->Write ( _T ( "ShowParticles" ), m_bShowParticles );
+            pConf->Write ( _T ( "ParticleDensity" ), m_iParticleDensity );
 
             pConf->Write ( _T ( "ncdfDialogSizeX" ),  m_ncdf_dialog_sx );
             pConf->Write ( _T ( "ncdfDialogSizeY" ),  m_ncdf_dialog_sy );

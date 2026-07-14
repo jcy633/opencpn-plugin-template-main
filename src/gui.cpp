@@ -9,12 +9,14 @@
 
 ///////////////////////////////////////////////////////////////////////////
 
-ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, const wxPoint& pos, const wxSize& size, long style ) : wxDialog( parent, id, title, pos, size, style )
+ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, const wxPoint& pos, const wxSize& size, long style ) : wxDialog( parent, id, title, pos, wxSize(420, 650), style )
 {
-	this->SetSizeHints( wxDefaultSize, wxDefaultSize );
+	this->SetSizeHints( wxSize(640,800), wxDefaultSize );
 
 	wxFlexGridSizer* fgSizer3;
 	fgSizer3 = new wxFlexGridSizer( 1, 1, 0, 0 );
+	fgSizer3->AddGrowableRow( 0 );
+	fgSizer3->AddGrowableCol( 0 );
 	fgSizer3->SetFlexibleDirection( wxBOTH );
 	fgSizer3->SetNonFlexibleGrowMode( wxFLEX_GROWMODE_SPECIFIED );
 
@@ -23,7 +25,9 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	m_panel1->SetBackgroundColour( wxSystemSettings::GetColour( wxSYS_COLOUR_3DLIGHT ) );
 
 	wxFlexGridSizer* fgSizer1;
-	fgSizer1 = new wxFlexGridSizer( 3, 1, 0, 0 );
+	fgSizer1 = new wxFlexGridSizer( 4, 1, 0, 0 );
+	fgSizer1->AddGrowableRow( 1 );
+	fgSizer1->AddGrowableCol( 0 );
 	fgSizer1->SetFlexibleDirection( wxBOTH );
 	fgSizer1->SetNonFlexibleGrowMode( wxFLEX_GROWMODE_SPECIFIED );
 
@@ -39,17 +43,19 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 
 	bSizer2->Add( m_fileButton, 0, wxALL, 5 );
 
+	m_bpSettings = new wxBitmapButton( m_panel1, wxID_ANY, wxNullBitmap, wxDefaultPosition, wxDefaultSize, wxBU_AUTODRAW|0 );
+	bSizer2->Add( m_bpSettings, 0, wxALL, 5 );
 
-	fgSizer1->Add( bSizer2, 1, wxEXPAND, 5 );
 
-	wxArrayString m_choiceTimeChoices;
-	m_choiceTime = new wxChoice( m_panel1, wxID_ANY, wxDefaultPosition, wxDefaultSize, m_choiceTimeChoices, 0 );
-	m_choiceTime->SetSelection( 0 );
-	fgSizer1->Add( m_choiceTime, 0, wxALL|wxEXPAND, 5 );
+	fgSizer1->Add( bSizer2, 0, wxEXPAND, 5 );
+
+	// Hidden time choice (used by playback logic)
+	m_choiceTime = new wxChoice( m_panel1, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxArrayString(), 0 );
+	m_choiceTime->Hide();
 
 	m_treeCtrl = new wxTreeCtrl( m_panel1, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxTR_DEFAULT_STYLE|wxHSCROLL|wxBORDER_SUNKEN );
-	m_treeCtrl->SetFont( wxFont( 9, wxFONTFAMILY_SWISS, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_NORMAL, false, wxT("Sans") ) );
-	m_treeCtrl->SetMinSize( wxSize( -1,150 ) );
+	m_treeCtrl->SetFont( wxFont( 12, wxFONTFAMILY_SWISS, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_NORMAL, false, wxT("Sans") ) );
+	m_treeCtrl->SetMinSize( wxSize( -1,250 ) );
 
 	fgSizer1->Add( m_treeCtrl, 1, wxALL|wxEXPAND, 5 );
 
@@ -61,7 +67,7 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	bSizer10->Add( m_staticTextDateTime, 1, wxALIGN_CENTER_HORIZONTAL|wxALL, 5 );
 
 
-	fgSizer1->Add( bSizer10, 1, wxEXPAND, 5 );
+	fgSizer1->Add( bSizer10, 0, wxEXPAND, 5 );
 
 	wxFlexGridSizer* fgSizer7;
 	fgSizer7 = new wxFlexGridSizer( 0, 2, 0, 0 );
@@ -74,23 +80,23 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 
 	bSizer5->Add( 24, 0, 1, wxEXPAND, 5 );
 
+	m_bpPrev = new wxBitmapButton( m_panel1, wxID_ANY, wxNullBitmap, wxDefaultPosition, wxDefaultSize, wxBU_AUTODRAW|0 );
+	bSizer5->Add( m_bpPrev, 0, wxALL, 5 );
+
 	m_bpNext = new wxBitmapButton( m_panel1, wxID_ANY, wxNullBitmap, wxDefaultPosition, wxDefaultSize, wxBU_AUTODRAW|0 );
 	bSizer5->Add( m_bpNext, 0, wxALL, 5 );
 
-	m_bpPrev = new wxBitmapButton( m_panel1, wxID_ANY, wxNullBitmap, wxDefaultPosition, wxDefaultSize, wxBU_AUTODRAW|0 );
-	bSizer5->Add( m_bpPrev, 0, wxALL, 5 );
+	m_bpPlay = new wxBitmapButton( m_panel1, wxID_ANY, wxNullBitmap, wxDefaultPosition, wxDefaultSize, wxBU_AUTODRAW|0 );
+	bSizer5->Add( m_bpPlay, 0, wxALL|wxALIGN_CENTER_VERTICAL, 5 );
+
+	m_sTimeline = new wxSlider( m_panel1, wxID_ANY, 0, 0, 10, wxDefaultPosition, wxSize(200, -1), wxSL_HORIZONTAL );
+	bSizer5->Add( m_sTimeline, 1, wxEXPAND|wxALL|wxALIGN_CENTER_VERTICAL, 5 );
 
 
 	fgSizer7->Add( bSizer5, 1, wxEXPAND, 5 );
 
 
-	fgSizer1->Add( fgSizer7, 1, wxEXPAND, 5 );
-
-	wxBoxSizer* bSizer9;
-	bSizer9 = new wxBoxSizer( wxVERTICAL );
-
-
-	fgSizer1->Add( bSizer9, 1, wxEXPAND, 5 );
+	fgSizer1->Add( fgSizer7, 0, wxEXPAND, 5 );
 
 	m_staticline1 = new wxStaticLine( m_panel1, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxLI_HORIZONTAL );
 	fgSizer1->Add( m_staticline1, 0, wxEXPAND | wxALL, 5 );
@@ -100,61 +106,75 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	fgSizer2->SetFlexibleDirection( wxBOTH );
 	fgSizer2->SetNonFlexibleGrowMode( wxFLEX_GROWMODE_SPECIFIED );
 
+	// Row 1: Current checkbox + direction display
 	wxBoxSizer* bSizer11;
 	bSizer11 = new wxBoxSizer( wxHORIZONTAL );
 
-
-	bSizer11->Add( 24, 0, 1, wxEXPAND, 5 );
+	bSizer11->Add( 24, 0, 0, wxEXPAND, 5 );
 
 	m_checkBoxDCurrent = new wxCheckBox( m_panel1, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, 0 );
 	bSizer11->Add( m_checkBoxDCurrent, 0, wxALL|wxALIGN_CENTER_VERTICAL, 0 );
 
-	m_staticText333 = new wxStaticText( m_panel1, wxID_ANY, _("    Current"), wxDefaultPosition, wxDefaultSize, 0 );
+	m_staticText333 = new wxStaticText( m_panel1, wxID_ANY, _("Current"), wxDefaultPosition, wxDefaultSize, 0 );
 	m_staticText333->Wrap( -1 );
-	m_staticText333->SetMinSize( wxSize( 80,-1 ) );
-
+	m_staticText333->SetMinSize( wxSize( 55,-1 ) );
 	bSizer11->Add( m_staticText333, 0, wxALIGN_CENTER_VERTICAL|wxALL, 0 );
 
-	m_textCtrlCurrentDir = new wxTextCtrl( m_panel1, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize( 70,-1 ), wxTE_READONLY|wxTE_RIGHT );
+	m_textCtrlCurrentDir = new wxTextCtrl( m_panel1, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize( 55,-1 ), wxTE_READONLY|wxTE_RIGHT );
 	bSizer11->Add( m_textCtrlCurrentDir, 0, wxALL, 0 );
 
 	m_staticText341 = new wxStaticText( m_panel1, wxID_ANY, _("Deg"), wxDefaultPosition, wxDefaultSize, 0 );
 	m_staticText341->Wrap( -1 );
-	bSizer11->Add( m_staticText341, 0, wxALL, 5 );
+	bSizer11->Add( m_staticText341, 0, wxALL|wxALIGN_CENTER_VERTICAL, 2 );
 
+	fgSizer2->Add( bSizer11, 0, 0, 5 );
 
-	fgSizer2->Add( bSizer11, 1, 0, 5 );
-
-
-	fgSizer2->Add( 0, 0, 1, wxEXPAND, 5 );
-
+	// Row 2: Force checkbox + force display
 	wxBoxSizer* bSizer14;
 	bSizer14 = new wxBoxSizer( wxHORIZONTAL );
-
 
 	bSizer14->Add( 24, 0, 0, wxEXPAND, 0 );
 
 	m_checkBoxBmpCurrentForce = new wxCheckBox( m_panel1, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, 0 );
-	bSizer14->Add( m_checkBoxBmpCurrentForce, 0, wxALL, 0 );
+	bSizer14->Add( m_checkBoxBmpCurrentForce, 0, wxALL|wxALIGN_CENTER_VERTICAL, 0 );
 
-	m_staticText40 = new wxStaticText( m_panel1, wxID_ANY, _("    Force"), wxDefaultPosition, wxDefaultSize, 0 );
+	m_staticText40 = new wxStaticText( m_panel1, wxID_ANY, _("Force"), wxDefaultPosition, wxDefaultSize, 0 );
 	m_staticText40->Wrap( -1 );
-	m_staticText40->SetMinSize( wxSize( 80,-1 ) );
+	m_staticText40->SetMinSize( wxSize( 55,-1 ) );
+	bSizer14->Add( m_staticText40, 0, wxALIGN_CENTER_VERTICAL|wxALL, 0 );
 
-	bSizer14->Add( m_staticText40, 0, wxALIGN_CENTER_VERTICAL, 0 );
-
-	m_textCtrlCurrentForce = new wxTextCtrl( m_panel1, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize( 70,-1 ), wxTE_READONLY|wxTE_RIGHT );
+	m_textCtrlCurrentForce = new wxTextCtrl( m_panel1, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize( 55,-1 ), wxTE_READONLY|wxTE_RIGHT );
 	bSizer14->Add( m_textCtrlCurrentForce, 0, wxALL, 0 );
 
 	m_staticText41 = new wxStaticText( m_panel1, wxID_ANY, _("kts"), wxDefaultPosition, wxDefaultSize, 0 );
 	m_staticText41->Wrap( -1 );
-	bSizer14->Add( m_staticText41, 0, wxALL|wxALIGN_CENTER_VERTICAL, 5 );
+	bSizer14->Add( m_staticText41, 0, wxALL|wxALIGN_CENTER_VERTICAL, 2 );
+
+	fgSizer2->Add( bSizer14, 0, 0, 5 );
+
+	// Row 3: Numbers checkbox (hidden - feature removed)
+	m_checkBoxNumbers = new wxCheckBox( m_panel1, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, 0 );
+	m_staticTextNumbers = new wxStaticText( m_panel1, wxID_ANY, _("Numbers"), wxDefaultPosition, wxDefaultSize, 0 );
+	m_checkBoxNumbers->Hide();
+	m_staticTextNumbers->Hide();
+
+	// Row 4: Particles checkbox
+	wxBoxSizer* bSizerPart;
+	bSizerPart = new wxBoxSizer( wxHORIZONTAL );
+
+	bSizerPart->Add( 24, 0, 0, wxEXPAND, 0 );
+
+	m_checkBoxParticles = new wxCheckBox( m_panel1, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, 0 );
+	bSizerPart->Add( m_checkBoxParticles, 0, wxALL|wxALIGN_CENTER_VERTICAL, 0 );
+
+	m_staticTextParticles = new wxStaticText( m_panel1, wxID_ANY, _("Particles"), wxDefaultPosition, wxDefaultSize, 0 );
+	m_staticTextParticles->Wrap( -1 );
+	bSizerPart->Add( m_staticTextParticles, 0, wxALIGN_CENTER_VERTICAL|wxALL, 0 );
+
+	fgSizer2->Add( bSizerPart, 0, 0, 5 );
 
 
-	fgSizer2->Add( bSizer14, 1, wxEXPAND, 5 );
-
-
-	fgSizer1->Add( fgSizer2, 1, wxEXPAND, 0 );
+	fgSizer1->Add( fgSizer2, 0, wxEXPAND, 0 );
 
 
 	m_panel1->SetSizer( fgSizer1 );
@@ -195,7 +215,10 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	m_treeCtrl->Connect( wxEVT_COMMAND_TREE_SEL_CHANGED, wxTreeEventHandler( ncdfDialog::onTreeSelectionChanged ), NULL, this );
 	m_checkBoxDCurrent->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onDCurrentClick ), NULL, this );
 	m_checkBoxBmpCurrentForce->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onBmpCurrentForceClick ), NULL, this );
+	m_checkBoxParticles->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onParticlesClick ), NULL, this );
 	m_choiceTime->Connect( wxEVT_COMMAND_CHOICE_SELECTED, wxCommandEventHandler( ncdfDialog::onTimeChange ), NULL, this );
+	m_sTimeline->Connect( wxEVT_SCROLL_THUMBTRACK, wxScrollEventHandler( ncdfDialog::OnTimeline ), NULL, this );
+	m_sTimeline->Connect( wxEVT_SCROLL_CHANGED, wxScrollEventHandler( ncdfDialog::OnTimeline ), NULL, this );
 }
 
 ncdfDialog::~ncdfDialog()
@@ -210,6 +233,9 @@ ncdfDialog::~ncdfDialog()
 	m_treeCtrl->Disconnect( wxEVT_COMMAND_TREE_SEL_CHANGED, wxTreeEventHandler( ncdfDialog::onTreeSelectionChanged ), NULL, this );
 	m_checkBoxDCurrent->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onDCurrentClick ), NULL, this );
 	m_checkBoxBmpCurrentForce->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onBmpCurrentForceClick ), NULL, this );
+	m_checkBoxParticles->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onParticlesClick ), NULL, this );
 	m_choiceTime->Disconnect( wxEVT_COMMAND_CHOICE_SELECTED, wxCommandEventHandler( ncdfDialog::onTimeChange ), NULL, this );
+	m_sTimeline->Disconnect( wxEVT_SCROLL_THUMBTRACK, wxScrollEventHandler( ncdfDialog::OnTimeline ), NULL, this );
+	m_sTimeline->Disconnect( wxEVT_SCROLL_CHANGED, wxScrollEventHandler( ncdfDialog::OnTimeline ), NULL, this );
 
 }

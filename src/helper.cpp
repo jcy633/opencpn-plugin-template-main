@@ -23,7 +23,7 @@ wxString Helper::toBinary(wxUint8 input)
 	std::string result;
 	int n = sizeof(wxUint8);
 	
-	for(int i = n*7; i > 0; i--) 
+	for(int i = 7; i >= 0; i--) 
 		{
 			if(input & (1 << i)) 
 				result += "1";	

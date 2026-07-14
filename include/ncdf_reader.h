@@ -136,10 +136,10 @@ private:
 	}
 	
 public:
-	double getInterpolatedValue(ncdfDataMessage g2message, double** grid, double px, double py, bool numericalInterpolation) const;
-	bool isPointInMap(ncdfDataMessage g2message, double x, double y) const;
-	bool isXInMap(ncdfDataMessage g2message, double x) const;
-	bool isYInMap(ncdfDataMessage g2message, double y) const;
+	double getInterpolatedValue(const ncdfDataMessage& g2message, double** grid, double px, double py, bool numericalInterpolation) const;
+	bool isPointInMap(const ncdfDataMessage& g2message, double x, double y) const;
+	bool isXInMap(const ncdfDataMessage& g2message, double x) const;
+	bool isYInMap(const ncdfDataMessage& g2message, double y) const;
 	bool hasValue(double** grid, wxUint32 nolat, wxUint32 nolon, unsigned int indexlon, unsigned int indexlat) const;
 	bool		timeValid;
 	wxUint8		version;

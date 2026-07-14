@@ -1,17 +1,20 @@
 @echo off
-REM Delete CMake cache
-del CMakeCache.txt 2>nul
-rmdir /s /q CMakeFiles 2>nul
-del cmake_output.txt 2>nul
-del msbuild_output.txt 2>nul
-
-REM Run CMake
 set WXWIN=d:\opencpn-plugin-template-main\cache\wxWidgets
-"C:\Program Files\CMake\bin\cmake.exe" -G "Visual Studio 18 2026" -A Win32 -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="D:/netcdf/netCDF-32bit" -DBUILD_TYPE=tarball . > cmake_output.txt 2>&1
 
-echo CMake configuration completed.
-
-REM Run MSBuild
-"D:\VS\MSBuild\Current\Bin\MSBuild.exe" "ncdf_pi.slnx" /p:Configuration=Release /p:Platform=Win32 /t:Build /v:minimal > msbuild_output.txt 2>&1
+cd /d D:\opencpn-plugin-template-main\build
+"D:\VS\MSBuild\Current\Bin\MSBuild.exe" "ncdf_pi.vcxproj" -p:Configuration=Release -p:Platform=Win32 -t:Build -v:minimal > ..\msbuild_output.txt 2>&1
 
 echo Build completed.
+cd /d D:\opencpn-plugin-template-main
+
+REM Kill OpenCPN if running
+taskkill /f /im opencpn.exe >nul 2>&1
+timeout /t 1 /nobreak >nul
+
+REM Deploy
+copy /Y "build\Release\ncdf_pi.dll" "C:\Users\季曹阳\AppData\Local\opencpn\plugins\" > nul
+echo Deployed.
+
+REM Launch OpenCPN
+start "" "C:\Program Files (x86)\OpenCPN\opencpn.exe"
+echo OpenCPN launched.

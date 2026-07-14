@@ -1,0 +1,142 @@
+适用于 .NET Framework MSBuild 版本 18.7.8+1ac568fee
+
+  ncdf_pi-i18n: Done.
+  閫傜敤浜?.NET Framework MSBuild 鐗堟湰 18.7.8+1ac568fee
+  
+    1>Checking Build System
+    CMake is re-running because D:/opencpn-plugin-template-main/CMakeFiles/generate.stamp is out-of-date.
+      the file 'D:/opencpn-plugin-template-main/CMakeFiles/4.3.1/CMakeCCompiler.cmake'
+      is newer than 'D:/opencpn-plugin-template-main/CMakeFiles/generate.stamp.depend'
+      result='0'
+    -- Building for: Visual Studio 18 2026
+    -- Cmake version: 4.3.1.
+    -- Setting build type to 'Debug' as none was specified.
+    -- Build uses 12 processors
+    -- Configuring
+    -- Selecting Windows SDK version 10.0.28000.0 to target Windows 10.0.26200.
+    -- The C compiler identification is MSVC 19.51.36248.0
+    -- The CXX compiler identification is MSVC 19.51.36248.0
+    -- Detecting C compiler ABI info
+    -- Detecting C compiler ABI info - done
+    -- Check for working C compiler: D:/VS/VC/Tools/MSVC/14.51.36231/bin/Hostx64/x64/cl.exe - skipped
+    -- Detecting C compile features
+    -- Detecting C compile features - done
+    -- Detecting CXX compiler ABI info
+    -- Detecting CXX compiler ABI info - done
+    -- Check for working CXX compiler: D:/VS/VC/Tools/MSVC/14.51.36231/bin/Hostx64/x64/cl.exe - skipped
+    -- Detecting CXX compile features
+    -- Detecting CXX compile features - done
+    -- Found wxWidgets: debug;D:/opencpn-plugin-template-main/cache/wxWidgets/lib/vc145_dll/wxbase32ud.lib;optimized;D:/opencpn-plugin-template-main/cache/wxWidgets/lib/vc145_dll/wxbase32u.lib;debug;D:/opencpn-plugin-template-main/cache/wxWidgets/lib/vc145_dll/wxmsw32ud_core.lib;optimized;D:/opencpn-plugin-template-main/cache/wxWidgets/lib/vc145_dll/wxmsw32u_core.lib;debug;D:/opencpn-plugin-template-main/cache/wxWidgets/lib/vc145_dll/wxbase32ud_net.lib;optimized;D:/opencpn-plugin-template-main/cache/wxWidgets/lib/vc145_dll/wxbase32u_net.lib;debug;D:/opencpn-plugin-template-main/cache/wxWidgets/lib/vc145_dll/wxbase32ud_xml.lib;optimized;D:/opencpn-plugin-template-main/cache/wxWidgets/lib/vc145_dll/wxbase32u_xml.lib;debug;D:/opencpn-plugin-template-main/cache/wxWidgets/lib/vc145_dll/wxmsw32ud_html.lib;optimized;D:/opencpn-plugin-template-main/cache/wxWidgets/lib/vc145_dll/wxmsw32u_html.lib;debug;D:/opencpn-plugin-template-main/cache/wxWidgets/lib/vc145_dll/wxmsw32ud_adv.lib;optimized;D:/opencpn-plugin-template-main/cache/wxWidgets/lib/vc145_dll/wxmsw32u_adv.lib;debug;D:/opencpn-plugin-template-main/cache/wxWidgets/lib/vc145_dll/wxmsw32ud_stc.lib;optimized;D:/opencpn-plugin-template-main/cache/wxWidgets/lib/vc145_dll/wxmsw32u_stc.lib;debug;D:/opencpn-plugin-template-main/cache/wxWidgets/lib/vc145_dll/wxmsw32ud_aui.lib;optimized;D:/opencpn-plugin-template-main/cache/wxWidgets/lib/vc145_dll/wxmsw32u_aui.lib;debug;D:/opencpn-plugin-template-main/cache/wxWidgets/lib/vc145_dll/wxmsw32ud_gl.lib;optimized;D:/opencpn-plugin-template-main/cache/wxWidgets/lib/vc145_dll/wxmsw32u_gl.lib;debug;D:/opencpn-plugin-template-main/cache/wxWidgets/lib/vc145_dll/wxscintillad.lib;optimized;D:/opencpn-plugin-template-main/cache/wxWidgets/lib/vc145_dll/wxscintilla.lib;debug;D:/opencpn-plugin-template-main/cache/wxWidgets/lib/vc145_dll/wxpngd.lib;optimized;D:/opencpn-plugin-template-main/cache/wxWidgets/lib/vc145_dll/wxpng.lib;debug;D:/opencpn-plugin-template-main/cache/wxWidgets/lib/vc145_dll/wxtiffd.lib;optimized;D:/opencpn-plugin-template-main/cache/wxWidgets/lib/vc145_dll/wxtiff.lib;debug;D:/opencpn-plugin-template-main/cache/wxWidgets/lib/vc145_dll/wxjpegd.lib;optimized;D:/opencpn-plugin-template-main/cache/wxWidgets/lib/vc145_dll/wxjpeg.lib;debug;D:/opencpn-plugin-template-main/cache/wxWidgets/lib/vc145_dll/wxzlibd.lib;optimized;D:/opencpn-plugin-template-main/cache/wxWidgets/lib/vc145_dll/wxzlib.lib;debug;D:/opencpn-plugin-template-main/cache/wxWidgets/lib/vc145_dll/wxregexud.lib;optimized;D:/opencpn-plugin-template-main/cache/wxWidgets/lib/vc145_dll/wxregexu.lib;debug;D:/opencpn-plugin-template-main/cache/wxWidgets/lib/vc145_dll/wxexpatd.lib;optimized;D:/opencpn-plugin-template-main/cache/wxWidgets/lib/vc145_dll/wxexpat.lib;opengl32;glu32;imm32;kernel32;user32;gdi32;gdiplus;msimg32;comdlg32;winspool;winmm;shell32;shlwapi;comctl32;ole32;oleaut32;uuid;rpcrt4;advapi32;version;ws2_32;wininet;oleacc;uxtheme;wsock32 (found version "3.2.2.1") found components: base core net xml html adv stc aui gl scintilla png tiff jpeg zlib regex expat missing components: lexilla webp webpdemux sharpyuv
+    -- Building for target:release msvc-wx32:10.0.26200
+    -- Selected upload repository: o p e n c p n / n c d f - a l p h a 
+    CMake Warning (dev) at cmake/Targets.cmake:151 (add_custom_command):
+      Exactly one of PRE_BUILD, PRE_LINK, or POST_BUILD must be given.  Assuming
+      POST_BUILD to preserve backward compatibility.
+    
+      Policy CMP0175 is not set: add_custom_command() rejects invalid arguments.
+      Run "cmake --help-policy CMP0175" for policy details.  Use the cmake_policy
+      command to set the policy and suppress this warning.
+    Call Stack (most recent call first):
+      cmake/Targets.cmake:253 (tarball_target)
+      CMakeLists.txt:104 (create_targets)
+    This warning is for project developers.  Use -Wno-dev to suppress it.
+    
+    CMake Warning (dev) at cmake/Targets.cmake:156 (add_custom_command):
+      Exactly one of PRE_BUILD, PRE_LINK, or POST_BUILD must be given.  Assuming
+      POST_BUILD to preserve backward compatibility.
+    
+      Policy CMP0175 is not set: add_custom_command() rejects invalid arguments.
+      Run "cmake --help-policy CMP0175" for policy details.  Use the cmake_policy
+      command to set the policy and suppress this warning.
+    Call Stack (most recent call first):
+      cmake/Targets.cmake:253 (tarball_target)
+      CMakeLists.txt:104 (create_targets)
+    This warning is for project developers.  Use -Wno-dev to suppress it.
+    
+    CMake Warning (dev) at cmake/Targets.cmake:160 (add_custom_command):
+      Exactly one of PRE_BUILD, PRE_LINK, or POST_BUILD must be given.  Assuming
+      POST_BUILD to preserve backward compatibility.
+    
+      Policy CMP0175 is not set: add_custom_command() rejects invalid arguments.
+      Run "cmake --help-policy CMP0175" for policy details.  Use the cmake_policy
+      command to set the policy and suppress this warning.
+    Call Stack (most recent call first):
+      cmake/Targets.cmake:253 (tarball_target)
+      CMakeLists.txt:104 (create_targets)
+    This warning is for project developers.  Use -Wno-dev to suppress it.
+    
+    CMake Warning (dev) at cmake/Targets.cmake:175 (add_custom_command):
+      Exactly one of PRE_BUILD, PRE_LINK, or POST_BUILD must be given.  Assuming
+      POST_BUILD to preserve backward compatibility.
+    
+      Policy CMP0175 is not set: add_custom_command() rejects invalid arguments.
+      Run "cmake --help-policy CMP0175" for policy details.  Use the cmake_policy
+      command to set the policy and suppress this warning.
+    Call Stack (most recent call first):
+      cmake/Targets.cmake:254 (flatpak_target)
+      CMakeLists.txt:104 (create_targets)
+    This warning is for project developers.  Use -Wno-dev to suppress it.
+    
+    CMake Warning (dev) at cmake/Targets.cmake:237 (add_custom_command):
+      Exactly one of PRE_BUILD, PRE_LINK, or POST_BUILD must be given.  Assuming
+      POST_BUILD to preserve backward compatibility.
+    
+      Policy CMP0175 is not set: add_custom_command() rejects invalid arguments.
+      Run "cmake --help-policy CMP0175" for policy details.  Use the cmake_policy
+      command to set the policy and suppress this warning.
+    Call Stack (most recent call first):
+      cmake/Targets.cmake:254 (flatpak_target)
+      CMakeLists.txt:104 (create_targets)
+    This warning is for project developers.  Use -Wno-dev to suppress it.
+    
+    CMake Warning (dev) at cmake/Targets.cmake:117 (add_custom_command):
+      Exactly one of PRE_BUILD, PRE_LINK, or POST_BUILD must be given.  Assuming
+      POST_BUILD to preserve backward compatibility.
+    
+      Policy CMP0175 is not set: add_custom_command() rejects invalid arguments.
+      Run "cmake --help-policy CMP0175" for policy details.  Use the cmake_policy
+      command to set the policy and suppress this warning.
+    Call Stack (most recent call first):
+      cmake/Targets.cmake:255 (android_target)
+      CMakeLists.txt:104 (create_targets)
+    This warning is for project developers.  Use -Wno-dev to suppress it.
+    
+    CMake Warning (dev) at cmake/Targets.cmake:121 (add_custom_command):
+      Exactly one of PRE_BUILD, PRE_LINK, or POST_BUILD must be given.  Assuming
+      POST_BUILD to preserve backward compatibility.
+    
+      Policy CMP0175 is not set: add_custom_command() rejects invalid arguments.
+      Run "cmake --help-policy CMP0175" for policy details.  Use the cmake_policy
+      command to set the policy and suppress this warning.
+    Call Stack (most recent call first):
+      cmake/Targets.cmake:255 (android_target)
+      CMakeLists.txt:104 (create_targets)
+    This warning is for project developers.  Use -Wno-dev to suppress it.
+    
+    CMake Warning (dev) at cmake/Targets.cmake:125 (add_custom_command):
+      Exactly one of PRE_BUILD, PRE_LINK, or POST_BUILD must be given.  Assuming
+      POST_BUILD to preserve backward compatibility.
+    
+      Policy CMP0175 is not set: add_custom_command() rejects invalid arguments.
+      Run "cmake --help-policy CMP0175" for policy details.  Use the cmake_policy
+      command to set the policy and suppress this warning.
+    Call Stack (most recent call first):
+      cmake/Targets.cmake:255 (android_target)
+      CMakeLists.txt:104 (create_targets)
+    This warning is for project developers.  Use -Wno-dev to suppress it.
+    
+    -- Configuring done (36.9s)
+    -- Generating done (2.4s)
+    -- Build files have been written to: D:/opencpn-plugin-template-main
+    ncdf_pi-i18n: Done.
+    WXJSON.vcxproj -> D:\opencpn-plugin-template-main\opencpn-libs\wxJSON\Release\WXJSON.lib
+    _DC_UTILS.vcxproj -> D:\opencpn-plugin-template-main\opencpn-libs\plugin_dc\dc_utils\Release\_DC_UTILS.lib
+    ncdfoverlayfactory.cpp
+      姝ｅ湪鍒涘缓搴?D:/opencpn-plugin-template-main/Release/ncdf_pi.lib 鍜屽璞?D:/opencpn-plugin-template-main/Release/ncdf_pi.exp
+    ncdf_pi.vcxproj -> D:\opencpn-plugin-template-main\Release\ncdf_pi.dll
+C:\Program Files (x86)\MSBuild\Microsoft.Cpp\v4.0\Microsoft.CppBuild.targets(283,5): error MSB8013: 此项目不包含配置和平台组合 Release|Win32。 [D:\opencpn-plugin-template-main\tarball-install.vcxproj]
+  _DC_UTILS.vcxproj -> D:\opencpn-plugin-template-main\opencpn-libs\plugin_dc\dc_utils\Release\_DC_UTILS.lib
+  WXJSON.vcxproj -> D:\opencpn-plugin-template-main\opencpn-libs\wxJSON\Release\WXJSON.lib
+C:\Program Files (x86)\MSBuild\Microsoft.Cpp\v4.0\Microsoft.CppBuild.targets(283,5): error MSB8013: 此项目不包含配置和平台组合 Release|Win32。 [D:\opencpn-plugin-template-main\android-build.vcxproj]
+C:\Program Files (x86)\MSBuild\Microsoft.Cpp\v4.0\Microsoft.CppBuild.targets(283,5): error MSB8013: 此项目不包含配置和平台组合 Release|Win32。 [D:\opencpn-plugin-template-main\flatpak-conf.vcxproj]
+C:\Program Files (x86)\MSBuild\Microsoft.Cpp\v4.0\Microsoft.CppBuild.targets(283,5): error MSB8013: 此项目不包含配置和平台组合 Release|Win32。 [D:\opencpn-plugin-template-main\ncdf_pi.vcxproj]

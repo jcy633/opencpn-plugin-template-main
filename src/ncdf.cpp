@@ -80,6 +80,10 @@ MainDialog::MainDialog(wxWindow *parent) : ncdfDialog( parent ), m_isTreeUpdatin
 	m_bpNext->SetBitmap(wxBitmap(next1));
 	m_fileButton->SetBitmap(wxBitmap(openfile));
 
+	// Connect prev/next buttons to handlers
+	m_bpPrev->Connect( wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler( MainDialog::onPrev ), NULL, this );
+	m_bpNext->Connect( wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler( MainDialog::onNext ), NULL, this );
+
 	BuildHelpPage();
 
 	/* Ensure dialog and its contents can be resized */
@@ -91,7 +95,11 @@ MainDialog::MainDialog(wxWindow *parent) : ncdfDialog( parent ), m_isTreeUpdatin
 MainDialog::~MainDialog()
 {
 	ncdfLog("[ncdf] ~MainDialog: started\n");
-	
+
+	// Disconnect prev/next buttons
+	m_bpPrev->Disconnect( wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler( MainDialog::onPrev ), NULL, this );
+	m_bpNext->Disconnect( wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler( MainDialog::onNext ), NULL, this );
+
 	if(log_window_m)
 		delete log_window_m;
 	
@@ -117,6 +125,7 @@ MainDialog::~MainDialog()
 	pPlugIn->m_choice = m_choiceTime->GetSelection();
 	pPlugIn->m_bShowCurrentDir = m_checkBoxDCurrent->GetValue();
 	pPlugIn->m_bShowCurrentForce = m_checkBoxBmpCurrentForce->GetValue();
+	pPlugIn->m_bShowParticles = m_checkBoxParticles->GetValue();
 	
 	ncdfLog("[ncdf] ~MainDialog: settings saved\n");
 	
@@ -134,6 +143,7 @@ void MainDialog::setPlugIn(ncdf_pi *p)
   m_choiceTime->SetSelection(pPlugIn->m_choice);
   m_checkBoxDCurrent->SetValue(pPlugIn->m_bShowCurrentDir);
   m_checkBoxBmpCurrentForce->SetValue(pPlugIn->m_bShowCurrentForce);
+  m_checkBoxParticles->SetValue(pPlugIn->m_bShowParticles);
 }
 
 void MainDialog::SetCursorLatLon(double lat, double lon)
@@ -985,6 +995,10 @@ int MainDialog::nc_get(wxString filestr){
 		myncdfData.firstGridPointLong = firstGridPointLon;
 		myncdfData.lastGridPointLat = lastGridPointLat;
 		myncdfData.lastGridPointLong = lastGridPointLon;
+		if (i == 0) {
+			ncdfLog("[ncdf] nc_get: bounds from file: lat[%.2f,%.2f] lon[%.2f,%.2f] file=%s\n",
+				firstGridPointLat, lastGridPointLat, firstGridPointLon, lastGridPointLon, filename);
+		}
 		myncdfData.iDirectionIncr = iDirectionIncr;
 		myncdfData.jDirectionIncr = jDirectionIncr;
 		myncdfData.fileName = filename;
@@ -1376,18 +1390,51 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 		return;
 	}
 	
-	if (this->m_treeCtrl->HasChildren(event.GetItem())){ 
-	    ncdfLog("[ncdf] onTreeSelectionChanged: has children, returning\n");
-		ncdfDialog::onTreeSelectionChanged(event); 
-		return; 
+	if (this->m_treeCtrl->HasChildren(event.GetItem())){
+	    // File node clicked: load data and auto-select first time step
+	    wxString fn = m_treeCtrl->GetItemText(event.GetItem());
+	    wxString fileName = m_textCtrlDir->GetValue() + _T("\\") + fn;
+	    ncdfLogW(L"[ncdf] file node clicked: fn=%ls, fileName=%ls\n", (const wchar_t*)fn.c_str(), (const wchar_t*)fileName.c_str());
+	    int ret = nc_get(fileName);
+	    ncdfLog("[ncdf] nc_get returned: %d, myDataVector size=%d\n", ret, (int)myDataVector.size());
+	    // Auto-select first time step
+	    wxTreeItemIdValue cookie;
+	    wxTreeItemId firstChild = m_treeCtrl->GetFirstChild(event.GetItem(), cookie);
+	    if (firstChild.IsOk()) {
+	        m_treeCtrl->SelectItem(firstChild);
+	    }
+		ncdfDialog::onTreeSelectionChanged(event);
+		return;
     }
 
 	ncdfDialog::onTreeSelectionChanged(event);
-	
+
 	MyTreeItemData* data = (MyTreeItemData*)this->m_treeCtrl->GetItemData(event.GetItem());
 	if (data) {
 		int idx = data->m_index;
-		ncdfLog("[ncdf] onTreeSelectionChanged: got MyTreeItemData=%p, index=%d, vectorSize=%d\n", 
+
+		// Check if we need to load a different file first
+		wxTreeItemId parentItem = m_treeCtrl->GetItemParent(event.GetItem());
+		if (parentItem.IsOk()) {
+			wxString fn = m_treeCtrl->GetItemText(parentItem);
+			wxString fileName = m_textCtrlDir->GetValue() + _T("\\") + fn;
+			if (fileName != m_currentFilePath) {
+				ncdfLogW(L"[ncdf] onTreeSelectionChanged: switching to file %ls\n", (const wchar_t*)fn.c_str());
+				myDataVector.clear();
+				m_lastSelectedTimeIndex = -1;
+				m_choiceTime->Clear();
+				int ret = nc_get(fileName);
+				if (ret != 0) {
+					ncdfLog("[ncdf] onTreeSelectionChanged: nc_get failed for %s\n", (const char*)fn.mb_str());
+					return;
+				}
+				m_currentFilePath = fileName;
+				// Update idx since myDataVector was rebuilt
+				idx = data->m_index;
+			}
+		}
+
+		ncdfLog("[ncdf] onTreeSelectionChanged: got MyTreeItemData=%p, index=%d, vectorSize=%d\n",
 			data, idx, (int)myDataVector.size());
 		
 		if (idx < 0 || idx >= (int)myDataVector.size()) {
@@ -1402,6 +1449,9 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 		
 		myData = myDataVector[idx];
 		m_lastSelectedTimeIndex = idx;
+
+		// Sync slider with tree selection
+		m_sTimeline->SetValue(idx);
 		
 		wxString timeText;
 		if (myData.timeValid) {
@@ -1429,11 +1479,11 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 
 void MainDialog::onTimeChange(wxCommandEvent& event){
     int selectedIndex = m_choiceTime->GetSelection();
-    
+
     if (selectedIndex >= 0 && selectedIndex < (int)myDataVector.size()) {
         myData = myDataVector[selectedIndex];
         m_lastSelectedTimeIndex = selectedIndex;
-        
+
         wxString timeText;
         if (myData.timeValid) {
             timeText = myData.dataDateTime.Format(_T("%Y-%m-%d %H:%M"));
@@ -1441,8 +1491,42 @@ void MainDialog::onTimeChange(wxCommandEvent& event){
             timeText = wxString::Format(_("时间%d"), selectedIndex + 1);
         }
         m_staticTextDateTime->SetLabel(timeText);
-        
+
+        // Sync slider
+        m_sTimeline->SetValue(selectedIndex);
+
         readTimeStepData(myData);
+        my_ncdfReader->readncdfFile(myData);
+        RequestRefresh(m_parent);
+    }
+}
+
+void MainDialog::OnTimeline(wxScrollEvent& event)
+{
+    int selectedIndex = m_sTimeline->GetValue();
+
+    // Only switch time steps within the current file (don't load new files)
+    if (selectedIndex >= 0 && selectedIndex < (int)myDataVector.size()) {
+        if (m_lastSelectedTimeIndex >= 0 && m_lastSelectedTimeIndex < (int)myDataVector.size()) {
+            myDataVector[m_lastSelectedTimeIndex].clear();
+        }
+
+        myData = myDataVector[selectedIndex];
+        m_lastSelectedTimeIndex = selectedIndex;
+
+        // Sync choice control
+        m_choiceTime->SetSelection(selectedIndex);
+
+        wxString timeText;
+        if (myData.timeValid) {
+            timeText = myData.dataDateTime.Format(_T("%Y-%m-%d %H:%M"));
+        } else {
+            timeText = wxString::Format(_("时间%d"), selectedIndex + 1);
+        }
+        m_staticTextDateTime->SetLabel(timeText);
+
+        readTimeStepData(myData);
+        my_ncdfReader->readncdfFile(myData);
         RequestRefresh(m_parent);
     }
 }
@@ -1458,10 +1542,18 @@ void MainDialog::onTreeItemRightClick(wxTreeEvent& event)
 
 void MainDialog::onDCurrentClick( wxCommandEvent& event )
 {
+	pPlugIn->m_bShowCurrentDir = m_checkBoxDCurrent->GetValue();
 	RequestRefresh(m_parent);
 }
 void MainDialog::onBmpCurrentForceClick(wxCommandEvent& event)
 {
+	pPlugIn->m_bShowCurrentForce = m_checkBoxBmpCurrentForce->GetValue();
+	RequestRefresh(m_parent);
+}
+
+void MainDialog::onParticlesClick(wxCommandEvent& event)
+{
+	pPlugIn->m_bShowParticles = !pPlugIn->m_bShowParticles;
 	RequestRefresh(m_parent);
 }
 
@@ -1521,28 +1613,27 @@ void MainDialog::addChildren(wxTreeItemId id, wxString fn)
 	fileName = this->m_textCtrlDir->GetValue()+_("\\")+fn;
 	
 	ncdfLogW(L"[ncdf] addChildren: fileName=%ls\n", (const wchar_t*)fileName.c_str());
-	
+
 	/* Save existing data in case nc_get fails */
 	std::vector<ncdfDataMessage> savedVector = myDataVector;
 	int savedIndex = m_lastSelectedTimeIndex;
-	
+
 	myDataVector.clear();
 	m_lastSelectedTimeIndex = -1;
 	m_choiceTime->Clear();
-	
+	m_currentFilePath = fileName;
+
 	ncdfLog("[ncdf] addChildren: calling nc_get\n");
-	
 	int ret = nc_get(fileName);
-	
+
 	if (ret != 0) {
 		/* Restore previous data on failure */
 		myDataVector = savedVector;
 		m_lastSelectedTimeIndex = savedIndex;
-		ncdfLog("[ncdf] addChildren: nc_get failed with return code=%d, restored existing data (size=%d)\n", 
+		ncdfLog("[ncdf] addChildren: nc_get failed with return code=%d, restored existing data (size=%d)\n",
 			ret, (int)myDataVector.size());
 		return;
 	}
-	
 	ncdfLog("[ncdf] addChildren: nc_get returned, myDataVector size=%d\n", (int)myDataVector.size());
 
 	int timeIndex = 0;
@@ -1575,10 +1666,17 @@ void MainDialog::addChildren(wxTreeItemId id, wxString fn)
 		this->m_treeCtrl->SetItemData(itemId, treeItemData);
 		
 		m_choiceTime->Append(itemText);
-		
+
 		timeIndex++;
 	}
-	
+
+	// Update slider range to match number of time steps
+	int nSteps = (int)myDataVector.size();
+	if (nSteps > 0) {
+		m_sTimeline->SetRange(0, nSteps - 1);
+		m_sTimeline->SetValue(0);
+	}
+
 	ncdfLog("[ncdf] addChildren: completed\n");
 
 }

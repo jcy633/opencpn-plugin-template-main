@@ -133,6 +133,24 @@ private:
 	 wxGraphicsContext *m_gdc;
 #endif
 	 bool m_hiDefGraphics;
+
+	 // Particle system
+	 void *m_ParticleMap;
+	 wxTimer m_tParticleTimer;
+	 bool m_bUpdateParticles;
+	 void ClearParticles();
+	 void RenderParticles(PlugIn_ViewPort *vp);
+
+	 // GL texture cache for color map
+	 GLuint m_glColorTexture;
+	 bool m_bHasColorTexture;
+	 int m_texDataDim[2];
+	 int m_texGLDim[2];
+	 int m_lvaSize;
+	 double (*m_lva)[2][2];
+	 void CreateColorTexture(PlugIn_ViewPort *vp);
+	 void DrawColorTexture(PlugIn_ViewPort *vp);
+	 void DeleteColorTexture();
 };
 
 

@@ -107,6 +107,7 @@ public:
 	
 	bool readTimeStepData(ncdfDataMessage& dataMessage);
 	bool m_isTreeUpdating;
+	wxString m_currentFilePath;  // Track which file is currently loaded
 
 private:
 	void UpdateTrackingControls();
@@ -126,6 +127,7 @@ protected:
 	virtual void OnExitClick( wxCommandEvent& event );
 	virtual void onFileButtonClick(wxCommandEvent& event);
 	virtual void onTimeChange(wxCommandEvent& event);
+	void OnTimeline(wxScrollEvent& event);
 	virtual void onPrev(wxCommandEvent& event);
 	virtual void onNext(wxCommandEvent& event);
 
@@ -137,6 +139,7 @@ protected:
 	virtual void onTreeItemRightClick(wxTreeEvent& event);
 	virtual void onDCurrentClick( wxCommandEvent& event );
 	virtual void onBmpCurrentForceClick( wxCommandEvent& event );
+	virtual void onParticlesClick( wxCommandEvent& event );
 	void fillDirTree(wxString dir, bool start, wxTreeItemId id);
 	void addChildren(wxTreeItemId id, wxString s);
 	void readData(wxTreeItemId itemId);

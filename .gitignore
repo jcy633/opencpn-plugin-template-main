@@ -31,6 +31,7 @@ cmake_output.txt
 netcdf/
 opencpn-libs/
 wxWidgets/
+grib_pi/
 cache/
 build-deps/
 wxWidgetsDLL.7z

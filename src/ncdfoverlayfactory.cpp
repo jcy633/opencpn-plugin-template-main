@@ -57,23 +57,57 @@ ncdfOverlayFactory::ncdfOverlayFactory()
       space[0]=30; space[1]=50; space[2]=100; space[3]=200; space[4]=400; space[5]=600; space[6]=1200;
 	  m_bReadyToRender = false;
       m_space = 0;
+      m_ParticleMap = nullptr;
+      m_glColorTexture = 0;
+      m_bHasColorTexture = false;
+      m_texDataDim[0] = m_texDataDim[1] = 0;
+      m_texGLDim[0] = m_texGLDim[1] = 0;
+      m_lvaSize = 0;
+      m_lva = nullptr;
+
+      // Timer for particle animation (GRIB-style ONE_SHOT)
+      m_tParticleTimer.Bind(wxEVT_TIMER, [this](wxTimerEvent&) {
+          m_bUpdateParticles = true;
+          GetOCPNCanvasWindow()->Refresh(false);
+      });
+      m_bUpdateParticles = true;
 }
 
 ncdfOverlayFactory::~ncdfOverlayFactory()
 {
     m_bReadyToRender = false;
 	renderSelectionRectangle = false;
+    if (m_tParticleTimer.IsRunning()) m_tParticleTimer.Stop();
+    DeleteColorTexture();
+    delete[] m_lva; m_lva = nullptr;
+    ClearParticles();
 }
 
 void ncdfOverlayFactory::setData(MainDialog *gui, ncdf_pi *plugin, ncdfDataMessage g2data, int numberOfPoints, wxDouble tlat, wxDouble tlon, wxDouble blat, wxDouble blon)
 {
+	// Clear ALL cached data when switching files/time steps
+	DeleteColorTexture();
+	ClearParticles();
+	m_last_vp_scale = -1;
+	m_last_vp_latMax = -99999.0;
+	m_bUpdateParticles = true;
 
 	this->g2data = g2data;
 	this->numberOfPoints = numberOfPoints;
-    this->tlat = tlat; this->tlon = tlon; this->blat = blat; this->blon = blon;
     this->gui = gui;
     this->plugin = plugin;
-    
+
+    // Use the bounds passed from readncdfFile (from the actual data)
+    // Sort to ensure correct ordering: north > south, west < east
+    this->tlat = wxMax(tlat, blat);
+    this->blat = wxMin(tlat, blat);
+    this->tlon = wxMin(tlon, blon);
+    this->blon = wxMax(tlon, blon);
+
+	wxLogMessage(_T("[setData] bounds: lat[%.2f,%.2f] lon[%.2f,%.2f] ni=%d nj=%d"),
+        this->tlat, this->blat, this->tlon, this->blon,
+        (int)gui->myMessage.lonLength, (int)gui->myMessage.latLength);
+
     this->m_bReadyToRender = true;
 }
 
@@ -126,21 +160,188 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 	  m_space = space[3];  
 
     }
-	if (m_last_vp_latMax)	
-
-		if (m_last_vp_latMax != vp->lat_max)
-		{
-			clearBmp();
-		}
+	// No need to clear on viewport change - texture is cached
+	m_last_vp_latMax = vp->lat_max;
 
 	if (!m_bReadyToRender) return false;
 
+	// Don't render until we have valid grid data
+	if (!gui || !gui->gridu || !gui->gridv) return false;
+	if (gui->myMessage.lonLength < 2 || gui->myMessage.latLength < 2) return false;
 
-	if(plugin->m_bShowCurrentForce)
-      RenderncdfCurrentBmp();    
-	
-	if(plugin->m_bShowCurrentDir)
-      RenderncdfCurrent();    
+	static int s_renderDbg = 0;
+	if (s_renderDbg < 10) {
+		wxLogMessage(_T("[render] ready=%d gui=%p gridu=%p ni=%d showF=%d showD=%d showP=%d"),
+			(int)m_bReadyToRender, gui,
+			gui ? (void*)gui->gridu : nullptr,
+			gui ? (int)gui->myMessage.lonLength : 0,
+			plugin ? (int)plugin->m_bShowCurrentForce : -1,
+			plugin ? (int)plugin->m_bShowCurrentDir : -1,
+			plugin ? (int)plugin->m_bShowParticles : -1);
+		s_renderDbg++;
+	}
+
+	// Color map: GRIB-style tiled texture with caching
+	if(plugin->m_bShowCurrentForce && !m_pdc) {
+#ifdef ocpnUSE_GL
+      // Reset GL state to avoid inheriting GRIB's texture bindings
+      glDisable(GL_TEXTURE_2D);
+      glBindTexture(GL_TEXTURE_2D, 0);
+      // Always check if texture needs rebuild (data may have changed)
+      if (m_bHasColorTexture) {
+          if (m_texDataDim[0] != (int)gui->myMessage.lonLength ||
+              m_texDataDim[1] != (int)gui->myMessage.latLength) {
+              DeleteColorTexture();
+          }
+      }
+      // Build texture if needed
+      if (!m_bHasColorTexture) {
+          // Create and cache the texture (once per data change)
+          int ni = gui->myMessage.lonLength;
+          int nj = gui->myMessage.latLength;
+          if (ni > 1 && nj > 1) {
+              int tw = ni + 2, th = nj + 2;
+              unsigned char *texData = new unsigned char[tw * th * 4];
+              memset(texData, 0, tw * th * 4);
+
+              int transparency = 50;
+              if (plugin) transparency = plugin->m_iOverlayTransparency;
+              unsigned char globalAlpha = (unsigned char)(255 * (100 - transparency) / 100);
+
+              for (int j = 0; j < nj; j++) {
+                  int texRow = (gui->myMessage.jDirectionIncr >= 0) ? j : (nj - 1 - j);
+                  for (int i = 0; i < ni; i++) {
+                      int x = i + 1, y = texRow + 1;
+                      if (x >= tw - 1 || y >= th - 1) continue;
+                      double vx = gui->gridu[j][i];
+                      double vy = gui->gridv[j][i];
+                      int off = 4 * (y * tw + x);
+                      if (vx != ncdf_NOTDEF && vy != ncdf_NOTDEF && isfinite(vx) && isfinite(vy)) {
+                          double mag = sqrt(vx * vx + vy * vy);
+                          // Render all valid data including zero/near-zero flow
+                          wxColour c = GetSeaCurrentGraphicColor(mag);
+                          texData[off] = c.Red();
+                          texData[off+1] = c.Green();
+                          texData[off+2] = c.Blue();
+                          texData[off+3] = globalAlpha;
+                      }
+                  }
+              }
+
+              glGenTextures(1, &m_glColorTexture);
+              glBindTexture(GL_TEXTURE_2D, m_glColorTexture);
+              glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
+              glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
+              glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+              glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+              glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, tw, th, 0, GL_RGBA, GL_UNSIGNED_BYTE, texData);
+              m_bHasColorTexture = true;
+              m_texDataDim[0] = ni;
+              m_texDataDim[1] = nj;
+              m_texGLDim[0] = tw;
+              m_texGLDim[1] = th;
+              delete[] texData;
+          }
+      }
+
+      // Draw cached texture using tiled rendering (fast)
+      if (m_bHasColorTexture && m_glColorTexture != 0) {
+          int ni = m_texDataDim[0], nj = m_texDataDim[1];
+          int tw = m_texGLDim[0], th = m_texGLDim[1];
+          double north = this->tlat, south = this->blat;
+          double west = this->tlon, east = this->blon;
+
+          double gridSpacingLon = (east - west) / (ni - 1);
+          double gridSpacingLat = (north - south) / (nj - 1);
+          double lonstep = gridSpacingLon * (tw - 1.0) / (ni - 1.0);
+          double latstep = gridSpacingLat * (th - 1.0) / (nj - 1.0);
+          double clon = (west + east) / 2.0;
+
+          double pw = vp->view_scale_ppm * 1e6 / (pow(2, fabs(vp->clat) / 25));
+          if (pw < 20) pw = 20;
+          int xsquares = wxMax(2, (int)ceil(vp->pix_width / pw));
+          int ysquares = wxMax(2, (int)ceil(vp->pix_height / pw));
+          if (vp->rotation == 0 && vp->m_projection_type == PI_PROJECTION_MERCATOR)
+              xsquares = 1;
+          xsquares = wxMax(xsquares, 2);
+
+          double xs = vp->pix_width / (double)xsquares;
+          double ys = vp->pix_height / (double)ysquares;
+
+          // Pre-allocate lva if needed (reused across frames)
+          int neededLva = xsquares + 1;
+          if (m_lvaSize < neededLva) {
+              delete[] m_lva;
+              m_lvaSize = neededLva;
+              m_lva = new double[m_lvaSize][2][2];
+          }
+
+          int j = 0;
+          glEnable(GL_TEXTURE_2D);
+          glBindTexture(GL_TEXTURE_2D, m_glColorTexture);
+          glEnable(GL_BLEND);
+          glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+          glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+
+          for (double y = 0; y < vp->pix_height + ys / 2; y += ys) {
+              int i = 0;
+              for (double x = 0; x < vp->pix_width + xs / 2; x += xs) {
+                  double lat, lon;
+                  wxPoint p(x, y);
+                  GetCanvasLLPix(vp, p, &lat, &lon);
+
+                  if (clon - lon > 180) lon += 360;
+                  else if (lon - clon > 180) lon -= 360;
+
+                  m_lva[i][j][0] = ((lon - west) / lonstep + 1.5) / tw;
+                  m_lva[i][j][1] = ((lat - south) / latstep + 1.5) / th;
+                  if (gui->myMessage.jDirectionIncr < 0)
+                      m_lva[i][j][1] = 1.0 - m_lva[i][j][1];
+
+                  if (i > 0 && y > 0) {
+                      double u0 = m_lva[i-1][!j][0], v0 = m_lva[i-1][!j][1];
+                      double u1 = m_lva[i  ][!j][0], v1 = m_lva[i  ][!j][1];
+                      double u2 = m_lva[i  ][ j][0], v2 = m_lva[i  ][ j][1];
+                      double u3 = m_lva[i-1][ j][0], v3 = m_lva[i-1][ j][1];
+
+                      bool visible = (u0 >= 0 && u0 <= 1 && v0 >= 0 && v0 <= 1) ||
+                                     (u1 >= 0 && u1 <= 1 && v1 >= 0 && v1 <= 1) ||
+                                     (u2 >= 0 && u2 <= 1 && v2 >= 0 && v2 <= 1) ||
+                                     (u3 >= 0 && u3 <= 1 && v3 >= 0 && v3 <= 1);
+                      if (visible) {
+                          float sx = (float)(x - xs), sy = (float)(y - ys);
+                          float sw = (float)xs, sh = (float)ys;
+                          glBegin(GL_QUADS);
+                          glTexCoord2f(u0, v0); glVertex2f(sx, sy);
+                          glTexCoord2f(u1, v1); glVertex2f(sx + sw, sy);
+                          glTexCoord2f(u2, v2); glVertex2f(sx + sw, sy + sh);
+                          glTexCoord2f(u3, v3); glVertex2f(sx, sy + sh);
+                          glEnd();
+                      }
+                  }
+                  i++;
+              }
+              j = !j;
+          }
+
+          glDisable(GL_BLEND);
+          glDisable(GL_TEXTURE_2D);
+          glBindTexture(GL_TEXTURE_2D, 0);
+      }
+#endif
+	}
+
+	// Arrows
+	if(plugin->m_bShowCurrentDir) {
+      RenderncdfCurrent();
+	}
+
+	// Particles
+	if(plugin->m_bShowParticles) {
+      RenderParticles(vp);
+	} else {
+      ClearParticles();
+	}
 
     m_last_vp_scale = vp->view_scale_ppm;
     m_last_vp_latMax = vp->lat_max;    
@@ -150,12 +351,9 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 
 void ncdfOverlayFactory::clearBmp()
 {
-
-      if(m_pbm_current)
-	delete m_pbm_current;
-    
-	m_pbm_current 	= NULL;  
-	
+    // Don't delete color texture here - it persists until data changes
+    if(m_pbm_current) delete m_pbm_current;
+    m_pbm_current = NULL;
 }
 
 void ncdfOverlayFactory::RenderSelectionRectangle()
@@ -181,42 +379,45 @@ void ncdfOverlayFactory::RenderSelectionRectangle()
 
 void ncdfOverlayFactory::RenderncdfCurrent()
 {
-	
-      wxColour colour;
-      wxPoint p;
-	  int mi;	
-	 
+    if (!gui || !gui->gridu || !gui->gridv) return;
+    int ni = gui->myMessage.lonLength;
+    int nj = gui->myMessage.latLength;
+    if (ni < 2 || nj < 2) return;
 
-	  for (mi = 0; mi < numberOfPoints; mi++){		  
- 
-		  double lat = g2data.uvlats[mi];
-		  double lon = g2data.uvlons[mi];
+    // GRIB-style geographic grid with 80px minimum spacing
+    int arrowSpacing = 80;
+    wxPoint p1, p2;
+    GetCanvasPixLL(vp, &p1, vp->clat, vp->clon);
+    GetCanvasPixLL(vp, &p2, vp->clat + 1.0, vp->clon + 1.0);
+    double dy = fabs((double)(p2.y - p1.y));
+    double dx = fabs((double)(p2.x - p1.x));
+    double lat_sp = (dy > 1) ? arrowSpacing / dy : 1.0;
+    double lon_sp = (dx > 1) ? arrowSpacing / dx : 1.0;
+    if (lat_sp < 0.5) lat_sp = 0.5;
+    if (lon_sp < 0.5) lon_sp = 0.5;
 
-		  bool barbs = true;
+    double start_lat = floor(vp->lat_min / lat_sp) * lat_sp;
+    double start_lon = floor(vp->lon_min / lon_sp) * lon_sp;
 
-		  //    Set minimum spacing between wind arrows
-		  int space;
+    wxColour colour;
+    GetGlobalColor(_T("UBLCK"), &colour);
 
-		  if (barbs)
-			  space = 30;
-		  else
-			  space = 20;
-
-		  GetGlobalColor(_T("UBLCK"), &colour);
-		
-		  if (g2data.ucurr[mi] != ncdf_NOTDEF && g2data.vcurr[mi] != ncdf_NOTDEF){
-			  GetCanvasPixLL(vp, &p, lat, lon);
-			  if (PointInLLBox(vp, lon, lat))
-			  {
-				 double dir = 90. + (atan2(g2data.vcurr[mi], -g2data.ucurr[mi])  * 180. / PI);
-				 if (dir < 0) dir = 360 + dir;
-					  drawWaveArrow(p.x, p.y, dir - 90, colour);					
-			  }
-		  }
-	  }
+    for (double lat = start_lat; lat <= vp->lat_max; lat += lat_sp) {
+        for (double lon = start_lon; lon <= vp->lon_max; lon += lon_sp) {
+            double vx = gui->myMessage.getInterpolatedValue(gui->myMessage, gui->gridu, lon, lat, true);
+            double vy = gui->myMessage.getInterpolatedValue(gui->myMessage, gui->gridv, lon, lat, true);
+            if (vx == ncdf_NOTDEF || vy == ncdf_NOTDEF || !isfinite(vx) || !isfinite(vy)) continue;
+            double mag = sqrt(vx * vx + vy * vy);
+            if (mag < 0.01) continue;
+            wxPoint p;
+            GetCanvasPixLL(vp, &p, lat, lon);
+            if (!PointInLLBox(vp, lon, lat)) continue;
+            double dir = 90.0 + (atan2(vy, -vx) * 180.0 / PI);
+            if (dir < 0) dir += 360.0;
+            drawWaveArrow(p.x, p.y, dir - 90, colour);
+        }
+    }
 }
-
-
 bool ncdfOverlayFactory::RenderncdfCurrentBmp()
 {
 
@@ -339,32 +540,27 @@ bool ncdfOverlayFactory::RenderncdfCurrentBmp()
 
 void ncdfOverlayFactory::drawWaveArrow(int i, int j, double ang, wxColour arrowColor)
 {
- double si=sin(ang * PI / 180.),  co=cos(ang * PI / 180.);
+    // Simple solid single arrow (GRIB-style direction arrow)
+    double si = sin(ang * PI / 180.);
+    double co = cos(ang * PI / 180.);
+    int arrowSize = 20;
+    int dec = -arrowSize / 2;
 
- wxPen pen(arrowColor, 1);
- if (m_pdc) {	
-	 
-		  m_pdc->SetPen(pen);
-		  m_pdc->SetBrush(*wxTRANSPARENT_BRUSH);
-
-#if wxUSE_GRAPHICS_CONTEXT
-		  if (m_hiDefGraphics && m_gdc)
-			  m_gdc->SetPen(pen);
-#endif
-			}
+    wxPen pen(arrowColor, 2);
+    if (m_pdc) {
+        m_pdc->SetPen(pen);
+        m_pdc->SetBrush(*wxTRANSPARENT_BRUSH);
+    }
 #ifdef ocpnUSE_GL
-	  else
-		  glColor3ub(arrowColor.Red(), arrowColor.Green(), arrowColor.Blue());
+    else
+        glColor3ub(arrowColor.Red(), arrowColor.Green(), arrowColor.Blue());
 #endif
-      int arrowSize = 26;
-      int dec = -arrowSize/2;
 
-      drawTransformedLine(pen, si,co, i,j,  dec,-2,  dec + arrowSize, -2);
-	  drawTransformedLine(pen, si, co, i, j, dec, 2, dec + arrowSize, +2);
-
-	  drawTransformedLine(pen, si, co, i, j, dec - 2, 0, dec + 5, 6);    // flèche
-	  drawTransformedLine(pen, si, co, i, j, dec - 2, 0, dec + 5, -6);   // flèche
-
+    // Arrow shaft
+    drawTransformedLine(pen, si, co, i, j, dec, 0, dec + arrowSize, 0);
+    // Arrow head (V shape)
+    drawTransformedLine(pen, si, co, i, j, dec, 0, dec + 7, 5);
+    drawTransformedLine(pen, si, co, i, j, dec, 0, dec + 7, -5);
 }
 
 void ncdfOverlayFactory::drawTransformedLine( wxPen pen, double si, double co,int di, int dj, int i,int j, int k,int l)
@@ -1180,36 +1376,419 @@ bool PointInLLBox(PlugIn_ViewPort *vp, double x, double y)
 
 wxColour ncdfOverlayFactory::GetSeaCurrentGraphicColor(double val_in)
 {
-      //    HTML colors taken from NOAA WW3 Web representation
+    // Custom color map with 5 flow speed ranges
+    // <0.2: micro (deep blue), 0.2-0.5: low (blue-cyan), 0.5-1.0: medium (cyan-green),
+    // 1.0-1.5: high (green-yellow), >1.5: very high (orange-red)
+    double val = wxMax(val_in, 0.0);
 
-      double val = val_in;
-     // val *= 50. / 2.;
+    // Color stops: {speed, R, G, B}
+    static const double stops[][4] = {
+        {0.0,  20,  20, 180},  // deep blue (micro)
+        {0.2,  30,  80, 220},  // blue (micro/low boundary)
+        {0.5,  0,  180, 220},  // cyan (low/medium boundary)
+        {1.0,  0,  200,  80},  // green (medium/high boundary)
+        {1.5, 220, 220,  20},  // yellow (high/very high boundary)
+        {2.0, 240, 100,  20},  // orange
+        {3.0, 220,  20,  20},  // red (very high)
+    };
+    const int nStops = sizeof(stops) / sizeof(stops[0]);
 
-      val = wxMax(val, 0.0);
+    // Clamp to range
+    if (val <= stops[0][0]) {
+        return wxColour((unsigned char)stops[0][1], (unsigned char)stops[0][2], (unsigned char)stops[0][3]);
+    }
+    if (val >= stops[nStops - 1][0]) {
+        return wxColour((unsigned char)stops[nStops-1][1], (unsigned char)stops[nStops-1][2], (unsigned char)stops[nStops-1][3]);
+    }
 
-      wxColour c;
-      if((val >= 0) && (val < .25))            c.Set(_T("#002ad9"));
-      else if((val >= 0.25) && (val < 0.50))   c.Set(_T("#006ed9"));
-      else if((val >= 0.50) && (val < 1.00))   c.Set(_T("#00b2d9"));
-      else if((val >= 1.00) && (val < 1.25))   c.Set(_T("#00d4d4"));
-      else if((val >= 1.25) && (val < 1.50))   c.Set(_T("#00d9a6"));
-      else if((val >= 1.50) && (val < 1.75))   c.Set(_T("#00d900"));
-      else if((val >= 1.75) && (val < 2.00))   c.Set(_T("#95d900"));
-      else if((val >= 2.00) && (val < 2.25))   c.Set(_T("#d9d900"));
-      else if((val >= 2.25) && (val < 2.50))   c.Set(_T("#d9ae00"));
-      else if((val >= 2.50) && (val < 2.75))   c.Set(_T("#d98300"));
-      else if((val >= 2.75) && (val < 3.00))   c.Set(_T("#d95700"));
-      else if((val >= 3.00) && (val < 3.25))   c.Set(_T("#d90000"));
-      else if((val >= 3.25) && (val < 3.50))   c.Set(_T("#ae0000"));
-      else if((val >= 3.50) && (val < 3.75))   c.Set(_T("#8c0000"));
-      else if((val >= 3.75) && (val < 4.00))   c.Set(_T("#870000"));
-      else if((val >= 4.00) && (val < 4.25))   c.Set(_T("#690000"));
-      else if((val >= 4.25) && (val < 4.50))   c.Set(_T("#550000"));
-      else if( val >= 4.50)                    c.Set(_T("#410000"));
+    // Find the two stops to interpolate between
+    for (int i = 1; i < nStops; i++) {
+        if (val <= stops[i][0]) {
+            double range = stops[i][0] - stops[i-1][0];
+            double t = (range > 0) ? (val - stops[i-1][0]) / range : 0;
 
-      return c;
+            // Smooth interpolation (ease-in-out)
+            t = t * t * (3.0 - 2.0 * t);
+
+            unsigned char r = (unsigned char)(stops[i-1][1] + t * (stops[i][1] - stops[i-1][1]));
+            unsigned char g = (unsigned char)(stops[i-1][2] + t * (stops[i][2] - stops[i-1][2]));
+            unsigned char b = (unsigned char)(stops[i-1][3] + t * (stops[i][3] - stops[i-1][3]));
+            return wxColour(r, g, b);
+        }
+    }
+
+    return wxColour(220, 20, 20);  // fallback red
 }
 
+
+//===================================================================
+// Color texture (GRIB-style GL texture for color map)
+//===================================================================
+void ncdfOverlayFactory::DeleteColorTexture()
+{
+    if (m_bHasColorTexture && m_glColorTexture) {
+        glDeleteTextures(1, &m_glColorTexture);
+        m_glColorTexture = 0;
+        m_bHasColorTexture = false;
+    }
+}
+
+void ncdfOverlayFactory::CreateColorTexture(PlugIn_ViewPort *vp)
+{
+    if (!gui || !gui->gridu || !gui->gridv) return;
+    int ni = gui->myMessage.lonLength;
+    int nj = gui->myMessage.latLength;
+    if (ni < 2 || nj < 2) return;
+
+    int tw = ni + 2, th = nj + 2;
+    if (tw > 1024 || th > 1024) {
+        double scale = 1024.0 / wxMax(ni, nj);
+        tw = (int)(ni * scale) + 2;
+        th = (int)(nj * scale) + 2;
+    }
+    m_texDataDim[0] = ni; m_texDataDim[1] = nj;
+    m_texGLDim[0] = tw; m_texGLDim[1] = th;
+
+    unsigned char *data = new unsigned char[tw * th * 4];
+    memset(data, 0, tw * th * 4);
+
+    int transparency = 50;
+    if (plugin) transparency = plugin->m_iOverlayTransparency;
+    unsigned char alpha = (unsigned char)(255 * (100 - transparency) / 100);
+
+    // Fill texture with velocity magnitude data
+    for (int j = 0; j < nj; j++) {
+        for (int i = 0; i < ni; i++) {
+            int x = i + 1, y = j + 1;
+            if (x >= tw - 1 || y >= th - 1) continue;
+            double vx = gui->gridu[j][i];
+            double vy = gui->gridv[j][i];
+            int off = 4 * (y * tw + x);
+            if (vx != ncdf_NOTDEF && vy != ncdf_NOTDEF && isfinite(vx) && isfinite(vy)) {
+                double mag = sqrt(vx * vx + vy * vy);
+                wxColour c = GetSeaCurrentGraphicColor(mag);
+                data[off] = c.Red(); data[off+1] = c.Green(); data[off+2] = c.Blue();
+                data[off+3] = (mag < 0.01) ? 0 : alpha;
+            } else { data[off+3] = 0; }
+        }
+    }
+
+    for (int x = 0; x < tw; x++) { data[4*x+3] = 0; data[4*((th-1)*tw+x)+3] = 0; }
+    for (int y = 0; y < th; y++) { data[4*y*tw+3] = 0; data[4*(y*tw+tw-1)+3] = 0; }
+
+    DeleteColorTexture();
+    glGenTextures(1, &m_glColorTexture);
+    glBindTexture(GL_TEXTURE_2D, m_glColorTexture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, tw, th, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+    m_bHasColorTexture = true;
+    delete[] data;
+}
+
+void ncdfOverlayFactory::DrawColorTexture(PlugIn_ViewPort *vp)
+{
+    if (!m_bHasColorTexture || !m_glColorTexture || !gui) return;
+    double lat1 = gui->myMessage.firstGridPointLat;
+    double lon1 = gui->myMessage.firstGridPointLong;
+    double lat2 = gui->myMessage.lastGridPointLat;
+    double lon2 = gui->myMessage.lastGridPointLong;
+    // Ensure correct ordering: north > south, east > west
+    double tlat = wxMax(lat1, lat2);
+    double blat = wxMin(lat1, lat2);
+    double tlon = wxMin(lon1, lon2);
+    double blon = wxMax(lon1, lon2);
+    int ni = gui->myMessage.lonLength;
+    int nj = gui->myMessage.latLength;
+    int tw = m_texGLDim[0], th = m_texGLDim[1];
+    double potNormX = (double)m_texDataDim[0] / tw;
+    double potNormY = (double)m_texDataDim[1] / th;
+
+    wxPoint pTL, pBR;
+    GetCanvasPixLL(vp, &pTL, tlat, tlon);
+    GetCanvasPixLL(vp, &pBR, blat, blon);
+
+    float u0 = (float)(1.0 / tw) * potNormX;
+    float u1 = (float)((ni + 1.0) / tw) * potNormX;
+    float v0 = (float)(1.0 / th) * potNormY;
+    float v1 = (float)((nj + 1.0) / th) * potNormY;
+
+    glEnable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, m_glColorTexture);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+    glBegin(GL_QUADS);
+    glTexCoord2f(u0, v0); glVertex2f(pTL.x, pTL.y);
+    glTexCoord2f(u1, v0); glVertex2f(pBR.x, pTL.y);
+    glTexCoord2f(u1, v1); glVertex2f(pBR.x, pBR.y);
+    glTexCoord2f(u0, v1); glVertex2f(pTL.x, pBR.y);
+    glEnd();
+    glDisable(GL_BLEND);
+    glDisable(GL_TEXTURE_2D);
+}
+
+//===================================================================
+// Particle system (GRIB port)
+//===================================================================
+#define MAX_PARTICLE_HISTORY 8
+
+struct Particle {
+    int m_Duration;
+    int m_HistoryPos, m_HistorySize, m_Run;
+    struct ParticleNode {
+        float m_Pos[2];
+        float m_Screen[2];
+        unsigned char m_Color[3];
+    } m_History[MAX_PARTICLE_HISTORY];
+};
+
+struct ParticleMap {
+    ParticleMap() : history_size(0) { last_viewport.bValid = false; }
+    ~ParticleMap() {}
+    std::vector<Particle> m_Particles;
+    int history_size;
+    PlugIn_ViewPort last_viewport;
+};
+
+void ncdfOverlayFactory::ClearParticles() {
+    delete static_cast<ParticleMap*>(m_ParticleMap);
+    m_ParticleMap = nullptr;
+}
+
+void ncdfOverlayFactory::RenderParticles(PlugIn_ViewPort *vp)
+{
+    if (!gui || !gui->gridu || !gui->gridv) return;
+    int ni = gui->myMessage.lonLength;
+    int nj = gui->myMessage.latLength;
+    if (ni <= 1 || nj <= 1) return;
+    double tlat = gui->myMessage.firstGridPointLat;
+    double tlon = gui->myMessage.firstGridPointLong;
+    double blat = gui->myMessage.lastGridPointLat;
+    double blon = gui->myMessage.lastGridPointLong;
+    if (tlat >= blat || tlon >= blon) return;
+
+    if (!m_ParticleMap) m_ParticleMap = new ParticleMap();
+    ParticleMap *pm = static_cast<ParticleMap*>(m_ParticleMap);
+    std::vector<Particle> &particles = pm->m_Particles;
+
+    const int max_duration = 50;
+    const int run_count = 6;
+    int sliderVal = 5;
+    if (gui && gui->pPlugIn) sliderVal = gui->pPlugIn->m_iParticleDensity;
+    // GRIB formula: history_size = 27 / sqrt(density)
+    // density = 0.2 * slider → slider=5 → density=1.0 → history_size=27 (capped at 8)
+    double density = 0.2 * sliderVal;
+    int history_size = 27 / sqrt(wxMax(density, 0.1));
+    history_size = wxMax(4, wxMin(history_size, MAX_PARTICLE_HISTORY));
+
+    // Viewport caching
+    PlugIn_ViewPort &lvp = pm->last_viewport;
+    if (lvp.bValid == false || vp->view_scale_ppm != lvp.view_scale_ppm ||
+        vp->skew != lvp.skew || vp->rotation != lvp.rotation ||
+        vp->clat != lvp.clat || vp->clon != lvp.clon) {
+        for (auto it = particles.begin(); it != particles.end(); it++)
+            for (int i = 0; i < it->m_HistorySize; i++) {
+                Particle::ParticleNode &n = it->m_History[i];
+                if (n.m_Pos[0] == -10000) continue;
+                wxPoint ps;
+                GetCanvasPixLL(vp, &ps, n.m_Pos[1], n.m_Pos[0]);
+                n.m_Screen[0] = ps.x; n.m_Screen[1] = ps.y;
+            }
+        lvp = *vp;
+    }
+
+    // Update particle positions (GRIB: only when timer fires)
+    if (m_bUpdateParticles) {
+    for (unsigned int i = 0; i < particles.size(); i++) {
+        Particle &it = particles[i];
+        if (++it.m_Run < run_count) continue;
+        it.m_Run = 0;
+        if (it.m_Duration > max_duration) {
+            it = particles[particles.size() - 1];
+            particles.pop_back();
+            i--;
+            continue;
+        }
+        it.m_Duration++;
+        float *pp = it.m_History[it.m_HistoryPos].m_Pos;
+        if (++it.m_HistorySize > history_size) it.m_HistorySize = history_size;
+        if (++it.m_HistoryPos >= history_size) it.m_HistoryPos = 0;
+        Particle::ParticleNode &n = it.m_History[it.m_HistoryPos];
+        float(&p)[2] = n.m_Pos;
+        double vx = gui->myMessage.getInterpolatedValue(gui->myMessage, gui->gridu, pp[0], pp[1], true);
+        double vy = gui->myMessage.getInterpolatedValue(gui->myMessage, gui->gridv, pp[0], pp[1], true);
+        double vkn = 0, ang;
+        if (vx != ncdf_NOTDEF && vy != ncdf_NOTDEF && isfinite(vx) && isfinite(vy)) {
+            double mag = sqrt(vx * vx + vy * vy);
+            ang = atan2(vx, vy) * 180.0 / PI;  // atan2(east, north) = bearing
+            vkn = mag;
+        } else { vkn = 0; ang = 0; }
+        if (it.m_Duration < max_duration - history_size && vkn > 0.001 && vkn < 100) {
+            // Scale m/s to make movement visible (GRIB uses knots which are ~2x larger)
+            double d = vkn * run_count * 2.0;
+            float angr = (float)(ang / 180.0 * PI);
+            float latr = pp[1] * (float)PI / 180.0f;
+            float D = (float)(d / 3443.0);
+            float sD = sinf(D), cD = cosf(D);
+            float sy = sinf(latr), cy = cosf(latr);
+            float sa = sinf(angr), ca = cosf(angr);
+            p[0] = pp[0] + asinf(sa * sD / cy) * 180.0f / (float)PI;
+            p[1] = asinf(sy * cD + cy * sD * ca) * 180.0f / (float)PI;
+            wxPoint ps;
+            GetCanvasPixLL(vp, &ps, p[1], p[0]);
+            n.m_Screen[0] = ps.x; n.m_Screen[1] = ps.y;
+            wxColour c = GetSeaCurrentGraphicColor(vkn);
+            n.m_Color[0] = c.Red(); n.m_Color[1] = c.Green(); n.m_Color[2] = c.Blue();
+        } else { p[0] = -10000; }
+    }
+
+    // Spawn/remove particles - limit 50K
+    int total_particles = 100 * sliderVal * sliderVal;
+    int max_grid = ni * nj;
+    if (total_particles > max_grid) total_particles = max_grid;
+    if (total_particles > 50000) total_particles = 50000;
+    int remove = ((int)particles.size() - total_particles) / 16;
+    for (int i = 0; i < remove; i++) particles.pop_back();
+    int run = 0;
+    int new_count = (total_particles - (int)particles.size()) / 16;
+    for (int npi = 0; npi < new_count; npi++) {
+        float p[2];
+        double vkn = 0, ang = 0;
+        // Velocity-based spawning: prefer high-flow areas
+        for (int attempt = 0; attempt < 20; attempt++) {
+            p[0] = tlon + static_cast<float>(rand()) / static_cast<float>(RAND_MAX) * (blon - tlon);
+            p[1] = tlat + static_cast<float>(rand()) / static_cast<float>(RAND_MAX) * (blat - tlat);
+            double vx = gui->myMessage.getInterpolatedValue(gui->myMessage, gui->gridu, p[0], p[1], true);
+            double vy = gui->myMessage.getInterpolatedValue(gui->myMessage, gui->gridv, p[0], p[1], true);
+            if (vx != ncdf_NOTDEF && vy != ncdf_NOTDEF && isfinite(vx) && isfinite(vy)) {
+                double mag = sqrt(vx * vx + vy * vy);
+                vkn = mag; ang = atan2(vx, vy) * 180.0 / PI;
+                // GRIB: prefer faster flow, relax threshold over attempts
+                if (vkn > 1.0 - (double)attempt / 20) break;
+            }
+        }
+        Particle np;
+        np.m_Duration = rand() % (max_duration / 2);
+        np.m_HistoryPos = 0; np.m_HistorySize = 1;
+        np.m_Run = run++;
+        if (run == run_count) run = 0;
+        memcpy(np.m_History[0].m_Pos, p, sizeof p);
+        wxPoint ps;
+        GetCanvasPixLL(vp, &ps, p[1], p[0]);
+        np.m_History[0].m_Screen[0] = ps.x; np.m_History[0].m_Screen[1] = ps.y;
+        wxColour c = GetSeaCurrentGraphicColor(vkn);
+        np.m_History[0].m_Color[0] = c.Red(); np.m_History[0].m_Color[1] = c.Green(); np.m_History[0].m_Color[2] = c.Blue();
+
+        // Pre-fill history with fake updates so trail is visible immediately
+        float fakePos[2] = {p[0], p[1]};
+        for (int h = 1; h < history_size && h < MAX_PARTICLE_HISTORY; h++) {
+            double fakeVx = gui->myMessage.getInterpolatedValue(gui->myMessage, gui->gridu, fakePos[0], fakePos[1], true);
+            double fakeVy = gui->myMessage.getInterpolatedValue(gui->myMessage, gui->gridv, fakePos[0], fakePos[1], true);
+            if (fakeVx != ncdf_NOTDEF && fakeVy != ncdf_NOTDEF && isfinite(fakeVx) && isfinite(fakeVy)) {
+                double fakeMag = sqrt(fakeVx*fakeVx + fakeVy*fakeVy);
+                double fakeAng = atan2(fakeVx, fakeVy) * 180.0 / PI;
+                double fakeD = fakeMag * run_count * 2.0;  // Match main speed
+                float fakeAngr = (float)(fakeAng / 180.0 * PI);
+                float fakeLatr = fakePos[1] * (float)PI / 180.0f;
+                float fakeDD = (float)(fakeD / 3443.0);
+                float sD = sinf(fakeDD), cD = cosf(fakeDD);
+                float sy = sinf(fakeLatr), cy = cosf(fakeLatr);
+                float sa = sinf(fakeAngr), ca = cosf(fakeAngr);
+                fakePos[0] = fakePos[0] + asinf(sa * sD / cy) * 180.0f / (float)PI;
+                fakePos[1] = asinf(sy * cD + cy * sD * ca) * 180.0f / (float)PI;
+            }
+            np.m_History[h].m_Pos[0] = fakePos[0];
+            np.m_History[h].m_Pos[1] = fakePos[1];
+            wxPoint fps;
+            GetCanvasPixLL(vp, &fps, fakePos[1], fakePos[0]);
+            np.m_History[h].m_Screen[0] = fps.x; np.m_History[h].m_Screen[1] = fps.y;
+            wxColour fc = GetSeaCurrentGraphicColor(vkn);
+            np.m_History[h].m_Color[0] = fc.Red(); np.m_History[h].m_Color[1] = fc.Green(); np.m_History[h].m_Color[2] = fc.Blue();
+            np.m_HistorySize = h + 1;
+            np.m_HistoryPos = h;
+        }
+
+        particles.push_back(np);
+    }
+    } // end m_bUpdateParticles
+    m_bUpdateParticles = false;
+
+    // Debug: log particle state
+    static int s_pDbg = 0;
+    if (s_pDbg < 5) {
+        wxLogMessage(_T("[particle] count=%zu, m_pdc=%p, history_size=%d"),
+            particles.size(), m_pdc, history_size);
+        s_pDbg++;
+    }
+
+    // Render with GRIB-style interpolation (immediate mode GL, stable)
+    if (!m_pdc && !particles.empty()) {
+#ifdef ocpnUSE_GL
+        glEnable(GL_LINE_SMOOTH);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glHint(GL_LINE_SMOOTH_HINT, GL_NICEST);
+        glLineWidth(2.3f);
+
+        for (auto it = particles.begin(); it != particles.end(); it++) {
+            wxUint8 alpha = 250;
+            int i = it->m_HistoryPos;
+
+            bool lip_valid = false;
+            float *lp = nullptr, lip[2];
+            wxUint8 lc[4];
+
+            for (;;) {
+                if (it->m_History[i].m_Pos[0] != -10000) {
+                    float *sp = it->m_History[i].m_Screen;
+                    wxUint8 *ci = it->m_History[i].m_Color;
+                    wxUint8 c[4] = {ci[0], ci[1], ci[2], alpha};
+
+                    if (lp && fabsf(lp[0] - sp[0]) < vp->pix_width) {
+                        float sip[2];
+                        float d = (float)it->m_Run / run_count;
+                        sip[0] = d * lp[0] + (1 - d) * sp[0];
+                        sip[1] = d * lp[1] + (1 - d) * sp[1];
+
+                        if (lip_valid && fabsf(lip[0] - sip[0]) < vp->pix_width) {
+                            glColor4ub(lc[0], lc[1], lc[2], lc[3]);
+                            glBegin(GL_LINES);
+                            glVertex2f(lip[0], lip[1]);
+                            glVertex2f(sip[0], sip[1]);
+                            glEnd();
+                        }
+                        lip[0] = sip[0]; lip[1] = sip[1];
+                        lip_valid = true;
+                    }
+                    memcpy(lc, c, sizeof lc);
+                    lp = sp;
+                }
+
+                if (--i < 0) {
+                    i = history_size - 1;
+                    if (i >= it->m_HistorySize) break;
+                }
+                if (i == it->m_HistoryPos) break;
+                alpha -= 240 / history_size;
+            }
+        }
+
+        glDisable(GL_LINE_SMOOTH);
+        glDisable(GL_BLEND);
+#ifdef __WXMSW__
+        glFlush();
+#endif
+#endif
+    }
+
+    // Adaptive timer (GRIB formula)
+    if (!m_tParticleTimer.IsRunning()) {
+        m_tParticleTimer.Start(50, wxTIMER_ONE_SHOT);
+    }
+}
 
 // Calculates if two boxes intersect. If so, the function returns _ON.
 // If they do not intersect, two scenario's are possible:
