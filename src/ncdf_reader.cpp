@@ -71,12 +71,14 @@ void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 				c++;
 		}
 	}
-	ncdfLog("[ncdf] readncdfFile: gridu data copied\n");
+	ncdfLog("[ncdf] readncdfFile: gridu data copied, about to allocate gridv...\n");
 	gui->gridv = new double*[dataMessage.noPointsMeridian];
+	ncdfLog("[ncdf] readncdfFile: gridv row pointers allocated\n");
 
 	for (wxUint32 i = 0; i < dataMessage.noPointsMeridian; ++i) {
 		gui->gridv[i] = new double[dataMessage.noPointsParallel];
 	}
+	ncdfLog("[ncdf] readncdfFile: gridv arrays allocated\n");
 	c = 0;
 	for (wxUint32 i = 0; i <dataMessage.noPointsMeridian; i++)    //This loops on the rows.Nj
 	{
@@ -87,13 +89,20 @@ void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 			c++;
 		}
 	}
+	ncdfLog("[ncdf] readncdfFile: gridv data copied, c=%d\n", c);
 
 	wxDateTime ddt;
 	ddt = dataMessage.dataDateTime;
+	ncdfLog("[ncdf] readncdfFile: dataDateTime valid=%d\n", (int)ddt.IsValid());
 
-    wxString ls = ddt.Format(_T("%a %d %b %Y %H:%M"));
+	wxString ls;
+	if (ddt.IsValid()) {
+		ls = ddt.Format(_T("%a %d %b %Y %H:%M"));
+	} else {
+		ls = _T("No date/time");
+	}
 	gui->m_staticTextDateTime->SetLabel(ls);
-	ncdfLog("[ncdf] readncdfFile: calling reset/setData...\n");
+	ncdfLog("[ncdf] readncdfFile: datetime label set, calling reset/setData...\n");
 	gui->pPlugIn->GetncdfOverlayFactory()->reset();
 	gui->pPlugIn->GetncdfOverlayFactory()->setData(gui,
 							   gui->pPlugIn,

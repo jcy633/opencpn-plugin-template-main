@@ -96,6 +96,17 @@ public:
 
       bool              m_bShowCurrentDir;
       bool              m_bShowCurrentForce;
+      bool              m_bShowIsoLines;
+      bool              m_bShowNumbers;
+      bool              m_bShowParticles;
+      int               m_iOverlayTransparency;
+      int               m_iArrowSpacing;
+      int               m_iNumberSpacing;
+      int               m_iColorMapType;
+      int               m_iPlaySpeed;
+      bool              m_bLoopMode;
+      int               m_iLoopStartPoint;
+      int               m_iParticleDensity;
 
 private:
       bool LoadConfig(void);

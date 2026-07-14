@@ -9,8 +9,83 @@
 wxBitmap *_img_ncdf_pi;
 wxBitmap *_img_ncdf;
 
+// GRIB settings icon (from grib_pi/src/folder.xpm)
+static const char *setting_xpm[] = {
+"    32    32       32            1",
+"` c #343264",
+". c #8c9db4",
+"# c #b4cedc",
+"a c #64698c",
+"b c #a0b6c4",
+"c c #ccecf0",
+"d c #a7a5ac",
+"e c #7a85a4",
+"f c #52527b",
+"g c #d8d7d8",
+"h c #c2c0c5",
+"i c #727694",
+"j c #afafb7",
+"k c #454674",
+"l c #f1eff1",
+"m c #9cb2c4",
+"n c #8c8da4",
+"o c #c8e6ec",
+"p c #5f5e83",
+"q c #acc6d4",
+"r c #e2e3e2",
+"s c #dcfefc",
+"t c #f8f8f8",
+"u c #cbcacb",
+"v c #91a3bc",
+"w c #cccecd",
+"x c #b4b6b9",
+"y c #697191",
+"z c #949295",
+"A c #9c9c9c",
+"B c #7c7d9a",
+"C c #3b3b6c",
+"ttuAzzzzzzzzzzzzzzzzzzzzzzzzzxlt",
+"txxltttttttttttttttttttttttttuAl",
+"wjltttttttttttttttttttttttttttuj",
+"dgtlltltltltltltltltltltltltlllA",
+"dgllllllllllljiyiiirlllllllllllA",
+"dglllllrlllrln`````rrlllrllllllA",
+"Aglrrrlrlrrlrn`````grlrrlrrrrrlA",
+"dgrlrrrlrrlrgBfkCkf.grrlrrlrlrrA",
+"Agrrrrrrrrge````````knrrjpwrrrrA",
+"Aggrrwkihuf```````````pp``argrrA",
+"Awgggn```k```CemqbeC```k```jgggA",
+"dwgggC``k```acsssssca```C``fgggA",
+"Auggn``````asssssssssa``C```dggA",
+"AuwwfC`k``CosssssssssoC``kpbgwgA",
+"Ahwwwzfk``ysssssssssssy`CpwwwwwA",
+"Ahwwuwu```.sssssssssssv``fwuwuuA",
+"Ahuuuuh```vsssssssssssv``k#uuuuA",
+"AhwuuuwC``esssssssssssn``fuuhwuA",
+"Ahuuuuuf``kssssssstsssk``pfdwuuA",
+"Ahwuuwhi```.sssssssssv```C``iuuA",
+"Ahwwwxf`C```msssssssb```k```dwwA",
+"Ahwwwf`````C`y#sss#i```C```ywwwA",
+"AugwgjC``C`````CkC`````a``ChwgwA",
+"Auggwgd```kC`````````CvgjpBggggA",
+"Awgggggn`awqyC`````CiugggggggggA",
+"AwgrggrgbrgrggB`````xrgrgrggggrA",
+"dgrrrrrrrrrgrrv``C``xrrrrrrrrrrA",
+"AgrrrrrrrrrrrrjkkkkkhrrrrrrrrrrA",
+"dwlrllrllrlllrlrlrlrllrlrlrlrlrA",
+"hdlllllllllllllllllllllllllltlhj",
+"tjjrlllllllllllllllllllllltlrhAr",
+"tthAAAAAAAAzAAAAA.AA.AAAAAzAAxrt",
+""
+};
+
+wxBitmap *_img_setting;
+
 void initialize_images(void)
 {
+	{
+		_img_setting = new wxBitmap(setting_xpm);
+	}
 	{		
 		wxMemoryInputStream sm("\211PNG\r\n\032\n\000\000\000\rIHDR\000\000\000#\000\000\000#\b\006\000\000\000\036\331\263Y\000\000\001\031IDATX\303\355\230\321\r\204 \014\206\013q\200K\034\3001n\035\026\360\211QX\3005n\233s\000f\340^\304\030\364\222\266\374\234^\"OjB\375\370\373\227*D\367\370\207\021B\260Wa1\322\011\3234\245|\355\2343\247\302\020QZ\240\340@\352\0249\347vJ\235\241\314\252\016Z\241\232\000\325@Y\325<\257v5*\2402\265y\216E)\313\365PQ\2153\304\3005@DD\336{\352\373~\340\300\244m\nP@\371\231\367\236b\214s\214QT\3320\240\215Yi\201\030$\325\224\224U\2673u\011Y\250\3052\260A)t\000r\270\270\216\0218m\200\214\000h\365\a7\033\235$\260\006\2500\251A\364\246\352\224q\026a\225\201\245@,5\255v\203\023\0025\373\204h\006\244m\aM\200jz\023\034\b\326\265\021@\227\3713@\300h\373\027\034\006\nR\003\003\a\321\302\274[\200p\033\3457\220S7\275\0142\334'\024\2278\205\b!<~\364\376\3478\216\257|\363\0019\023t5/,K1\000\000\000\000IEND\256B`\202", 338);
 		_img_ncdf_pi = new wxBitmap(wxImage(sm));

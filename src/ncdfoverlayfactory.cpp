@@ -71,6 +71,7 @@ ncdfOverlayFactory::ncdfOverlayFactory()
           GetOCPNCanvasWindow()->Refresh(false);
       });
       m_bUpdateParticles = true;
+      m_particleBurstCount = 0;
 }
 
 ncdfOverlayFactory::~ncdfOverlayFactory()
@@ -85,12 +86,13 @@ ncdfOverlayFactory::~ncdfOverlayFactory()
 
 void ncdfOverlayFactory::setData(MainDialog *gui, ncdf_pi *plugin, ncdfDataMessage g2data, int numberOfPoints, wxDouble tlat, wxDouble tlon, wxDouble blat, wxDouble blon)
 {
-	// Clear ALL cached data when switching files/time steps
+	// Always clear particles on data change for immediate refresh
 	DeleteColorTexture();
 	ClearParticles();
 	m_last_vp_scale = -1;
 	m_last_vp_latMax = -99999.0;
 	m_bUpdateParticles = true;
+	m_particleBurstCount = 30;  // Force 30 frames of updates to rebuild trails fast
 
 	this->g2data = g2data;
 	this->numberOfPoints = numberOfPoints;
@@ -187,14 +189,7 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
       // Reset GL state to avoid inheriting GRIB's texture bindings
       glDisable(GL_TEXTURE_2D);
       glBindTexture(GL_TEXTURE_2D, 0);
-      // Always check if texture needs rebuild (data may have changed)
-      if (m_bHasColorTexture) {
-          if (m_texDataDim[0] != (int)gui->myMessage.lonLength ||
-              m_texDataDim[1] != (int)gui->myMessage.latLength) {
-              DeleteColorTexture();
-          }
-      }
-      // Build texture if needed
+      // Build texture only if not already created
       if (!m_bHasColorTexture) {
           // Create and cache the texture (once per data change)
           int ni = gui->myMessage.lonLength;
@@ -244,7 +239,7 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
           }
       }
 
-      // Draw cached texture using tiled rendering (fast)
+      // Color map: GRIB-style tiled texture rendering
       if (m_bHasColorTexture && m_glColorTexture != 0) {
           int ni = m_texDataDim[0], nj = m_texDataDim[1];
           int tw = m_texGLDim[0], th = m_texGLDim[1];
@@ -268,7 +263,6 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
           double xs = vp->pix_width / (double)xsquares;
           double ys = vp->pix_height / (double)ysquares;
 
-          // Pre-allocate lva if needed (reused across frames)
           int neededLva = xsquares + 1;
           if (m_lvaSize < neededLva) {
               delete[] m_lva;
@@ -293,8 +287,10 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
                   if (clon - lon > 180) lon += 360;
                   else if (lon - clon > 180) lon -= 360;
 
-                  m_lva[i][j][0] = ((lon - west) / lonstep + 1.5) / tw;
-                  m_lva[i][j][1] = ((lat - south) / latstep + 1.5) / th;
+                  double potNormX = (double)ni / tw;
+                  double potNormY = (double)nj / th;
+                  m_lva[i][j][0] = ((lon - west) / lonstep + 1.5) / tw * potNormX;
+                  m_lva[i][j][1] = ((lat - south) / latstep + 1.5) / th * potNormY;
                   if (gui->myMessage.jDirectionIncr < 0)
                       m_lva[i][j][1] = 1.0 - m_lva[i][j][1];
 
@@ -304,11 +300,10 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
                       double u2 = m_lva[i  ][ j][0], v2 = m_lva[i  ][ j][1];
                       double u3 = m_lva[i-1][ j][0], v3 = m_lva[i-1][ j][1];
 
-                      bool visible = (u0 >= 0 && u0 <= 1 && v0 >= 0 && v0 <= 1) ||
-                                     (u1 >= 0 && u1 <= 1 && v1 >= 0 && v1 <= 1) ||
-                                     (u2 >= 0 && u2 <= 1 && v2 >= 0 && v2 <= 1) ||
-                                     (u3 >= 0 && u3 <= 1 && v3 >= 0 && v3 <= 1);
-                      if (visible) {
+                      if ((u0 >= 0 || u1 >= 0 || u2 >= 0 || u3 >= 0) &&
+                          (u0 <= 1 || u1 <= 1 || u2 <= 1 || u3 <= 1) &&
+                          (v0 >= 0 || v1 >= 0 || v2 >= 0 || v3 >= 0) &&
+                          (v0 <= 1 || v1 <= 1 || v2 <= 1 || v3 <= 1)) {
                           float sx = (float)(x - xs), sy = (float)(y - ys);
                           float sw = (float)xs, sh = (float)ys;
                           glBegin(GL_QUADS);
@@ -351,7 +346,8 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 
 void ncdfOverlayFactory::clearBmp()
 {
-    // Don't delete color texture here - it persists until data changes
+    // Don't delete color texture - it persists across view changes
+    // Only delete bitmap cache (for DC rendering)
     if(m_pbm_current) delete m_pbm_current;
     m_pbm_current = NULL;
 }
@@ -1538,6 +1534,7 @@ void ncdfOverlayFactory::DrawColorTexture(PlugIn_ViewPort *vp)
 struct Particle {
     int m_Duration;
     int m_HistoryPos, m_HistorySize, m_Run;
+    double m_Velocity;  // Track velocity for trail length control
     struct ParticleNode {
         float m_Pos[2];
         float m_Screen[2];
@@ -1600,8 +1597,11 @@ void ncdfOverlayFactory::RenderParticles(PlugIn_ViewPort *vp)
         lvp = *vp;
     }
 
-    // Update particle positions (GRIB: only when timer fires)
-    if (m_bUpdateParticles) {
+    // Update particle positions (timer-driven or burst after data change)
+    bool shouldUpdate = m_bUpdateParticles || (m_particleBurstCount > 0);
+    if (m_particleBurstCount > 0) m_particleBurstCount--;
+    m_bUpdateParticles = false;
+    if (shouldUpdate) {
     for (unsigned int i = 0; i < particles.size(); i++) {
         Particle &it = particles[i];
         if (++it.m_Run < run_count) continue;
@@ -1627,8 +1627,9 @@ void ncdfOverlayFactory::RenderParticles(PlugIn_ViewPort *vp)
             vkn = mag;
         } else { vkn = 0; ang = 0; }
         if (it.m_Duration < max_duration - history_size && vkn > 0.001 && vkn < 100) {
-            // Scale m/s to make movement visible (GRIB uses knots which are ~2x larger)
-            double d = vkn * run_count * 2.0;
+    // GRIB optimization: convert m/s to knots (1 m/s = 1.94 knots)
+    // This makes particles move at the same speed as GRIB
+    double d = vkn * run_count * 1.94;  // Match GRIB's knot-based speed
             float angr = (float)(ang / 180.0 * PI);
             float latr = pp[1] * (float)PI / 180.0f;
             float D = (float)(d / 3443.0);
@@ -1642,18 +1643,19 @@ void ncdfOverlayFactory::RenderParticles(PlugIn_ViewPort *vp)
             n.m_Screen[0] = ps.x; n.m_Screen[1] = ps.y;
             wxColour c = GetSeaCurrentGraphicColor(vkn);
             n.m_Color[0] = c.Red(); n.m_Color[1] = c.Green(); n.m_Color[2] = c.Blue();
+            it.m_Velocity = vkn;  // Store velocity for trail length control
         } else { p[0] = -10000; }
     }
 
-    // Spawn/remove particles - limit 50K
-    int total_particles = 100 * sliderVal * sliderVal;
+    // GRIB formula: total_particles = density * Ni * Nj
+    int total_particles = (int)(density * ni * nj);
     int max_grid = ni * nj;
     if (total_particles > max_grid) total_particles = max_grid;
     if (total_particles > 50000) total_particles = 50000;
     int remove = ((int)particles.size() - total_particles) / 16;
     for (int i = 0; i < remove; i++) particles.pop_back();
     int run = 0;
-    int new_count = (total_particles - (int)particles.size()) / 16;
+    int new_count = (total_particles - (int)particles.size()) / 64;  // GRIB spawn rate
     for (int npi = 0; npi < new_count; npi++) {
         float p[2];
         double vkn = 0, ang = 0;
@@ -1665,9 +1667,9 @@ void ncdfOverlayFactory::RenderParticles(PlugIn_ViewPort *vp)
             double vy = gui->myMessage.getInterpolatedValue(gui->myMessage, gui->gridv, p[0], p[1], true);
             if (vx != ncdf_NOTDEF && vy != ncdf_NOTDEF && isfinite(vx) && isfinite(vy)) {
                 double mag = sqrt(vx * vx + vy * vy);
+                if (mag < 0.05) continue;  // Skip near-zero flow areas
                 vkn = mag; ang = atan2(vx, vy) * 180.0 / PI;
-                // GRIB: prefer faster flow, relax threshold over attempts
-                if (vkn > 1.0 - (double)attempt / 20) break;
+                break;
             }
         }
         Particle np;
@@ -1690,7 +1692,7 @@ void ncdfOverlayFactory::RenderParticles(PlugIn_ViewPort *vp)
             if (fakeVx != ncdf_NOTDEF && fakeVy != ncdf_NOTDEF && isfinite(fakeVx) && isfinite(fakeVy)) {
                 double fakeMag = sqrt(fakeVx*fakeVx + fakeVy*fakeVy);
                 double fakeAng = atan2(fakeVx, fakeVy) * 180.0 / PI;
-                double fakeD = fakeMag * run_count * 2.0;  // Match main speed
+                double fakeD = fakeMag * run_count * 1.94;  // Match GRIB
                 float fakeAngr = (float)(fakeAng / 180.0 * PI);
                 float fakeLatr = fakePos[1] * (float)PI / 180.0f;
                 float fakeDD = (float)(fakeD / 3443.0);
@@ -1713,8 +1715,7 @@ void ncdfOverlayFactory::RenderParticles(PlugIn_ViewPort *vp)
 
         particles.push_back(np);
     }
-    } // end m_bUpdateParticles
-    m_bUpdateParticles = false;
+    } // end shouldUpdate
 
     // Debug: log particle state
     static int s_pDbg = 0;
@@ -1740,6 +1741,13 @@ void ncdfOverlayFactory::RenderParticles(PlugIn_ViewPort *vp)
             bool lip_valid = false;
             float *lp = nullptr, lip[2];
             wxUint8 lc[4];
+
+            // Velocity-dependent trail length: slow=short, fast=long
+            // Scale alpha decay: lower velocity = faster decay = shorter trail
+            double velFactor = wxMax(0.3, wxMin(3.0, it->m_Velocity * 2.0));
+            int trailSteps = (int)(history_size * velFactor);
+            trailSteps = wxMax(2, wxMin(trailSteps, MAX_PARTICLE_HISTORY));
+            int alphaDecay = 250 / trailSteps;
 
             for (;;) {
                 if (it->m_History[i].m_Pos[0] != -10000) {
@@ -1772,7 +1780,7 @@ void ncdfOverlayFactory::RenderParticles(PlugIn_ViewPort *vp)
                     if (i >= it->m_HistorySize) break;
                 }
                 if (i == it->m_HistoryPos) break;
-                alpha -= 240 / history_size;
+                alpha -= alphaDecay;
             }
         }
 

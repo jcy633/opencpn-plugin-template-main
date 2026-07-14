@@ -138,6 +138,7 @@ private:
 	 void *m_ParticleMap;
 	 wxTimer m_tParticleTimer;
 	 bool m_bUpdateParticles;
+	 int m_particleBurstCount;  // Frames of forced particle update after data change
 	 void ClearParticles();
 	 void RenderParticles(PlugIn_ViewPort *vp);
 

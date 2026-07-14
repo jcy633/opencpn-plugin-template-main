@@ -1,7 +1,11 @@
 ## Hard Constraints
-- 插件编译必须使用 `d:\opencpn-plugin-template-main\build` 目录，编译命令：`& "D:\VS\Common7\IDE\devenv.exe" d:\opencpn-plugin-template-main\build\ncdf_pi.sln /build Release /project ncdf_pi`
-- 每次编译成功后必须立即执行部署：将 `d:\opencpn-plugin-template-main\Release\ncdf_pi.dll` 复制到 `C:\Users\季曹阳\AppData\Local\opencpn\plugins\` 下，使用命令：`Copy-Item "d:\opencpn-plugin-template-main\Release\ncdf_pi.dll" "C:\Users\季曹阳\AppData\Local\opencpn\plugins\" -Force`
-- 部署完成后必须自动启动OpenCPN：`& "C:\Program Files (x86)\OpenCPN\opencpn.exe"`，使用 `command_type: long_running_process` 和 `blocking: false` 参数
+- 插件编译必须使用 `d:\opencpn-plugin-template-main\build` 目录
+- 编译命令：`cd build && "D:\VS\MSBuild\Current\Bin\MSBuild.exe" "ncdf_pi.vcxproj" -p:Configuration=Release -p:Platform=Win32 -t:Build -v:minimal`
+- 编译输出DLL位于：`d:\opencpn-plugin-template-main\build\Release\ncdf_pi.dll`（注意是build/Release/，不是根目录的Release/）
+- 部署：将 `build\Release\ncdf_pi.dll` 复制到 `C:\Users\季曹阳\AppData\Local\opencpn\plugins\`
+- 部署完成后启动OpenCPN：`start "" "C:\Program Files (x86)\OpenCPN\opencpn.exe"`（直接用exe，不用快捷方式）
+- 如果DLL被占用，先 `taskkill //f //im opencpn.exe` 再部署
+- rebuild.bat 已配置自动关闭OpenCPN、部署、重启
 - OpenCPN运行日志位于C:\ProgramData\opencpn\opencpn.log
 - OpenCPN崩溃日志位于C:\Users\季曹阳\AppData\Local\CrashDumps\
 - 插件的调试日志位于C:\ProgramData\opencpn\ncdf_debug.log
@@ -89,4 +93,11 @@
 - 颜色位图渲染（RenderncdfCurrentBmp）计算量大，频繁重建导致地图移动卡顿
 - 使用glDrawPixels逐帧上传位图数据到GPU会导致渲染性能低下，必须使用OpenGL纹理（glTexImage2D）替代
 - 线性查找颜色索引在颜色映射表较大时效率较低，二分查找是更优方案
+- ncdfDataMessage::getInterpolatedValue等函数按值传递会导致每帧120K次数据复制卡死，必须用const引用
+- ncdf数据速度分量符号与GRIB相反：粒子方向用atan2(vx, vy)，不是atan2(-vx, -vy)
+- Vertex arrays批量渲染会导致堆损坏（clearBmp/ClearParticles竞争），必须用immediate mode GL
+- 粒子速度缩放：5x太大跳过涡流，2x是平衡点
+- 粒子密度滑块用wxSL_MIN_MAX_LABELS|wxSL_VALUE_LABEL显示标签
+- 非线性密度公式：density = 4.0 * exp(slider - 7)
+- GRIB粒子流动感关键：lip/sip双缓冲插值，整条轨迹随m_Run平滑移动
 - koa-connect wrapper caused ctx leaks, so native rewrite is required

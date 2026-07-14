@@ -86,6 +86,7 @@ class IsoLine
                                 int density, int first, double coef);
 
         int getNbSegments()     {return trace.size();}
+        double getValue()       {return value;}
 
     private:
         double value;

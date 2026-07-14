@@ -11,5 +11,6 @@ extern void initialize_images(void);
 
 extern wxBitmap *_img_ncdf_pi;
 extern wxBitmap *_img_ncdf;
+extern wxBitmap *_img_setting;
 
 #endif /* ICONS_H */
