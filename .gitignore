@@ -66,3 +66,6 @@ copy_out
 
 # ============ Installer ============
 install_manifest.txt
+lcs/
+tmp_*.cpp
+*.pyc
