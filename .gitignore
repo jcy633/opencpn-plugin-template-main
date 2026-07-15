@@ -69,3 +69,5 @@ install_manifest.txt
 lcs/
 tmp_*.cpp
 *.pyc
+cache/
+lcs/
