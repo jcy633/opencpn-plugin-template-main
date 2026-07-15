@@ -33,19 +33,6 @@
 #include <wx/colour.h>
 #include <wx/dynarray.h>
 
-// GRIB-style bounding box intersection check
-enum NCDF_OVERLAP { _NIN, _NON, _NOUT };
-static NCDF_OVERLAP NcdfIntersect(PlugIn_ViewPort *vp, double lat_min,
-                                   double lat_max, double lon_min, double lon_max) {
-    if (vp->lon_min > lon_max || vp->lon_max < lon_min ||
-        vp->lat_max < lat_min || vp->lat_min > lat_max)
-        return _NOUT;
-    if (vp->lon_min <= lon_min && vp->lon_max >= lon_max &&
-        vp->lat_max >= lat_max && vp->lat_min <= lat_min)
-        return _NIN;
-    return _NON;
-}
-
 #ifdef __WXMSW__
 #define snprintf _snprintf
 #endif // __WXMSW__
@@ -170,12 +157,10 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
       else if(vp->view_scale_ppm <= 0.001135)
 	  m_space = space[1];
       else if(vp->view_scale_ppm <= 0.018165)
-	  m_space = space[2];
+	  m_space = space[2]; 
       else if(vp->view_scale_ppm <= 0.072659)
-	  m_space = space[3];
+	  m_space = space[3];  
 
-      // GRIB-style: clear cached bitmaps in DC mode on scale change
-      if (m_pdc) clearBmp();
     }
 	// No need to clear on viewport change - texture is cached
 	m_last_vp_latMax = vp->lat_max;
@@ -201,13 +186,9 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 	// Color map: GRIB-style tiled texture with caching
 	if(plugin->m_bShowCurrentForce && !m_pdc) {
 #ifdef ocpnUSE_GL
-      // GRIB-style: skip rendering if data is not visible in viewport
-      if (NcdfIntersect(vp, this->blat, this->tlat, this->tlon, this->blon) == _NOUT)
-          goto skipColorMap;
-      // Reset GL state to avoid inheriting GRIB's texture bindings and color
+      // Reset GL state to avoid inheriting GRIB's texture bindings
       glDisable(GL_TEXTURE_2D);
       glBindTexture(GL_TEXTURE_2D, 0);
-      glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
       // Build texture only if not already created
       if (!m_bHasColorTexture) {
           // Create and cache the texture (once per data change)
@@ -237,89 +218,67 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
                           texData[off] = c.Red();
                           texData[off+1] = c.Green();
                           texData[off+2] = c.Blue();
-                          // Make zero/near-zero velocity cells transparent to avoid
-                          // filling no-data areas with the lowest speed color
-                          texData[off+3] = (mag <= 0) ? 0 : globalAlpha;
+                          texData[off+3] = globalAlpha;
                       }
                   }
               }
 
-              // GRIB-style: copy adjacent data to borders for smoother edges
-              // Top border (row 0) = copy of first data row (row 1)
-              memcpy(texData, texData + 4 * tw * 1, 4 * tw);
-              // Bottom border (row th-1) = copy of last data row (row th-2)
-              memcpy(texData + 4 * tw * (th - 1), texData + 4 * tw * (th - 2), 4 * tw);
-              // Left/right borders: copy from adjacent column
-              for (int y = 0; y < th; y++) {
-                  int doff = 4 * y * tw, soff = doff + 4;
-                  memcpy(texData + doff, texData + soff, 4);
-                  doff = 4 * (y * tw + tw - 1); soff = doff - 4;
-                  memcpy(texData + doff, texData + soff, 4);
-              }
-              // Set border alpha to 0 (transparent)
-              for (int x = 0; x < tw; x++) {
-                  texData[4 * x + 3] = 0;
-                  texData[4 * ((th - 1) * tw + x) + 3] = 0;
-              }
-              for (int y = 0; y < th; y++) {
-                  texData[4 * y * tw + 3] = 0;
-                  texData[4 * (y * tw + tw - 1) + 3] = 0;
-              }
-
               glGenTextures(1, &m_glColorTexture);
               glBindTexture(GL_TEXTURE_2D, m_glColorTexture);
-              glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-              glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+              glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
+              glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
               glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
               glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
               glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, tw, th, 0, GL_RGBA, GL_UNSIGNED_BYTE, texData);
               m_bHasColorTexture = true;
-              m_texDataDim[0] = tw;
-              m_texDataDim[1] = th;
+              m_texDataDim[0] = ni;
+              m_texDataDim[1] = nj;
               m_texGLDim[0] = tw;
               m_texGLDim[1] = th;
               delete[] texData;
           }
       }
 
-      // Color map: GRIB-style tiled texture rendering (1:1 from GribOverlayFactory::DrawGLTexture)
+      // Color map: GRIB-style tiled texture rendering
       if (m_bHasColorTexture && m_glColorTexture != 0) {
           int ni = m_texDataDim[0], nj = m_texDataDim[1];
           int tw = m_texGLDim[0], th = m_texGLDim[1];
-          double lat_min = this->blat, lon_min = this->tlon;
-          double lat_max = this->tlat, lon_max = this->blon;
+          double north = this->tlat, south = this->blat;
+          double west = this->tlon, east = this->blon;
 
-          double potNormX = (double)ni / tw;
-          double potNormY = (double)nj / th;
-          double latstep = fabs(lat_max - lat_min) / (nj - 1);
-          double lonstep = (lon_max - lon_min) / (ni - 1);
-          double clon = (lon_min + lon_max) / 2;
+          double gridSpacingLon = (east - west) / (ni - 1);
+          double gridSpacingLat = (north - south) / (nj - 1);
+          double lonstep = gridSpacingLon * (tw - 1.0) / (ni - 1.0);
+          double latstep = gridSpacingLat * (th - 1.0) / (nj - 1.0);
+          double clon = (west + east) / 2.0;
 
-          // how to break screen up, because projections may not be linear
           double pw = vp->view_scale_ppm * 1e6 / (pow(2, fabs(vp->clat) / 25));
           if (pw < 20) pw = 20;
-          int xsquares = ceil(vp->pix_width / pw), ysquares = ceil(vp->pix_height / pw);
-          // optimization for non-rotated mercator, since longitude is linear
+          int xsquares = wxMax(2, (int)ceil(vp->pix_width / pw));
+          int ysquares = wxMax(2, (int)ceil(vp->pix_height / pw));
           if (vp->rotation == 0 && vp->m_projection_type == PI_PROJECTION_MERCATOR)
               xsquares = 1;
           xsquares = wxMax(xsquares, 2);
-          ysquares = wxMax(ysquares, 2);
 
-          double xs = vp->pix_width / double(xsquares);
-          double ys = vp->pix_height / double(ysquares);
-          int i = 0, j = 0;
-          typedef double mx[2][2];
-          mx *lva = new mx[xsquares + 1];
+          double xs = vp->pix_width / (double)xsquares;
+          double ys = vp->pix_height / (double)ysquares;
 
+          int neededLva = xsquares + 1;
+          if (m_lvaSize < neededLva) {
+              delete[] m_lva;
+              m_lvaSize = neededLva;
+              m_lva = new double[m_lvaSize][2][2];
+          }
+
+          int j = 0;
           glEnable(GL_TEXTURE_2D);
           glBindTexture(GL_TEXTURE_2D, m_glColorTexture);
           glEnable(GL_BLEND);
           glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-          glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
           glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
 
           for (double y = 0; y < vp->pix_height + ys / 2; y += ys) {
-              i = 0;
+              int i = 0;
               for (double x = 0; x < vp->pix_width + xs / 2; x += xs) {
                   double lat, lon;
                   wxPoint p(x, y);
@@ -328,26 +287,30 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
                   if (clon - lon > 180) lon += 360;
                   else if (lon - clon > 180) lon -= 360;
 
-                  lva[i][j][0] = ((lon - lon_min) / lonstep + 1.5) / tw * potNormX;
-                  lva[i][j][1] = ((lat - lat_min) / latstep + 1.5) / th * potNormY;
-                  if (gui->myMessage.jDirectionIncr < 0) lva[i][j][1] = 1 - lva[i][j][1];
+                  double potNormX = (double)ni / tw;
+                  double potNormY = (double)nj / th;
+                  m_lva[i][j][0] = ((lon - west) / lonstep + 1.5) / tw * potNormX;
+                  m_lva[i][j][1] = ((lat - south) / latstep + 1.5) / th * potNormY;
+                  if (gui->myMessage.jDirectionIncr < 0)
+                      m_lva[i][j][1] = 1.0 - m_lva[i][j][1];
 
-                  if (x > 0 && y > 0) {
-                      double u0 = lva[i - 1][!j][0], v0 = lva[i - 1][!j][1];
-                      double u1 = lva[i][!j][0], v1 = lva[i][!j][1];
-                      double u2 = lva[i][j][0], v2 = lva[i][j][1];
-                      double u3 = lva[i - 1][j][0], v3 = lva[i - 1][j][1];
+                  if (i > 0 && y > 0) {
+                      double u0 = m_lva[i-1][!j][0], v0 = m_lva[i-1][!j][1];
+                      double u1 = m_lva[i  ][!j][0], v1 = m_lva[i  ][!j][1];
+                      double u2 = m_lva[i  ][ j][0], v2 = m_lva[i  ][ j][1];
+                      double u3 = m_lva[i-1][ j][0], v3 = m_lva[i-1][ j][1];
 
                       if ((u0 >= 0 || u1 >= 0 || u2 >= 0 || u3 >= 0) &&
                           (u0 <= 1 || u1 <= 1 || u2 <= 1 || u3 <= 1) &&
                           (v0 >= 0 || v1 >= 0 || v2 >= 0 || v3 >= 0) &&
                           (v0 <= 1 || v1 <= 1 || v2 <= 1 || v3 <= 1)) {
-                          // GRIB DrawSingleGLTexture vertex ordering: bottom-right reference
+                          float sx = (float)(x - xs), sy = (float)(y - ys);
+                          float sw = (float)xs, sh = (float)ys;
                           glBegin(GL_QUADS);
-                          glTexCoord2d(u0, v0); glVertex2f(x - xs, y - ys);
-                          glTexCoord2d(u1, v1); glVertex2f(x, y - ys);
-                          glTexCoord2d(u2, v2); glVertex2f(x, y);
-                          glTexCoord2d(u3, v3); glVertex2f(x - xs, y);
+                          glTexCoord2f(u0, v0); glVertex2f(sx, sy);
+                          glTexCoord2f(u1, v1); glVertex2f(sx + sw, sy);
+                          glTexCoord2f(u2, v2); glVertex2f(sx + sw, sy + sh);
+                          glTexCoord2f(u3, v3); glVertex2f(sx, sy + sh);
                           glEnd();
                       }
                   }
@@ -355,7 +318,6 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
               }
               j = !j;
           }
-          delete[] lva;
 
           glDisable(GL_BLEND);
           glDisable(GL_TEXTURE_2D);
@@ -363,7 +325,6 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
       }
 #endif
 	}
-    skipColorMap:
 
 	// Arrows
 	if(plugin->m_bShowCurrentDir) {
@@ -1481,7 +1442,7 @@ void ncdfOverlayFactory::CreateColorTexture(PlugIn_ViewPort *vp)
         tw = (int)(ni * scale) + 2;
         th = (int)(nj * scale) + 2;
     }
-    m_texDataDim[0] = tw; m_texDataDim[1] = th;
+    m_texDataDim[0] = ni; m_texDataDim[1] = nj;
     m_texGLDim[0] = tw; m_texGLDim[1] = th;
 
     unsigned char *data = new unsigned char[tw * th * 4];
@@ -1514,8 +1475,8 @@ void ncdfOverlayFactory::CreateColorTexture(PlugIn_ViewPort *vp)
     DeleteColorTexture();
     glGenTextures(1, &m_glColorTexture);
     glBindTexture(GL_TEXTURE_2D, m_glColorTexture);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, tw, th, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
@@ -1554,7 +1515,6 @@ void ncdfOverlayFactory::DrawColorTexture(PlugIn_ViewPort *vp)
     glBindTexture(GL_TEXTURE_2D, m_glColorTexture);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
     glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
     glBegin(GL_QUADS);
     glTexCoord2f(u0, v0); glVertex2f(pTL.x, pTL.y);

@@ -97,7 +97,7 @@ void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 
 	wxString ls;
 	if (ddt.IsValid()) {
-		ls = ddt.Format(_T("%a %d %b %Y %H:%M"));
+		ls = ddt.Format(_T("%Y-%m-%d %H:00"));
 	} else {
 		ls = _T("No date/time");
 	}

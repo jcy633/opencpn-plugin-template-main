@@ -37,10 +37,10 @@ public:
 		if (vcurr) { free(vcurr); vcurr = NULL; }
 		if (uvlats) { free(uvlats); uvlats = NULL; }
 		if (uvlons) { free(uvlons); uvlons = NULL; }
-		if (latValues) { free(latValues); latValues = NULL; }
-		if (lonValues) { free(lonValues); lonValues = NULL; }
-		if (timeValues) { free(timeValues); timeValues = NULL; }
-		/*if (depthValues) { free(depthValues); depthValues = NULL; }*/
+		// Note: latValues, lonValues, timeValues are NOT freed here.
+		// They are file-level metadata allocated once in nc_get() and freed
+		// only when the entire myDataVector is rebuilt (nc_get or ~MainDialog).
+		// Freeing them here would break other time steps that share the same data.
 	}
 	
 private:

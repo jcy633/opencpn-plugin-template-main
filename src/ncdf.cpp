@@ -353,7 +353,12 @@ void MainDialog::readData(wxTreeItemId itemId) {
     }
 	
 	m_lastSelectedTimeIndex = idx;
-	
+
+	// Sync slider with current time step
+	if (m_sTimeline) {
+		m_sTimeline->SetValue(idx);
+	}
+
 	if (logFile) {
         fwprintf(logFile, L"[ncdf] readData: updated m_lastSelectedTimeIndex=%d\n", m_lastSelectedTimeIndex);
         fflush(logFile);
@@ -1034,7 +1039,14 @@ int MainDialog::nc_get(wxString filestr){
 	}*/
 	
 	delete[] filename;
-	
+
+	// Update slider range to match current file's time steps
+	int nSteps = (int)myDataVector.size();
+	if (nSteps > 0 && m_sTimeline) {
+		m_sTimeline->SetRange(0, nSteps - 1);
+		m_sTimeline->SetValue(0);
+	}
+
 	return 0;
 }
 
@@ -1262,14 +1274,16 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 	if (!dataMessage.ucurr) {
 		free(u_vals);
 		free(v_vals);
+		nc_close(ncid);
 		return false;
 	}
-	
+
 	dataMessage.vcurr = (double*)calloc(nbr_uv, sizeof(double));
 	if (!dataMessage.vcurr) {
 		free(dataMessage.ucurr);
 		free(u_vals);
 		free(v_vals);
+		nc_close(ncid);
 		return false;
 	}
 	
@@ -1334,7 +1348,9 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 	free(v_vals);
 	
 	ncdfLog("[ncdf] readTimeStepData: completed successfully, count_records=%zu\n", count_records);
-	
+
+	nc_close(ncid);
+
 	return true;
 }
 
@@ -1455,12 +1471,12 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 		
 		wxString timeText;
 		if (myData.timeValid) {
-			timeText = myData.dataDateTime.Format(_T("%Y-%m-%d %H:%M"));
+			timeText = myData.dataDateTime.Format(_T("%Y-%m-%d %H:00"));
 		} else {
 			timeText = wxString::Format(_("时间%d"), idx + 1);
 		}
 		m_staticTextDateTime->SetLabel(timeText);
-		
+
 		if (readTimeStepData(myData)) {
 			ncdfLog("[ncdf] onTreeSelectionChanged: readTimeStepData succeed, calling readncdfFile\n");
 			this->my_ncdfReader->readncdfFile(myData);
@@ -1486,7 +1502,7 @@ void MainDialog::onTimeChange(wxCommandEvent& event){
 
         wxString timeText;
         if (myData.timeValid) {
-            timeText = myData.dataDateTime.Format(_T("%Y-%m-%d %H:%M"));
+            timeText = myData.dataDateTime.Format(_T("%Y-%m-%d %H:00"));
         } else {
             timeText = wxString::Format(_("时间%d"), selectedIndex + 1);
         }
@@ -1519,11 +1535,45 @@ void MainDialog::OnTimeline(wxScrollEvent& event)
 
         wxString timeText;
         if (myData.timeValid) {
-            timeText = myData.dataDateTime.Format(_T("%Y-%m-%d %H:%M"));
+            timeText = myData.dataDateTime.Format(_T("%Y-%m-%d %H:00"));
         } else {
             timeText = wxString::Format(_("时间%d"), selectedIndex + 1);
         }
         m_staticTextDateTime->SetLabel(timeText);
+
+        // Sync tree control selection (use m_isTreeUpdating to prevent event recursion)
+        m_isTreeUpdating = true;
+        wxTreeItemId currentItem = m_treeCtrl->GetFocusedItem();
+        if (currentItem.IsOk()) {
+            wxTreeItemId fileNode = m_treeCtrl->GetItemParent(currentItem);
+            if (!fileNode.IsOk() || fileNode == m_treeCtrl->GetRootItem()) {
+                fileNode = currentItem;
+            }
+            if (m_treeCtrl->HasChildren(fileNode)) {
+                // Clear any previous drop highlights
+                wxTreeItemIdValue clearCookie;
+                wxTreeItemId clearChild = m_treeCtrl->GetFirstChild(fileNode, clearCookie);
+                while (clearChild.IsOk()) {
+                    m_treeCtrl->SetItemDropHighlight(clearChild, false);
+                    clearChild = m_treeCtrl->GetNextSibling(clearChild);
+                }
+
+                wxTreeItemIdValue childCookie;
+                wxTreeItemId childItem = m_treeCtrl->GetFirstChild(fileNode, childCookie);
+                int treeIdx = 0;
+                while (childItem.IsOk()) {
+                    if (treeIdx == selectedIndex) {
+                        m_treeCtrl->SelectItem(childItem);
+                        m_treeCtrl->SetFocusedItem(childItem);
+                        m_treeCtrl->EnsureVisible(childItem);
+                        break;
+                    }
+                    childItem = m_treeCtrl->GetNextSibling(childItem);
+                    treeIdx++;
+                }
+            }
+        }
+        m_isTreeUpdating = false;
 
         readTimeStepData(myData);
         my_ncdfReader->readncdfFile(myData);
@@ -1645,7 +1695,7 @@ void MainDialog::addChildren(wxTreeItemId id, wxString fn)
 		wxString timeText;
 		
 		if ((*it).timeValid) {
-			timeText = dt.Format(_T("%Y-%m-%d %H:%M"));
+			timeText = dt.Format(_T("%Y-%m-%d %H:00"));
 		} else {
 			timeText = wxString::Format(_("时间%d"), timeIndex + 1);
 		}
