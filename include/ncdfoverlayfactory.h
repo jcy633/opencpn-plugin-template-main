@@ -37,6 +37,9 @@
 #include "ncdfdata.h"
 #include "wx/graphics.h"
 #include <GL/gl.h>
+#ifndef GL_CLAMP_TO_EDGE
+#define GL_CLAMP_TO_EDGE 0x812F
+#endif
 #include <vector>
 #include "ncdf.h"
 #include <map>
@@ -152,6 +155,16 @@ private:
 	 void CreateColorTexture(PlugIn_ViewPort *vp);
 	 void DrawColorTexture(PlugIn_ViewPort *vp);
 	 void DeleteColorTexture();
+
+	 // Sea temperature rendering
+	 wxColour GetSeaTempGraphicColor(double temp_c);
+	 void RenderSeaTempOverlay(PlugIn_ViewPort *vp);
+	 void RenderSeaTempIsoLines(PlugIn_ViewPort *vp);
+	 GLuint m_glSeaTempTexture;
+	 bool m_bHasSeaTempTexture;
+	 int m_sstTexDataDim[2];
+	 int m_sstTexGLDim[2];
+	 void DeleteSeaTempTexture();
 };
 
 

@@ -10,12 +10,14 @@ class ncdfDataMessage;
 class ncdfDataMessage
 {
 public:
-	ncdfDataMessage() : ucurr(NULL), vcurr(NULL), uvlats(NULL), uvlons(NULL), 
-		latValues(NULL), lonValues(NULL), timeValues(NULL), /*depthValues(NULL),*/ 
+	ncdfDataMessage() : ucurr(NULL), vcurr(NULL), uvlats(NULL), uvlons(NULL),
+		sst(NULL), hasSeaTemp(false),
+		latValues(NULL), lonValues(NULL), timeValues(NULL),
 		timeIndex(-1), /*depthIndex(0),*/ timeValid(false) {}
 	
-	ncdfDataMessage(const ncdfDataMessage& other) : 
+	ncdfDataMessage(const ncdfDataMessage& other) :
 		ucurr(NULL), vcurr(NULL), uvlats(NULL), uvlons(NULL),
+		sst(NULL), hasSeaTemp(false),
 		latValues(NULL), lonValues(NULL), timeValues(NULL), timeIndex(-1) {
 		copyFrom(other);
 	}
@@ -37,10 +39,8 @@ public:
 		if (vcurr) { free(vcurr); vcurr = NULL; }
 		if (uvlats) { free(uvlats); uvlats = NULL; }
 		if (uvlons) { free(uvlons); uvlons = NULL; }
+		if (sst) { free(sst); sst = NULL; }
 		// Note: latValues, lonValues, timeValues are NOT freed here.
-		// They are file-level metadata allocated once in nc_get() and freed
-		// only when the entire myDataVector is rebuilt (nc_get or ~MainDialog).
-		// Freeing them here would break other time steps that share the same data.
 	}
 	
 private:
@@ -133,6 +133,11 @@ private:
 			uvlons = (double*)calloc(nbr_uv, sizeof(double));
 			memcpy(uvlons, other.uvlons, nbr_uv * sizeof(double));
 		}
+		if (other.sst) {
+			sst = (double*)calloc(nbr_uv, sizeof(double));
+			memcpy(sst, other.sst, nbr_uv * sizeof(double));
+		}
+		hasSeaTemp = other.hasSeaTemp;
 	}
 	
 public:
@@ -189,6 +194,8 @@ public:
 	int			minutesAfterStart;
 	wxDouble* uvlats;
 	wxDouble* uvlons;
+	wxDouble* sst;           // sea surface temperature (°C), flat array
+	bool hasSeaTemp;         // true if this file contains SST data
 	int			numberOfPoints;
 	wxString   fileName;
 	

@@ -99,6 +99,8 @@ public:
       bool              m_bShowIsoLines;
       bool              m_bShowNumbers;
       bool              m_bShowParticles;
+      bool              m_bShowSeaTemp;      // sea temperature overlay
+      bool              m_bShowSeaTempIso;   // sea temperature isolines
       int               m_iOverlayTransparency;
       int               m_iArrowSpacing;
       int               m_iNumberSpacing;

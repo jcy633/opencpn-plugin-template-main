@@ -71,6 +71,8 @@ class ncdfDialog : public wxDialog
 	virtual void onIsoLinesClick( wxCommandEvent& event ) { event.Skip(); }
 	virtual void onNumbersClick( wxCommandEvent& event ) { event.Skip(); }
 	virtual void onParticlesClick( wxCommandEvent& event ) { event.Skip(); }
+	virtual void onSeaTempClick( wxCommandEvent& event ) { event.Skip(); }
+	virtual void onSeaTempIsoClick( wxCommandEvent& event ) { event.Skip(); }
 	virtual void onTimeChange( wxCommandEvent& event ) { event.Skip(); }
 	virtual void OnTimeline( wxScrollEvent& event ) { event.Skip(); }
 	virtual void OnPlayStop( wxCommandEvent& event ) { event.Skip(); }
@@ -90,6 +92,12 @@ class ncdfDialog : public wxDialog
 		wxStaticText* m_staticTextNumbers;
 		wxCheckBox* m_checkBoxParticles;
 		wxStaticText* m_staticTextParticles;
+		wxCheckBox* m_checkBoxSeaTemp;
+		wxStaticText* m_staticTextSeaTemp;
+		wxTextCtrl* m_textCtrlSeaTemp;
+		wxStaticText* m_staticTextSeaTempUnit;
+		wxCheckBox* m_checkBoxSeaTempIso;
+		wxStaticText* m_staticTextSeaTempIso;
 
 		ncdfDialog( wxWindow* parent, wxWindowID id = wxID_ANY, const wxString& title = _("ncdf Dialog"), const wxPoint& pos = wxDefaultPosition, const wxSize& size = wxSize( 280,460 ), long style = wxDEFAULT_DIALOG_STYLE|wxRESIZE_BORDER );
 

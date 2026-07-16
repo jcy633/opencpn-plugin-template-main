@@ -173,6 +173,48 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 
 	fgSizer2->Add( bSizerPart, 0, 0, 5 );
 
+	// Sea Temperature overlay
+	wxFlexGridSizer* bSizerSeaTemp;
+	bSizerSeaTemp = new wxFlexGridSizer( 1, 4, 0, 0 );
+	bSizerSeaTemp->SetFlexibleDirection( wxBOTH );
+	bSizerSeaTemp->SetNonFlexibleGrowMode( wxFLEX_GROWMODE_SPECIFIED );
+
+	bSizerSeaTemp->Add( 24, 0, 0, wxEXPAND, 0 );
+
+	m_checkBoxSeaTemp = new wxCheckBox( m_panel1, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, 0 );
+	bSizerSeaTemp->Add( m_checkBoxSeaTemp, 0, wxALL|wxALIGN_CENTER_VERTICAL, 0 );
+
+	m_staticTextSeaTemp = new wxStaticText( m_panel1, wxID_ANY, _("Sea Temp"), wxDefaultPosition, wxDefaultSize, 0 );
+	m_staticTextSeaTemp->Wrap( -1 );
+	m_staticTextSeaTemp->SetMinSize( wxSize( 55,-1 ) );
+	bSizerSeaTemp->Add( m_staticTextSeaTemp, 0, wxALIGN_CENTER_VERTICAL|wxALL, 0 );
+
+	m_textCtrlSeaTemp = new wxTextCtrl( m_panel1, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize( 55,-1 ), wxTE_READONLY|wxTE_RIGHT );
+	bSizerSeaTemp->Add( m_textCtrlSeaTemp, 0, wxALL, 0 );
+
+	m_staticTextSeaTempUnit = new wxStaticText( m_panel1, wxID_ANY, _("\xC2\xB0""C"), wxDefaultPosition, wxDefaultSize, 0 );
+	m_staticTextSeaTempUnit->Wrap( -1 );
+	bSizerSeaTemp->Add( m_staticTextSeaTempUnit, 0, wxALL|wxALIGN_CENTER_VERTICAL, 2 );
+
+	fgSizer2->Add( bSizerSeaTemp, 0, 0, 5 );
+
+	// Sea Temperature isolines
+	wxFlexGridSizer* bSizerSeaTempIso;
+	bSizerSeaTempIso = new wxFlexGridSizer( 1, 4, 0, 0 );
+	bSizerSeaTempIso->SetFlexibleDirection( wxBOTH );
+	bSizerSeaTempIso->SetNonFlexibleGrowMode( wxFLEX_GROWMODE_SPECIFIED );
+
+	bSizerSeaTempIso->Add( 24, 0, 0, wxEXPAND, 0 );
+
+	m_checkBoxSeaTempIso = new wxCheckBox( m_panel1, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, 0 );
+	bSizerSeaTempIso->Add( m_checkBoxSeaTempIso, 0, wxALL|wxALIGN_CENTER_VERTICAL, 0 );
+
+	m_staticTextSeaTempIso = new wxStaticText( m_panel1, wxID_ANY, _("SST Iso"), wxDefaultPosition, wxDefaultSize, 0 );
+	m_staticTextSeaTempIso->Wrap( -1 );
+	bSizerSeaTempIso->Add( m_staticTextSeaTempIso, 0, wxALIGN_CENTER_VERTICAL|wxALL, 0 );
+
+	fgSizer2->Add( bSizerSeaTempIso, 0, 0, 5 );
+
 
 	fgSizer1->Add( fgSizer2, 0, wxEXPAND, 0 );
 
@@ -216,6 +258,8 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	m_checkBoxDCurrent->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onDCurrentClick ), NULL, this );
 	m_checkBoxBmpCurrentForce->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onBmpCurrentForceClick ), NULL, this );
 	m_checkBoxParticles->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onParticlesClick ), NULL, this );
+	m_checkBoxSeaTemp->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSeaTempClick ), NULL, this );
+	m_checkBoxSeaTempIso->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSeaTempIsoClick ), NULL, this );
 	m_choiceTime->Connect( wxEVT_COMMAND_CHOICE_SELECTED, wxCommandEventHandler( ncdfDialog::onTimeChange ), NULL, this );
 	m_sTimeline->Connect( wxEVT_SCROLL_THUMBTRACK, wxScrollEventHandler( ncdfDialog::OnTimeline ), NULL, this );
 	m_sTimeline->Connect( wxEVT_SCROLL_CHANGED, wxScrollEventHandler( ncdfDialog::OnTimeline ), NULL, this );
@@ -234,6 +278,8 @@ ncdfDialog::~ncdfDialog()
 	m_checkBoxDCurrent->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onDCurrentClick ), NULL, this );
 	m_checkBoxBmpCurrentForce->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onBmpCurrentForceClick ), NULL, this );
 	m_checkBoxParticles->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onParticlesClick ), NULL, this );
+	m_checkBoxSeaTemp->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSeaTempClick ), NULL, this );
+	m_checkBoxSeaTempIso->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSeaTempIsoClick ), NULL, this );
 	m_choiceTime->Disconnect( wxEVT_COMMAND_CHOICE_SELECTED, wxCommandEventHandler( ncdfDialog::onTimeChange ), NULL, this );
 	m_sTimeline->Disconnect( wxEVT_SCROLL_THUMBTRACK, wxScrollEventHandler( ncdfDialog::OnTimeline ), NULL, this );
 	m_sTimeline->Disconnect( wxEVT_SCROLL_CHANGED, wxScrollEventHandler( ncdfDialog::OnTimeline ), NULL, this );

@@ -88,6 +88,9 @@ public:
 
 	double** gridu;
 	double** gridv;
+	double** gridSST;  // sea surface temperature grid
+
+	bool hasSeaTemp;   // true if current file has SST data
 
 
 	ncdfDataMessage myncdfData, myData, myMessage;
@@ -140,6 +143,8 @@ protected:
 	virtual void onDCurrentClick( wxCommandEvent& event );
 	virtual void onBmpCurrentForceClick( wxCommandEvent& event );
 	virtual void onParticlesClick( wxCommandEvent& event );
+	virtual void onSeaTempClick( wxCommandEvent& event );
+	virtual void onSeaTempIsoClick( wxCommandEvent& event );
 	void fillDirTree(wxString dir, bool start, wxTreeItemId id);
 	void addChildren(wxTreeItemId id, wxString s);
 	void readData(wxTreeItemId itemId);
