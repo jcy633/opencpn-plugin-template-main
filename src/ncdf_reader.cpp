@@ -39,6 +39,7 @@ void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 
 	// Save old grid dimensions before overwriting gui->myMessage
 	wxUint32 oldNoPointsMeridian = gui->gridu ? gui->myMessage.noPointsMeridian : 0;
+	wxUint32 oldSSTMeridian = gui->gridSST ? gui->myMessage.noPointsMeridian : 0;
 
 	ncdfLog("[ncdf] readncdfFile: copying myMessage...\n");
 	gui->myMessage = dataMessage;
@@ -95,7 +96,7 @@ void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 	// Build SST grid if available
 	gui->hasSeaTemp = dataMessage.hasSeaTemp;
 	if (gui->gridSST) {
-		for (wxUint32 i = 0; i < oldNoPointsMeridian; ++i) {
+		for (wxUint32 i = 0; i < oldSSTMeridian; ++i) {
 			delete[] gui->gridSST[i];
 		}
 		delete[] gui->gridSST;

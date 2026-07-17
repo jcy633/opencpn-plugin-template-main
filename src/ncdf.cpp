@@ -75,8 +75,6 @@ MainDialog::MainDialog(wxWindow *parent) : ncdfDialog( parent ), m_isTreeUpdatin
 	m_lastSelectedTimeIndex = -1;
 	gridu = NULL;
 	gridv = NULL;
-	gridSST = NULL;
-	hasSeaTemp = false;
 
 	m_bpPrev->SetBitmap(wxBitmap(prev1));
 	m_bpNext->SetBitmap(wxBitmap(next1));
@@ -119,13 +117,7 @@ MainDialog::~MainDialog()
 		}
 		delete[] gridv;
 	}
-	if (gridSST) {
-		for (wxUint32 i = 0; i < myMessage.noPointsMeridian; ++i) {
-			delete[] gridSST[i];
-		}
-		delete[] gridSST;
-	}
-
+	
 	delete my_ncdfReader;
 	
 	ncdfLog("[ncdf] ~MainDialog: my_ncdfReader deleted\n");
@@ -134,8 +126,6 @@ MainDialog::~MainDialog()
 	pPlugIn->m_bShowCurrentDir = m_checkBoxDCurrent->GetValue();
 	pPlugIn->m_bShowCurrentForce = m_checkBoxBmpCurrentForce->GetValue();
 	pPlugIn->m_bShowParticles = m_checkBoxParticles->GetValue();
-	pPlugIn->m_bShowSeaTemp = m_checkBoxSeaTemp->GetValue();
-	pPlugIn->m_bShowSeaTempIso = m_checkBoxSeaTempIso->GetValue();
 	
 	ncdfLog("[ncdf] ~MainDialog: settings saved\n");
 	
@@ -154,8 +144,6 @@ void MainDialog::setPlugIn(ncdf_pi *p)
   m_checkBoxDCurrent->SetValue(pPlugIn->m_bShowCurrentDir);
   m_checkBoxBmpCurrentForce->SetValue(pPlugIn->m_bShowCurrentForce);
   m_checkBoxParticles->SetValue(pPlugIn->m_bShowParticles);
-  m_checkBoxSeaTemp->SetValue(pPlugIn->m_bShowSeaTemp);
-  m_checkBoxSeaTempIso->SetValue(pPlugIn->m_bShowSeaTempIso);
 }
 
 void MainDialog::SetCursorLatLon(double lat, double lon)
@@ -191,18 +179,6 @@ void MainDialog::printCurrentData()
 				if (dir < 0) dir = 360 + dir;
 				t.Printf(_T("%3.1f"), dir);
 				this->m_textCtrlCurrentDir->AppendText(t);
-			}
-
-			// Sea temperature at cursor
-			if (gridSST && hasSeaTemp) {
-				double sst = myMessage.getInterpolatedValue(myMessage, gridSST, m_cursor_lon, m_cursor_lat, true);
-				if (sst != ncdf_NOTDEF) {
-					t.Printf(_T("%3.1f"), sst);
-					this->m_textCtrlSeaTemp->Clear();
-					this->m_textCtrlSeaTemp->AppendText(t);
-				} else {
-					this->m_textCtrlSeaTemp->Clear();
-				}
 			}
 }
 
@@ -672,8 +648,8 @@ int MainDialog::nc_get(wxString filestr){
 		return retval;
 	}
 
-	if (ndims_in < 2 || ndims_in > 4) {
-		ncdfLog("[ncdf] nc_get: unsupported ndims=%d (need 2-4)\n", ndims_in);
+	if (ndims_in < 3 || ndims_in > 4) {
+		ncdfLog("[ncdf] nc_get: unsupported ndims=%d (need 3-4)\n", ndims_in);
 		nc_close(ncid);
 		delete[] filename;
 		return 2;
@@ -720,42 +696,6 @@ int MainDialog::nc_get(wxString filestr){
 		const char* var_hints[] = {"time", "t", "Time", NULL};
 		time_varid = find_var_by_cf(ncid, "time", alt_std, long_hints, var_hints);
 	}
-
-	/* sea surface temperature (optional) */
-	int sst_varid = -1;
-	{
-		const char* alt_std[] = {"sea_surface_temperature", "surface_temperature",
-			"surface_sea_water_temperature", "sea_water_potential_temperature", NULL};
-		const char* long_hints[] = {"Sea surface temperature", "sea_water_temperature",
-			"SST", "sea surface temperature", "Surface temperature",
-			"water temperature", "Temperature", "temperature", "TEMP", NULL};
-		const char* var_hints[] = {"thetao", "sst", "temperature", "temp", "SST",
-			"votemper", "to", "tos", "SST_GDS4_SFC", "sst_raw",
-			"sea_surface_temperature", "surface_temperature", NULL};
-		sst_varid = find_var_by_cf(ncid, "sea_water_temperature", alt_std, long_hints, var_hints);
-	}
-	hasSeaTemp = (sst_varid != -1);
-	ncdfLog("[ncdf] nc_get: sst_varid=%d, hasSeaTemp=%d\n", sst_varid, (int)hasSeaTemp);
-
-	// Log all variable names for debugging
-	{
-		int nvars;
-		nc_inq(ncid, NULL, &nvars, NULL, NULL);
-		for (int vi = 0; vi < nvars; vi++) {
-			char vname[NC_MAX_NAME + 1];
-			nc_inq_varname(ncid, vi, vname);
-			nc_type vtype;
-			nc_inq_vartype(ncid, vi, &vtype);
-			int ndims;
-			nc_inq_varndims(ncid, vi, &ndims);
-			char std_name[256] = {0};
-			nc_get_att_text(ncid, vi, "standard_name", std_name);
-			char long_name[256] = {0};
-			nc_get_att_text(ncid, vi, "long_name", long_name);
-			ncdfLog("[ncdf] nc_get: var[%d] name='%s' type=%d ndims=%d std='%s' long='%s'\n",
-				vi, vname, (int)vtype, ndims, std_name, long_name);
-		}
-	}
 	
 	/* depth - commented out */
 	/*int depth_varid = -1;
@@ -766,21 +706,25 @@ int MainDialog::nc_get(wxString filestr){
 		depth_varid = find_var_by_cf(ncid, "depth", alt_std, long_hints, var_hints);
 	}*/
 
-	ncdfLog("[ncdf] nc_get: result - u_varid=%d, v_varid=%d, lat_varid=%d, lon_varid=%d, time_varid=%d, sst_varid=%d\n",
-		u_varid, v_varid, lat_varid, lon_varid, time_varid, sst_varid);
+	ncdfLog("[ncdf] nc_get: result - u_varid=%d, v_varid=%d, lat_varid=%d, lon_varid=%d, time_varid=%d\n",
+		u_varid, v_varid, lat_varid, lon_varid, time_varid);
 
-	// Require either (u AND v) for current data, OR sst for temperature data
+	/* sea surface temperature (optional) */
+	int sst_varid = -1;
+	{
+		const char* alt_std[] = {"sea_surface_temperature", "surface_temperature", NULL};
+		const char* long_hints[] = {"Sea surface temperature", "sea_water_temperature", "SST", "Temperature", "temperature", NULL};
+		const char* var_hints[] = {"thetao", "sst", "temperature", "temp", "SST", "votemper", "to", NULL};
+		sst_varid = find_var_by_cf(ncid, "sea_water_temperature", alt_std, long_hints, var_hints);
+	}
+	bool hasSeaTemp = (sst_varid != -1);
+	ncdfLog("[ncdf] nc_get: sst_varid=%d, hasSeaTemp=%d\n", sst_varid, (int)hasSeaTemp);
+
 	if ((u_varid == -1 || v_varid == -1) && sst_varid == -1) {
-		ncdfLog("[ncdf] nc_get: no u/v current AND no SST temperature found, skipping file\n");
+		ncdfLog("[ncdf] nc_get: no u/v and no SST found\n");
 		nc_close(ncid);
 		delete[] filename;
 		return 2;
-	}
-
-	// If we have SST but no u/v, mark as SST-only file
-	bool hasCurrent = (u_varid != -1 && v_varid != -1);
-	if (!hasCurrent) {
-		ncdfLog("[ncdf] nc_get: SST-only file (no current data)\n");
 	}
 
 	if (lat_varid == -1) {
@@ -804,30 +748,30 @@ int MainDialog::nc_get(wxString filestr){
 		return 2;
 	}
 
-	int timeid = (time_varid != -1) ? find_dim_by_var(ncid, time_varid, 0) : -1;
+	int timeid = find_dim_by_var(ncid, time_varid, 0);
 	int latid = find_dim_by_var(ncid, lat_varid, 0);
 	int lonid = find_dim_by_var(ncid, lon_varid, 0);
+	/* depth - commented out */
+	/*int depthid = -1;
+	if (depth_varid != -1) {
+		depthid = find_dim_by_var(ncid, depth_varid, 0);
+	}*/
 
-	if (latid == -1 || lonid == -1) {
+	if (timeid == -1 || latid == -1 || lonid == -1) {
 		ncdfLog("[ncdf] nc_get: invalid dimension id (timeid=%d, latid=%d, lonid=%d)\n", timeid, latid, lonid);
 		nc_close(ncid);
 		delete[] filename;
 		return 2;
 	}
 
-	size_t timelength = 1, latlength = 0, lonlength = 0;
+	size_t timelength = 0, latlength = 0, lonlength = 0/*, depthlength = 0*/;
 	int status;
 
-	// Time dimension is optional (2D files have no time)
-	if (timeid != -1) {
-		if ((status = nc_inq_dimlen(ncid, timeid, &timelength)) != NC_NOERR) {
-			ncdfLog("[ncdf] nc_get: failed to get time dimension length\n");
-			nc_close(ncid);
-			delete[] filename;
-			return 2;
-		}
-	} else {
-		ncdfLog("[ncdf] nc_get: no time dimension, treating as single timestep\n");
+	if ((status = nc_inq_dimlen(ncid, timeid, &timelength)) != NC_NOERR) {
+		ncdfLog("[ncdf] nc_get: failed to get time dimension length\n");
+		nc_close(ncid);
+		delete[] filename;
+		return 2;
 	}
 	if ((status = nc_inq_dimlen(ncid, latid, &latlength)) != NC_NOERR) {
 		ncdfLog("[ncdf] nc_get: failed to get lat dimension length\n");
@@ -880,21 +824,17 @@ int MainDialog::nc_get(wxString filestr){
 		free(lon_float);
 	}
 	
-	if (time_varid != -1) {
-		if (nc_get_var_double(ncid, time_varid, time_out) != NC_NOERR) {
-			float* time_float = (float*)calloc(timelength, sizeof(float));
-			if (!time_float) { free(time_out); free(lats); free(lons); nc_close(ncid); delete[] filename; return 1; }
-			if (nc_get_var_float(ncid, time_varid, time_float) == NC_NOERR) {
-				for (size_t i = 0; i < timelength; i++) {
-					time_out[i] = time_float[i];
-				}
+	if (nc_get_var_double(ncid, time_varid, time_out) != NC_NOERR) {
+		float* time_float = (float*)calloc(timelength, sizeof(float));
+		if (!time_float) { free(time_out); free(lats); free(lons); nc_close(ncid); delete[] filename; return 1; }
+		if (nc_get_var_float(ncid, time_varid, time_float) == NC_NOERR) {
+			for (size_t i = 0; i < timelength; i++) {
+				time_out[i] = time_float[i];
 			}
-			free(time_float);
 		}
-	} else {
-		time_out[0] = 0;  // 2D file, single timestep at t=0
+		free(time_float);
 	}
-
+	
 	ncdfLog("[ncdf] nc_get: first time value = %f\n", timelength > 0 ? time_out[0] : 0.0);
 	
 	/* depth - commented out */
@@ -966,7 +906,7 @@ int MainDialog::nc_get(wxString filestr){
 	
 	/* Read CF time units and parse epoch + unit */
 	CFTimeInfo timeInfo;
-	if (time_varid != -1) {
+	{
 		char* timeUnits = read_var_att_text(ncid, time_varid, "units");
 		if (!timeUnits) {
 			timeUnits = read_var_att_text(ncid, NC_GLOBAL, "units");
@@ -1037,10 +977,6 @@ int MainDialog::nc_get(wxString filestr){
 		} else {
 			ncdfLog("[ncdf] nc_get: WARNING - failed to parse time units, using fallback\n");
 		}
-	} else {
-		// No time variable (2D file), use current time as default
-		timeInfo.valid = false;
-		ncdfLog("[ncdf] nc_get: no time variable, using default time\n");
 	}
 	
 	// 
@@ -1156,10 +1092,6 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 		free(dataMessage.uvlons);
 		dataMessage.uvlons = NULL;
 	}
-	if (dataMessage.sst) {
-		free(dataMessage.sst);
-		dataMessage.sst = NULL;
-	}
 
 	int ncid;
 	int u_varid, v_varid;
@@ -1182,7 +1114,8 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 	}
 	
 	ncdfLog("[ncdf] readTimeStepData: searching for u/v using CF conventions...\n");
-	
+
+	ncdfLog("[ncdf] readTimeStepData: ncid=%d before u/v search\n", ncid);
 	{
 		const char* alt_std[] = {"surface_eastward_sea_water_velocity", NULL};
 		const char* long_hints[] = {"Eastward Current Velocity", "u-velocity component of current", NULL};
@@ -1198,9 +1131,13 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 	}
 	
 	bool hasUV = (u_varid != -1 && v_varid != -1);
+	ncdfLog("[ncdf] readTimeStepData: hasUV=%d hasSeaTemp=%d\n", (int)hasUV, (int)dataMessage.hasSeaTemp);
 
-	if (!hasUV) {
-		ncdfLog("[ncdf] readTimeStepData: u or v variable not found, trying SST only\n");
+	if (!hasUV && !dataMessage.hasSeaTemp) {
+		ncdfLog("[ncdf] readTimeStepData: no u/v and no SST\n");
+		nc_close(ncid);
+		delete[] filename;
+		return false;
 	}
 
 	if (hasUV) {
@@ -1354,6 +1291,7 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 	if (!dataMessage.ucurr) {
 		free(u_vals);
 		free(v_vals);
+		nc_close(ncid);
 		return false;
 	}
 
@@ -1362,6 +1300,7 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 		free(dataMessage.ucurr);
 		free(u_vals);
 		free(v_vals);
+		nc_close(ncid);
 		return false;
 	}
 	
@@ -1426,9 +1365,8 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 	free(v_vals);
 	} // end if (hasUV)
 
-	// For SST-only files without u/v data, we still need valid lat/lon for the grid
+	// For SST-only files, create minimal lat/lon arrays if needed
 	if (!hasUV && dataMessage.hasSeaTemp) {
-		// No u/v data, but we have SST - create minimal lat/lon arrays
 		if (!dataMessage.uvlats) {
 			size_t nbr_uv = dataMessage.latLength * dataMessage.lonLength;
 			dataMessage.uvlats = (double*)calloc(nbr_uv, sizeof(double));
@@ -1447,139 +1385,73 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 		}
 	}
 
-	// Read sea surface temperature (optional)
+	// Read sea surface temperature (optional, file still open)
 	if (dataMessage.hasSeaTemp && ncid >= 0) {
 		int sst_varid_local = -1;
 		{
-			const char* alt_std[] = {"sea_surface_temperature", "surface_temperature",
-				"surface_sea_water_temperature", "sea_water_potential_temperature", NULL};
-			const char* long_hints[] = {"Sea surface temperature", "sea_water_temperature",
-				"SST", "sea surface temperature", "Surface temperature",
-				"water temperature", "Temperature", "temperature", "TEMP", NULL};
-			const char* var_hints[] = {"thetao", "sst", "temperature", "temp", "SST",
-				"votemper", "to", "tos", "SST_GDS4_SFC", "sst_raw",
-				"sea_surface_temperature", "surface_temperature", NULL};
+			const char* alt_std[] = {"sea_surface_temperature", "surface_temperature", NULL};
+			const char* long_hints[] = {"Sea surface temperature", "sea_water_temperature", "SST", "Temperature", "temperature", NULL};
+			const char* var_hints[] = {"thetao", "sst", "temperature", "temp", "SST", "votemper", "to", NULL};
 			sst_varid_local = find_var_by_cf(ncid, "sea_water_temperature", alt_std, long_hints, var_hints);
 		}
+		ncdfLog("[ncdf] readTimeStepData: SST var found=%d\n", sst_varid_local);
 		if (sst_varid_local != -1) {
 			size_t nbr_uv = dataMessage.latLength * dataMessage.lonLength;
 			float* sst_vals = (float*)calloc(nbr_uv, sizeof(float));
 			if (sst_vals) {
-				// Read SST data - use full variable read for simplicity
+				// Read SST data using hyperslab (current time step only)
 				int sst_ndims;
 				nc_inq_varndims(ncid, sst_varid_local, &sst_ndims);
-
-				if (sst_ndims >= 3) {
-					// 3D+ data: need to read a time slice
-					int dimids[NC_MAX_DIMS];
-					nc_inq_vardimid(ncid, sst_varid_local, dimids);
-					size_t sst_start[NC_MAX_DIMS] = {0};
-					size_t sst_count[NC_MAX_DIMS] = {0};
-					size_t total_count = 1;
-
-					for (int d = 0; d < sst_ndims; d++) {
-						char dimname[NC_MAX_NAME + 1];
-						size_t dimlen;
-						nc_inq_dim(ncid, dimids[d], dimname, &dimlen);
-
-						if (strstr(dimname, "time") || strstr(dimname, "Time")) {
-							sst_start[d] = dataMessage.timeIndex;
-							sst_count[d] = 1;
-						} else if (strstr(dimname, "lat") || strstr(dimname, "Lat") || strstr(dimname, "y")) {
-							sst_start[d] = 0;
-							sst_count[d] = dataMessage.latLength;
-							total_count *= dataMessage.latLength;
-						} else if (strstr(dimname, "lon") || strstr(dimname, "Lon") || strstr(dimname, "x")) {
-							sst_start[d] = 0;
-							sst_count[d] = dataMessage.lonLength;
-							total_count *= dataMessage.lonLength;
-						} else if (strstr(dimname, "depth") || strstr(dimname, "Depth") || strstr(dimname, "z")) {
-							sst_start[d] = 0;
-							sst_count[d] = 1;
-						} else {
-							sst_start[d] = 0;
-							sst_count[d] = 1;
-						}
-						ncdfLog("[ncdf] readTimeStepData: SST dim[%d] '%s' len=%zu start=%zu count=%zu\n",
-							d, dimname, dimlen, sst_start[d], sst_count[d]);
+				int sst_dimids[NC_MAX_DIMS];
+				nc_inq_vardimid(ncid, sst_varid_local, sst_dimids);
+				size_t sst_start[NC_MAX_DIMS] = {0};
+				size_t sst_count[NC_MAX_DIMS] = {0};
+				for (int d = 0; d < sst_ndims; d++) {
+					char dimname[NC_MAX_NAME + 1];
+					size_t dimlen;
+					nc_inq_dim(ncid, sst_dimids[d], dimname, &dimlen);
+					if (strstr(dimname, "time") || strstr(dimname, "Time")) {
+						sst_start[d] = dataMessage.timeIndex;
+						sst_count[d] = 1;
+					} else if (strstr(dimname, "lat") || strstr(dimname, "Lat")) {
+						sst_count[d] = dataMessage.latLength;
+					} else if (strstr(dimname, "lon") || strstr(dimname, "Lon")) {
+						sst_count[d] = dataMessage.lonLength;
+					} else {
+						sst_count[d] = 1; // depth or other dims: read first slice
 					}
-
-					float* sst_buf = (float*)calloc(total_count, sizeof(float));
-					if (sst_buf) {
-						nc_get_vara_float(ncid, sst_varid_local, sst_start, sst_count, sst_buf);
-						size_t copy_size = (total_count < nbr_uv) ? total_count : nbr_uv;
-						memcpy(sst_vals, sst_buf, copy_size * sizeof(float));
-						free(sst_buf);
-					}
-				} else {
-					// 2D data: read full variable
-					nc_get_var_float(ncid, sst_varid_local, sst_vals);
 				}
+				nc_get_vara_float(ncid, sst_varid_local, sst_start, sst_count, sst_vals);
 
-				ncdfLog("[ncdf] readTimeStepData: SST raw[0]=%.1f raw[1]=%.1f raw[2]=%.1f ndims=%d\n",
-					sst_vals[0], sst_vals[1], sst_vals[2], sst_ndims);
-
-				// Check units for Kelvin conversion
 				bool isKelvin = false;
 				char units_str[64] = {0};
 				if (nc_get_att_text(ncid, sst_varid_local, "units", units_str) == NC_NOERR) {
-					if (strstr(units_str, "K") || strstr(units_str, "kelvin")) {
-						isKelvin = true;
-					}
+					if (strstr(units_str, "K") || strstr(units_str, "kelvin")) isKelvin = true;
 				}
 
-				// Read _FillValue attribute for SST variable
 				float sst_fill = -32767.0f;
-				{
-					float fv_f;
-					double fv_d;
-					if (nc_get_att_float(ncid, sst_varid_local, "_FillValue", &fv_f) == NC_NOERR) {
-						sst_fill = fv_f;
-					} else if (nc_get_att_double(ncid, sst_varid_local, "_FillValue", &fv_d) == NC_NOERR) {
-						sst_fill = (float)fv_d;
-					} else if (nc_get_att_float(ncid, sst_varid_local, "missing_value", &fv_f) == NC_NOERR) {
-						sst_fill = fv_f;
-					}
-				}
+				nc_get_att_float(ncid, sst_varid_local, "_FillValue", &sst_fill);
 
 				dataMessage.sst = (double*)calloc(nbr_uv, sizeof(double));
-				double sst_min = 999, sst_max = -999;
 				int sst_valid = 0;
 				for (size_t k = 0; k < nbr_uv; k++) {
 					double val = (double)sst_vals[k];
-					bool valid = false;
-					if (isnan(val)) {
-						valid = false;  // NaN = fill value
-					} else if (!isnan(sst_fill) && val == sst_fill) {
-						valid = false;  // matches fill value
-					} else if (isKelvin && val > 200.0) {
-						valid = true;   // valid Kelvin temperature (> -73°C)
-					} else if (!isKelvin && val > -5.0 && val < 50.0) {
-						valid = true;   // valid Celsius temperature
-					}
-					if (valid) {
+					if (!isnan(val) && isfinite(val) && val != sst_fill && val > 100.0) {
 						dataMessage.sst[k] = isKelvin ? (val - 273.15) : val;
-						if (dataMessage.sst[k] < sst_min) sst_min = dataMessage.sst[k];
-						if (dataMessage.sst[k] > sst_max) sst_max = dataMessage.sst[k];
 						sst_valid++;
 					} else {
 						dataMessage.sst[k] = ncdf_NOTDEF;
 					}
 				}
 				free(sst_vals);
-				ncdfLog("[ncdf] readTimeStepData: SST read, isKelvin=%d, fill=%.1f, valid=%d/%zu, min=%.1f, max=%.1f\n",
-					(int)isKelvin, sst_fill, sst_valid, nbr_uv, sst_min, sst_max);
+				ncdfLog("[ncdf] readTimeStepData: SST read, valid=%d/%zu\n", sst_valid, nbr_uv);
 			}
 		}
-		nc_close(ncid);
-		delete[] filename;
-	} else if (hasUV) {
-		// u/v was read, close file if not already closed by SST block
-		nc_close(ncid);
-		delete[] filename;
 	}
 
 	ncdfLog("[ncdf] readTimeStepData: completed successfully\n");
+
+	nc_close(ncid);
 
 	return true;
 }
@@ -1719,22 +1591,7 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 	} else {
 		ncdfLog("[ncdf] onTreeSelectionChanged: GetItemData returned NULL\n");
 	}
-
-	// Update plugin state based on available data
-	if (pPlugIn) {
-		bool hasCurrent = (gridu && gridv);
-		bool hasSST = (gridSST && hasSeaTemp);
-		if (!hasCurrent) {
-			pPlugIn->m_bShowCurrentDir = false;
-			pPlugIn->m_bShowCurrentForce = false;
-			pPlugIn->m_bShowParticles = false;
-		}
-		if (!hasSST) {
-			pPlugIn->m_bShowSeaTemp = false;
-			pPlugIn->m_bShowSeaTempIso = false;
-		}
-	}
-
+	
 	ncdfLog("[ncdf] onTreeSelectionChanged: completed\n");
 }
 
