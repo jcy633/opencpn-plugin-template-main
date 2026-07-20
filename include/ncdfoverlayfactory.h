@@ -92,8 +92,13 @@ public:
      void drawTriangle(wxDC *pmdc, wxPen pen, bool south,
 			       double si, double co, int di, int dj, int b); 
      
-     wxColour GetSeaCurrentGraphicColor(double val_in); 
-   
+     wxColour GetSeaCurrentGraphicColor(double val_in);
+     wxColour GetSeaTempGraphicColor(double temp_c);
+
+     void RenderSeaTempOverlay(PlugIn_ViewPort *vp);
+     void RenderSeaTempIsoLines(PlugIn_ViewPort *vp);
+     void DeleteSeaTempTexture();
+
      PlugIn_ViewPort 	*vp;
 	 bool 		m_bReadyToRender;
 	 bool		renderSelectionRectangle;
@@ -156,15 +161,11 @@ private:
 	 void DrawColorTexture(PlugIn_ViewPort *vp);
 	 void DeleteColorTexture();
 
-	 // Sea temperature rendering
-	 wxColour GetSeaTempGraphicColor(double temp_c);
-	 void RenderSeaTempOverlay(PlugIn_ViewPort *vp);
-	 void RenderSeaTempIsoLines(PlugIn_ViewPort *vp);
+	 // Sea temperature texture cache
 	 GLuint m_glSeaTempTexture;
 	 bool m_bHasSeaTempTexture;
 	 int m_sstTexDataDim[2];
 	 int m_sstTexGLDim[2];
-	 void DeleteSeaTempTexture();
 };
 
 

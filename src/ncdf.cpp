@@ -75,6 +75,23 @@ MainDialog::MainDialog(wxWindow *parent) : ncdfDialog( parent ), m_isTreeUpdatin
 	m_lastSelectedTimeIndex = -1;
 	gridu = NULL;
 	gridv = NULL;
+	gridSST = NULL;
+	hasSeaTemp = false;
+
+	// Hide all data checkboxes by default (shown when data is loaded)
+	m_checkBoxDCurrent->Hide();
+	m_staticText333->Hide();
+	m_textCtrlCurrentDir->Hide();
+	m_checkBoxBmpCurrentForce->Hide();
+	m_staticText40->Hide();
+	m_textCtrlCurrentForce->Hide();
+	m_staticText41->Hide();
+	m_checkBoxParticles->Hide();
+	m_staticTextParticles->Hide();
+	m_checkBoxSeaTemp->Hide();
+	m_staticTextSeaTemp->Hide();
+	m_checkBoxSeaTempIso->Hide();
+	m_staticTextSeaTempIso->Hide();
 
 	m_bpPrev->SetBitmap(wxBitmap(prev1));
 	m_bpNext->SetBitmap(wxBitmap(next1));
@@ -117,7 +134,13 @@ MainDialog::~MainDialog()
 		}
 		delete[] gridv;
 	}
-	
+	if (gridSST) {
+		for (wxUint32 i = 0; i < myMessage.noPointsMeridian; ++i) {
+			delete[] gridSST[i];
+		}
+		delete[] gridSST;
+	}
+
 	delete my_ncdfReader;
 	
 	ncdfLog("[ncdf] ~MainDialog: my_ncdfReader deleted\n");
@@ -334,11 +357,14 @@ void MainDialog::readData(wxTreeItemId itemId) {
 		myDataVector[m_lastSelectedTimeIndex].clear();
 	}
 	
+	ncdfLog("[ncdf] readData: HELLO_SST_TEST idx=%d, vectorSize=%d\n", idx, (int)myDataVector.size());
+
 	if (logFile) {
         fwprintf(logFile, L"[ncdf] readData: calling readTimeStepData for index=%d\n", idx);
         fflush(logFile);
     }
 	if (!readTimeStepData(myDataVector[idx])) {
+		ncdfLog("[ncdf] readData: readTimeStepData returned FALSE\n");
 		if (logFile) {
             fwprintf(logFile, L"[ncdf] readData: readTimeStepData failed\n");
             fflush(logFile);
@@ -346,6 +372,8 @@ void MainDialog::readData(wxTreeItemId itemId) {
         }
 		return;
 	}
+
+	ncdfLog("[ncdf] readData: readTimeStepData returned TRUE, calling readncdfFile\n");
 	
 	if (logFile) {
         fwprintf(logFile, L"[ncdf] readData: readTimeStepData succeeded\n");
@@ -696,7 +724,17 @@ int MainDialog::nc_get(wxString filestr){
 		const char* var_hints[] = {"time", "t", "Time", NULL};
 		time_varid = find_var_by_cf(ncid, "time", alt_std, long_hints, var_hints);
 	}
-	
+
+	/* sea surface temperature (optional, just discover the variable) */
+	int sst_varid = -1;
+	{
+		const char* alt_std[] = {"sea_surface_temperature", "surface_temperature", NULL};
+		const char* long_hints[] = {"Sea surface temperature", "sea_water_temperature", "SST", "Temperature", "temperature", NULL};
+		const char* var_hints[] = {"thetao", "sst", "temperature", "temp", "SST", "votemper", "to", NULL};
+		sst_varid = find_var_by_cf(ncid, "sea_water_temperature", alt_std, long_hints, var_hints);
+	}
+	ncdfLog("[ncdf] nc_get: sst_varid=%d\n", sst_varid);
+
 	/* depth - commented out */
 	/*int depth_varid = -1;
 	{
@@ -706,25 +744,15 @@ int MainDialog::nc_get(wxString filestr){
 		depth_varid = find_var_by_cf(ncid, "depth", alt_std, long_hints, var_hints);
 	}*/
 
-	ncdfLog("[ncdf] nc_get: result - u_varid=%d, v_varid=%d, lat_varid=%d, lon_varid=%d, time_varid=%d\n",
-		u_varid, v_varid, lat_varid, lon_varid, time_varid);
+	ncdfLog("[ncdf] nc_get: result - u_varid=%d, v_varid=%d, lat_varid=%d, lon_varid=%d, time_varid=%d, sst_varid=%d\n",
+		u_varid, v_varid, lat_varid, lon_varid, time_varid, sst_varid);
 
-	/* sea surface temperature (optional) */
-	int sst_varid = -1;
-	{
-		const char* alt_std[] = {"sea_surface_temperature", "surface_temperature", NULL};
-		const char* long_hints[] = {"Sea surface temperature", "sea_water_temperature", "SST", "Temperature", "temperature", NULL};
-		const char* var_hints[] = {"thetao", "sst", "temperature", "temp", "SST", "votemper", "to", NULL};
-		sst_varid = find_var_by_cf(ncid, "sea_water_temperature", alt_std, long_hints, var_hints);
-	}
-	bool hasSeaTemp = (sst_varid != -1);
-	ncdfLog("[ncdf] nc_get: sst_varid=%d, hasSeaTemp=%d\n", sst_varid, (int)hasSeaTemp);
+	bool hasCurrent = (u_varid != -1 && v_varid != -1);
+	bool hasSST = (sst_varid != -1);
 
-	if ((u_varid == -1 || v_varid == -1) && sst_varid == -1) {
-		ncdfLog("[ncdf] nc_get: no u/v and no SST found\n");
-		nc_close(ncid);
-		delete[] filename;
-		return 2;
+	if (!hasCurrent && !hasSST) {
+		ncdfLog("[ncdf] nc_get: no u/v and no SST, but loading file anyway for coordinate display\n");
+		// Don't return error - allow the file to load for coordinate/time display
 	}
 
 	if (lat_varid == -1) {
@@ -1022,7 +1050,7 @@ int MainDialog::nc_get(wxString filestr){
 		myncdfData.timeLength = timelength;
 		myncdfData.latLength = latlength;
 		myncdfData.lonLength = lonlength;
-		myncdfData.hasSeaTemp = hasSeaTemp;
+		myncdfData.hasSeaTemp = hasSST;
 		/*myncdfData.depthLength = depthlength;*/
 		
 		myncdfData.latValues = (wxDouble*)calloc(latlength, sizeof(wxDouble));
@@ -1114,8 +1142,7 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 	}
 	
 	ncdfLog("[ncdf] readTimeStepData: searching for u/v using CF conventions...\n");
-
-	ncdfLog("[ncdf] readTimeStepData: ncid=%d before u/v search\n", ncid);
+	
 	{
 		const char* alt_std[] = {"surface_eastward_sea_water_velocity", NULL};
 		const char* long_hints[] = {"Eastward Current Velocity", "u-velocity component of current", NULL};
@@ -1131,18 +1158,14 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 	}
 	
 	bool hasUV = (u_varid != -1 && v_varid != -1);
-	ncdfLog("[ncdf] readTimeStepData: hasUV=%d hasSeaTemp=%d\n", (int)hasUV, (int)dataMessage.hasSeaTemp);
 
-	if (!hasUV && !dataMessage.hasSeaTemp) {
-		ncdfLog("[ncdf] readTimeStepData: no u/v and no SST\n");
-		nc_close(ncid);
-		delete[] filename;
-		return false;
+	if (!hasUV) {
+		ncdfLog("[ncdf] readTimeStepData: u or v not found, will try SST only\n");
 	}
 
 	if (hasUV) {
 	ncdfLog("[ncdf] readTimeStepData: variables found, u_varid=%d, v_varid=%d\n", u_varid, v_varid);
-	
+
 	float fill_value_u = -32767.0f;
 	float fill_value_v = -32767.0f;
 	
@@ -1365,28 +1388,9 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 	free(v_vals);
 	} // end if (hasUV)
 
-	// For SST-only files, create minimal lat/lon arrays if needed
-	if (!hasUV && dataMessage.hasSeaTemp) {
-		if (!dataMessage.uvlats) {
-			size_t nbr_uv = dataMessage.latLength * dataMessage.lonLength;
-			dataMessage.uvlats = (double*)calloc(nbr_uv, sizeof(double));
-			dataMessage.uvlons = (double*)calloc(nbr_uv, sizeof(double));
-			dataMessage.ucurr = (double*)calloc(nbr_uv, sizeof(double));
-			dataMessage.vcurr = (double*)calloc(nbr_uv, sizeof(double));
-			for (size_t j = 0; j < dataMessage.latLength; j++) {
-				for (size_t k = 0; k < dataMessage.lonLength; k++) {
-					size_t idx = j * dataMessage.lonLength + k;
-					dataMessage.uvlats[idx] = dataMessage.latValues[j];
-					dataMessage.uvlons[idx] = dataMessage.lonValues[k];
-					dataMessage.ucurr[idx] = ncdf_NOTDEF;
-					dataMessage.vcurr[idx] = ncdf_NOTDEF;
-				}
-			}
-		}
-	}
-
 	// Read sea surface temperature (optional, file still open)
-	if (dataMessage.hasSeaTemp && ncid >= 0) {
+	// Always try to find SST variable, regardless of hasSeaTemp flag
+	if (ncid >= 0) {
 		int sst_varid_local = -1;
 		{
 			const char* alt_std[] = {"sea_surface_temperature", "surface_temperature", NULL};
@@ -1394,12 +1398,11 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 			const char* var_hints[] = {"thetao", "sst", "temperature", "temp", "SST", "votemper", "to", NULL};
 			sst_varid_local = find_var_by_cf(ncid, "sea_water_temperature", alt_std, long_hints, var_hints);
 		}
-		ncdfLog("[ncdf] readTimeStepData: SST var found=%d\n", sst_varid_local);
 		if (sst_varid_local != -1) {
 			size_t nbr_uv = dataMessage.latLength * dataMessage.lonLength;
 			float* sst_vals = (float*)calloc(nbr_uv, sizeof(float));
 			if (sst_vals) {
-				// Read SST data using hyperslab (current time step only)
+				// Read SST using hyperslab (current time step only)
 				int sst_ndims;
 				nc_inq_varndims(ncid, sst_varid_local, &sst_ndims);
 				int sst_dimids[NC_MAX_DIMS];
@@ -1418,7 +1421,7 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 					} else if (strstr(dimname, "lon") || strstr(dimname, "Lon")) {
 						sst_count[d] = dataMessage.lonLength;
 					} else {
-						sst_count[d] = 1; // depth or other dims: read first slice
+						sst_count[d] = 1;
 					}
 				}
 				nc_get_vara_float(ncid, sst_varid_local, sst_start, sst_count, sst_vals);
@@ -1433,18 +1436,17 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 				nc_get_att_float(ncid, sst_varid_local, "_FillValue", &sst_fill);
 
 				dataMessage.sst = (double*)calloc(nbr_uv, sizeof(double));
-				int sst_valid = 0;
 				for (size_t k = 0; k < nbr_uv; k++) {
 					double val = (double)sst_vals[k];
 					if (!isnan(val) && isfinite(val) && val != sst_fill && val > 100.0) {
 						dataMessage.sst[k] = isKelvin ? (val - 273.15) : val;
-						sst_valid++;
 					} else {
 						dataMessage.sst[k] = ncdf_NOTDEF;
 					}
 				}
 				free(sst_vals);
-				ncdfLog("[ncdf] readTimeStepData: SST read, valid=%d/%zu\n", sst_valid, nbr_uv);
+				ncdfLog("[ncdf] readTimeStepData: SST read, isKelvin=%d\n", (int)isKelvin);
+				dataMessage.hasSeaTemp = true;
 			}
 		}
 	}
@@ -1561,10 +1563,12 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 			return;
 		}
 		
-		if (m_lastSelectedTimeIndex >= 0 && m_lastSelectedTimeIndex < (int)myDataVector.size()) {
+		// Only clear previous time step's data if switching to a different one
+		if (m_lastSelectedTimeIndex >= 0 && m_lastSelectedTimeIndex != idx &&
+		    m_lastSelectedTimeIndex < (int)myDataVector.size()) {
 			myDataVector[m_lastSelectedTimeIndex].clear();
 		}
-		
+
 		myData = myDataVector[idx];
 		m_lastSelectedTimeIndex = idx;
 
@@ -1580,7 +1584,8 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 		m_staticTextDateTime->SetLabel(timeText);
 
 		if (readTimeStepData(myData)) {
-			ncdfLog("[ncdf] onTreeSelectionChanged: readTimeStepData succeed, calling readncdfFile\n");
+			ncdfLog("[ncdf] onTreeSelectionChanged: readTimeStepData succeed, hasSeaTemp=%d sst=%p\n",
+				(int)myData.hasSeaTemp, (void*)myData.sst);
 			this->my_ncdfReader->readncdfFile(myData);
 			pPlugIn->GetncdfOverlayFactory()->renderSelectionRectangle = false;
 			ncdfLog("[ncdf] onTreeSelectionChanged: requesting refresh\n");
@@ -1591,7 +1596,40 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 	} else {
 		ncdfLog("[ncdf] onTreeSelectionChanged: GetItemData returned NULL\n");
 	}
-	
+
+	// Show/hide checkboxes based on available data
+	bool hasCurrent = (gridu && gridv);
+	bool hasSST = (gridSST && hasSeaTemp);
+	ncdfLog("[ncdf] onTreeSelectionChanged: hasCurrent=%d hasSST=%d gridSST=%p hasSeaTemp=%d\n",
+		(int)hasCurrent, (int)hasSST, (void*)gridSST, (int)hasSeaTemp);
+	// Current checkboxes: show if has current data
+	m_checkBoxDCurrent->Show(hasCurrent);
+	m_staticText333->Show(hasCurrent);
+	m_textCtrlCurrentDir->Show(hasCurrent);
+	m_checkBoxBmpCurrentForce->Show(hasCurrent);
+	m_staticText40->Show(hasCurrent);
+	m_textCtrlCurrentForce->Show(hasCurrent);
+	m_staticText41->Show(hasCurrent);
+	m_checkBoxParticles->Show(hasCurrent);
+	m_staticTextParticles->Show(hasCurrent);
+	// SST checkboxes: show if has SST data
+	m_checkBoxSeaTemp->Show(hasSST);
+	m_staticTextSeaTemp->Show(hasSST);
+	m_checkBoxSeaTempIso->Show(hasSST);
+	m_staticTextSeaTempIso->Show(hasSST);
+	// Force layout update
+	Layout();
+	// Update plugin state
+	if (!hasCurrent) {
+		pPlugIn->m_bShowCurrentDir = false;
+		pPlugIn->m_bShowCurrentForce = false;
+		pPlugIn->m_bShowParticles = false;
+	}
+	if (!hasSST) {
+		pPlugIn->m_bShowSeaTemp = false;
+		pPlugIn->m_bShowSeaTempIso = false;
+	}
+
 	ncdfLog("[ncdf] onTreeSelectionChanged: completed\n");
 }
 

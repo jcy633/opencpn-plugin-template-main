@@ -88,10 +88,8 @@ public:
 
 	double** gridu;
 	double** gridv;
-	double** gridSST;  // sea surface temperature grid
-
-	bool hasSeaTemp;   // true if current file has SST data
-
+	double** gridSST;
+	bool hasSeaTemp;
 
 	ncdfDataMessage myncdfData, myData, myMessage;
 	vector<ncdfDataMessage> myDataVector;

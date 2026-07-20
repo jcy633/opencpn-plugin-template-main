@@ -180,21 +180,6 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 	if (!hasCurrentGrid && !hasSSTGrid) return false;
 	if (gui->myMessage.lonLength < 2 || gui->myMessage.latLength < 2) return false;
 
-	{
-		static int entryDbg = 0;
-		if (entryDbg < 5) {
-			FILE *f = fopen("C:\\ProgramData\\opencpn\\ncdf_debug.log", "a");
-			if (f) {
-				fprintf(f, "[render] DoRender: ready=%d hasCurrent=%d hasSST=%d showF=%d showSeaTemp=%d\n",
-					(int)m_bReadyToRender, (int)hasCurrentGrid, (int)hasSSTGrid,
-					plugin ? (int)plugin->m_bShowCurrentForce : -1,
-					plugin ? (int)plugin->m_bShowSeaTemp : -1);
-				fclose(f);
-			}
-			entryDbg++;
-		}
-	}
-
 	static int s_renderDbg = 0;
 	if (s_renderDbg < 10) {
 		wxLogMessage(_T("[render] ready=%d gui=%p gridu=%p ni=%d showF=%d showD=%d showP=%d"),
@@ -219,9 +204,7 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
           int ni = gui->myMessage.lonLength;
           int nj = gui->myMessage.latLength;
           if (ni > 1 && nj > 1) {
-              int samples = (ni <= 512 && nj <= 512) ? 2 : 1;
-            int tw = samples * (ni - 1) + 1 + 2;
-            int th = samples * (nj - 1) + 1 + 2;
+              int tw = ni + 2, th = nj + 2;
               unsigned char *texData = new unsigned char[tw * th * 4];
               memset(texData, 0, tw * th * 4);
 
@@ -365,22 +348,8 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 	}
 
 	// Sea temperature overlay
-	{
-		bool sstCond = plugin->m_bShowSeaTemp && gui && gui->gridSST && gui->hasSeaTemp;
-		static int sstDbg = 0;
-		if (sstDbg < 5) {
-			FILE *f = fopen("C:\\ProgramData\\opencpn\\ncdf_debug.log", "a");
-			if (f) {
-				fprintf(f, "[render] SeaTemp check: show=%d gui=%p gridSST=%p hasSeaTemp=%d -> %d\n",
-					(int)plugin->m_bShowSeaTemp, gui, gui ? (void*)gui->gridSST : nullptr,
-					gui ? (int)gui->hasSeaTemp : 0, (int)sstCond);
-				fclose(f);
-			}
-			sstDbg++;
-		}
-		if (sstCond) {
-			RenderSeaTempOverlay(vp);
-		}
+	if (plugin->m_bShowSeaTemp && gui && gui->gridSST && gui->hasSeaTemp) {
+		RenderSeaTempOverlay(vp);
 	}
 
 	// Sea temperature isolines
@@ -1486,9 +1455,7 @@ void ncdfOverlayFactory::CreateColorTexture(PlugIn_ViewPort *vp)
     int nj = gui->myMessage.latLength;
     if (ni < 2 || nj < 2) return;
 
-    int samples = (ni <= 512 && nj <= 512) ? 2 : 1;
-            int tw = samples * (ni - 1) + 1 + 2;
-            int th = samples * (nj - 1) + 1 + 2;
+    int tw = ni + 2, th = nj + 2;
     if (tw > 1024 || th > 1024) {
         double scale = 1024.0 / wxMax(ni, nj);
         tw = (int)(ni * scale) + 2;
@@ -1880,7 +1847,7 @@ OVERLAP Intersect(PlugIn_ViewPort *vp,
 // Sea Temperature rendering
 //===================================================================
 
-// Sea temperature color map (-2°C to 32°C, purple→blue→cyan→green→yellow→red, smoothstep)
+// Sea temperature color map (-2°C to 32°C, purple→red, smoothstep)
 wxColour ncdfOverlayFactory::GetSeaTempGraphicColor(double temp_c)
 {
     static const double stops[][4] = {
@@ -1905,7 +1872,7 @@ wxColour ncdfOverlayFactory::GetSeaTempGraphicColor(double temp_c)
         if (temp_c <= stops[i][0]) {
             double range = stops[i][0] - stops[i-1][0];
             double t = (range > 0) ? (temp_c - stops[i-1][0]) / range : 0;
-            t = t * t * (3.0 - 2.0 * t); // smoothstep
+            t = t * t * (3.0 - 2.0 * t);
             unsigned char r = (unsigned char)(stops[i-1][1] + t * (stops[i][1] - stops[i-1][1]));
             unsigned char g = (unsigned char)(stops[i-1][2] + t * (stops[i][2] - stops[i-1][2]));
             unsigned char b = (unsigned char)(stops[i-1][3] + t * (stops[i][3] - stops[i-1][3]));
@@ -1926,6 +1893,9 @@ void ncdfOverlayFactory::DeleteSeaTempTexture()
 
 void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
 {
+    FILE *dbg = fopen("C:\\ProgramData\\opencpn\\ncdf_debug.log", "a");
+    if (dbg) { fprintf(dbg, "[render] SST ENTER: gui=%p gridSST=%p\n", (void*)gui, gui ? (void*)gui->gridSST : NULL); fclose(dbg); }
+
     if (!gui || !gui->gridSST) return;
     int ni = gui->myMessage.lonLength;
     int nj = gui->myMessage.latLength;
@@ -1939,12 +1909,7 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
         glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
 
         if (!m_bHasSeaTempTexture) {
-            // Simple 1:1 texture mapping (same as current overlay)
             int tw = ni + 2, th = nj + 2;
-            int samples = 1;
-
-
-
             unsigned char *texData = new unsigned char[tw * th * 4];
             memset(texData, 0, tw * th * 4);
 
@@ -1952,89 +1917,22 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
             if (plugin) transparency = plugin->m_iOverlayTransparency;
             unsigned char globalAlpha = (unsigned char)(255 * (100 - transparency) / 100);
 
-            // Fill coastal gaps: interpolate NaN cells between valid neighbors
-            double **filledGrid = new double*[nj];
             for (int j = 0; j < nj; j++) {
-                filledGrid[j] = new double[ni];
+                int texRow = (gui->myMessage.jDirectionIncr >= 0) ? j : (nj - 1 - j);
                 for (int i = 0; i < ni; i++) {
-                    filledGrid[j][i] = gui->gridSST[j][i];
-                }
-            }
-            // Pass 1: fill along latitude (left-right)
-            for (int j = 0; j < nj; j++) {
-                for (int i = 1; i < ni - 1; i++) {
-                    double v = filledGrid[j][i];
-                    if (isnan(v) || !isfinite(v) || v == ncdf_NOTDEF) {
-                        double vl = filledGrid[j][i-1];
-                        double vr = filledGrid[j][i+1];
-                        bool bl = !isnan(vl) && isfinite(vl) && vl != ncdf_NOTDEF;
-                        bool br = !isnan(vr) && isfinite(vr) && vr != ncdf_NOTDEF;
-                        if (bl && br) filledGrid[j][i] = (vl + vr) / 2.0;
+                    int x = i + 1, y = texRow + 1;
+                    if (x >= tw - 1 || y >= th - 1) continue;
+                    double temp = gui->gridSST[j][i];
+                    int off = 4 * (y * tw + x);
+                    if (!isnan(temp) && isfinite(temp)) {
+                        wxColour c = GetSeaTempGraphicColor(temp);
+                        texData[off] = c.Red();
+                        texData[off+1] = c.Green();
+                        texData[off+2] = c.Blue();
+                        texData[off+3] = globalAlpha;
                     }
                 }
             }
-            // Pass 2: fill along longitude (top-bottom)
-            for (int i = 0; i < ni; i++) {
-                for (int j = 1; j < nj - 1; j++) {
-                    double v = filledGrid[j][i];
-                    if (isnan(v) || !isfinite(v) || v == ncdf_NOTDEF) {
-                        double vt = filledGrid[j-1][i];
-                        double vb = filledGrid[j+1][i];
-                        bool bt = !isnan(vt) && isfinite(vt) && vt != ncdf_NOTDEF;
-                        bool bb = !isnan(vb) && isfinite(vb) && vb != ncdf_NOTDEF;
-                        if (bt && bb) filledGrid[j][i] = (vt + vb) / 2.0;
-                    }
-                }
-            }
-
-            for (int j = 0; j < nj; j++) {
-                for (int i = 0; i < ni; i++) {
-                    double v00 = filledGrid[j][i];
-                    double v01 = (i < ni - 1) ? filledGrid[j][i+1] : ncdf_NOTDEF;
-                    double v10 = (j < nj - 1) ? filledGrid[j+1][i] : ncdf_NOTDEF;
-                    double v11 = (i < ni - 1 && j < nj - 1) ? filledGrid[j+1][i+1] : ncdf_NOTDEF;
-                    bool b00 = !isnan(v00) && isfinite(v00) && v00 != ncdf_NOTDEF;
-                    bool b01 = !isnan(v01) && isfinite(v01) && v01 != ncdf_NOTDEF;
-                    bool b10 = !isnan(v10) && isfinite(v10) && v10 != ncdf_NOTDEF;
-                    bool b11 = !isnan(v11) && isfinite(v11) && v11 != ncdf_NOTDEF;
-                    for (int sy = 0; sy < samples; sy++) {
-                        int texRow = (gui->myMessage.jDirectionIncr >= 0) ?
-                            (j * samples + sy) : ((nj - 1 - j) * samples + (samples - 1 - sy));
-                        double yd = (double)sy / samples;
-                        for (int sx = 0; sx < samples; sx++) {
-                            int x = i * samples + sx + 1;
-                            int y = texRow + 1;
-                            if (x >= tw - 1 || y >= th - 1) continue;
-                            double xd = (double)sx / samples;
-                            double v0, v1, a0 = 1, a1 = 1;
-                            if (!b10) { v0 = v00; a0 = b00 ? (1 - yd) : 0; }
-                            else if (!b00) { v0 = v10; a0 = yd; }
-                            else { v0 = (1 - yd) * v00 + yd * v10; }
-                            if (!b11) { v1 = v01; a1 = b01 ? (1 - yd) : 0; }
-                            else if (!b01) { v1 = v11; a1 = yd; }
-                            else { v1 = (1 - yd) * v01 + yd * v11; }
-                            double v, a;
-                            if (!b11 && !b01) { v = v0; a = (1 - xd) * a0; }
-                            else if (!b00 && !b10) { v = v1; a = xd * a1; }
-                            else { v = (1 - xd) * v0 + xd * v1; a = (1 - xd) * a0 + xd * a1; }
-                            int off = 4 * (y * tw + x);
-                            if (!isnan(v) && isfinite(v) && v != ncdf_NOTDEF && a > 0.01) {
-                                wxColour c = GetSeaTempGraphicColor(v);
-                                texData[off] = c.Red();
-                                texData[off+1] = c.Green();
-                                texData[off+2] = c.Blue();
-                                texData[off+3] = (unsigned char)(globalAlpha * a);
-                            }
-                        }
-                    }
-                    if (j == nj - 1) break;
-                }
-                if (j == nj - 1) break;
-            }
-
-            // Cleanup filled grid
-            for (int j = 0; j < nj; j++) delete[] filledGrid[j];
-            delete[] filledGrid;
 
             // GRIB-style border handling
             memcpy(texData, texData + 4 * tw * 1, 4 * tw);
@@ -2062,14 +1960,14 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, tw, th, 0, GL_RGBA, GL_UNSIGNED_BYTE, texData);
             m_bHasSeaTempTexture = true;
-            m_sstTexDataDim[0] = ni;
-            m_sstTexDataDim[1] = nj;
+            m_sstTexDataDim[0] = tw;
+            m_sstTexDataDim[1] = th;
             m_sstTexGLDim[0] = tw;
             m_sstTexGLDim[1] = th;
             delete[] texData;
         }
 
-        // Render tiled texture (GRIB DrawGLTexture approach)
+        // Render tiled texture
         if (m_bHasSeaTempTexture && m_glSeaTempTexture != 0) {
             int tw = m_sstTexGLDim[0], th = m_sstTexGLDim[1];
             double potNormX = (double)m_sstTexDataDim[0] / tw;
@@ -2114,10 +2012,10 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
                     lva[ii][jj][1] = ((lat - lat_min) / latstep + 1.5) / th * potNormY;
 
                     if (x > 0 && y > 0) {
-                        double u0 = lva[ii - 1][!jj][0], v0 = lva[ii - 1][!jj][1];
-                        double u1 = lva[ii][!jj][0],     v1 = lva[ii][!jj][1];
-                        double u2 = lva[ii][jj][0],      v2 = lva[ii][jj][1];
-                        double u3 = lva[ii - 1][jj][0],  v3 = lva[ii - 1][jj][1];
+                        double u0 = lva[ii-1][!jj][0], v0 = lva[ii-1][!jj][1];
+                        double u1 = lva[ii][!jj][0],   v1 = lva[ii][!jj][1];
+                        double u2 = lva[ii][jj][0],    v2 = lva[ii][jj][1];
+                        double u3 = lva[ii-1][jj][0],  v3 = lva[ii-1][jj][1];
 
                         if ((u0 >= 0 || u1 >= 0 || u2 >= 0 || u3 >= 0) &&
                             (u0 <= 1 || u1 <= 1 || u2 <= 1 || u3 <= 1) &&
@@ -2144,6 +2042,7 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
 #endif
     }
 }
+
 void ncdfOverlayFactory::RenderSeaTempIsoLines(PlugIn_ViewPort *vp)
 {
     if (!gui || !gui->gridSST) return;
@@ -2157,73 +2056,33 @@ void ncdfOverlayFactory::RenderSeaTempIsoLines(PlugIn_ViewPort *vp)
     double incrLat = (lat_max - lat_min) / (nj - 1);
 
     double minTemp = -2.0;
-    double maxTemp = 56.0;
+    double maxTemp = 32.0;
     double spacing = 2.0;
-    wxColour lineColor(80, 80, 80);
-
-    if (!m_pdc) {
-#ifdef ocpnUSE_GL
-        // GL mode: draw isolines as GL lines
-        glColor4ub(lineColor.Red(), lineColor.Green(), lineColor.Blue(), 255);
-        glEnable(GL_LINE_SMOOTH);
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        glHint(GL_LINE_SMOOTH_HINT, GL_NICEST);
-        glLineWidth(1.5f);
-#endif
-    }
 
     for (double temp = minTemp; temp <= maxTemp; temp += spacing) {
         IsoLine isoLine(temp, gui->gridSST, nj, ni,
                         lat_max, lon_min, incrLon, incrLat);
 
-        int nsegs = isoLine.getNbSegments();
-        if (nsegs < 1) continue;
+        if (isoLine.getNbSegments() < 1) continue;
 
-        if (m_pdc) {
-            // DC mode: use existing DC rendering
+        if (!m_pdc) {
+#ifdef ocpnUSE_GL
+            wxBitmap bmp(vp->pix_width, vp->pix_height, 32);
+            wxMemoryDC memDC(bmp);
+            memDC.SetBackground(wxColour(0, 0, 0, 0));
+            memDC.Clear();
+            isoLine.drawIsoLine(memDC, vp, false, false);
+            isoLine.drawIsoLineLabels(&memDC, wxColour(80,80,80), vp, 40, 0, temp);
+            memDC.SelectObject(wxNullBitmap);
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            DrawOLBitmap(bmp, 0, 0, true);
+            glDisable(GL_BLEND);
+#endif
+        } else {
             isoLine.drawIsoLine(*m_pdc, vp, false, false);
-            isoLine.drawIsoLineLabels(m_pdc, lineColor, vp, 40, 0, temp);
+            isoLine.drawIsoLineLabels(m_pdc, wxColour(80,80,80), vp, 40, 0, temp);
         }
-#ifdef ocpnUSE_GL
-        else {
-            // GL mode: draw isoline segments as GL lines
-            // Extract segments from the IsoLine2 object by rendering to a small DC
-            // and then drawing the result. Since IsoLine2 doesn't expose segments,
-            // we use a single shared bitmap approach instead of per-isoline bitmaps.
-            static wxBitmap *s_isoBmp = NULL;
-            static wxMemoryDC *s_isoDC = NULL;
-            if (!s_isoBmp || s_isoBmp->GetWidth() != vp->pix_width || s_isoBmp->GetHeight() != vp->pix_height) {
-                delete s_isoDC; delete s_isoBmp;
-                s_isoBmp = new wxBitmap(vp->pix_width, vp->pix_height, 32);
-                s_isoDC = new wxMemoryDC(*s_isoBmp);
-            }
-            // Only draw the first isoline to the bitmap (clear once, draw all)
-            if (temp == minTemp) {
-                s_isoDC->SetBackground(wxColour(0, 0, 0, 0));
-                s_isoDC->Clear();
-            }
-            isoLine.drawIsoLine(*s_isoDC, vp, false, false);
-
-            // Blit bitmap once after all isolines are drawn
-            if (temp + spacing > maxTemp) {
-                s_isoDC->SelectObject(wxNullBitmap);
-                glEnable(GL_BLEND);
-                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-                DrawOLBitmap(*s_isoBmp, 0, 0, true);
-                glDisable(GL_BLEND);
-                // Re-select for next frame
-                s_isoDC->SelectObject(*s_isoBmp);
-            }
-        }
-#endif
-    }
-
-    if (!m_pdc) {
-#ifdef ocpnUSE_GL
-        glDisable(GL_LINE_SMOOTH);
-        glDisable(GL_BLEND);
-#endif
     }
 }
 

@@ -27,7 +27,7 @@ ncdfReader::~ncdfReader()
 void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 {
 	bool hasCurrent = (dataMessage.ucurr && dataMessage.vcurr);
-	bool hasSST = (dataMessage.hasSeaTemp && dataMessage.sst);
+	bool hasSST = (dataMessage.sst != NULL) || dataMessage.hasSeaTemp;
 
 	if (!hasCurrent && !hasSST) {
 		return;
@@ -36,15 +36,15 @@ void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 	ncdfLog("[ncdf] readncdfFile: entering, meridian=%d, parallel=%d, points=%d, hasCurrent=%d, hasSST=%d\n",
 		(int)dataMessage.noPointsMeridian, (int)dataMessage.noPointsParallel,
 		dataMessage.numberOfPoints, (int)hasCurrent, (int)hasSST);
-
+	
 	// Save old grid dimensions before overwriting gui->myMessage
 	wxUint32 oldNoPointsMeridian = gui->gridu ? gui->myMessage.noPointsMeridian : 0;
-	wxUint32 oldSSTMeridian = gui->gridSST ? gui->myMessage.noPointsMeridian : 0;
-
+	
 	ncdfLog("[ncdf] readncdfFile: copying myMessage...\n");
 	gui->myMessage = dataMessage;
 	ncdfLog("[ncdf] readncdfFile: myMessage copied\n");
-	
+
+	// Clean up old current grids
 	if (gui->gridu) {
 		for (wxUint32 i = 0; i < oldNoPointsMeridian; ++i) {
 			delete[] gui->gridu[i];
@@ -52,7 +52,6 @@ void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 		delete[] gui->gridu;
 		gui->gridu = NULL;
 	}
-
 	if (gui->gridv) {
 		for (wxUint32 i = 0; i < oldNoPointsMeridian; ++i) {
 			delete[] gui->gridv[i];
@@ -63,40 +62,48 @@ void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 
 	// Build current grids only if u/v data is available
 	if (hasCurrent) {
-		gui->gridu = new double*[dataMessage.noPointsMeridian];
-		for (wxUint32 i = 0; i < dataMessage.noPointsMeridian; ++i) {
-			gui->gridu[i] = new double[dataMessage.noPointsParallel];
-		}
-		ncdfLog("[ncdf] readncdfFile: gridu allocated\n");
-		int c = 0;
-		for (wxUint32 i = 0; i < dataMessage.noPointsMeridian; i++) {
-			for (wxUint32 j = 0; j < dataMessage.noPointsParallel; j++) {
+	gui->gridu = new double*[dataMessage.noPointsMeridian];
+
+	for (wxUint32 i = 0; i < dataMessage.noPointsMeridian; ++i) { // = NLAT
+		gui->gridu[i] = new double[dataMessage.noPointsParallel];	// = NLON
+	}
+	ncdfLog("[ncdf] readncdfFile: gridu allocated\n");
+	int c = 0;
+	for (wxUint32 i = 0; i <dataMessage.noPointsMeridian; i++)    //This loops on the rows.Nj
+	{
+		for (wxUint32 j = 0; j<dataMessage.noPointsParallel; j++) //This loops on the columns.Ni
+		{
 				gui->gridu[i][j] = dataMessage.ucurr[c];
 				c++;
-			}
 		}
-		ncdfLog("[ncdf] readncdfFile: gridu data copied, about to allocate gridv...\n");
-
-		gui->gridv = new double*[dataMessage.noPointsMeridian];
-		for (wxUint32 i = 0; i < dataMessage.noPointsMeridian; ++i) {
-			gui->gridv[i] = new double[dataMessage.noPointsParallel];
-		}
-		ncdfLog("[ncdf] readncdfFile: gridv row pointers allocated\n");
-		ncdfLog("[ncdf] readncdfFile: gridv arrays allocated\n");
-		c = 0;
-		for (wxUint32 i = 0; i < dataMessage.noPointsMeridian; i++) {
-			for (wxUint32 j = 0; j < dataMessage.noPointsParallel; j++) {
-				gui->gridv[i][j] = dataMessage.vcurr[c];
-				c++;
-			}
-		}
-		ncdfLog("[ncdf] readncdfFile: gridv data copied, c=%d\n", c);
 	}
+	ncdfLog("[ncdf] readncdfFile: gridu data copied, about to allocate gridv...\n");
+	gui->gridv = new double*[dataMessage.noPointsMeridian];
+	ncdfLog("[ncdf] readncdfFile: gridv row pointers allocated\n");
+
+	for (wxUint32 i = 0; i < dataMessage.noPointsMeridian; ++i) {
+		gui->gridv[i] = new double[dataMessage.noPointsParallel];
+	}
+	ncdfLog("[ncdf] readncdfFile: gridv arrays allocated\n");
+	c = 0;
+	for (wxUint32 i = 0; i <dataMessage.noPointsMeridian; i++)    //This loops on the rows.Nj
+	{
+		for (wxUint32 j = 0; j<dataMessage.noPointsParallel; j++) //This loops on the columns.Ni
+		{
+
+			gui->gridv[i][j] = dataMessage.vcurr[c];
+			c++;
+		}
+	}
+	ncdfLog("[ncdf] readncdfFile: gridv data copied, c=%d\n", c);
+	} // end if (hasCurrent)
 
 	// Build SST grid if available
-	gui->hasSeaTemp = dataMessage.hasSeaTemp;
+	ncdfLog("[ncdf] readncdfFile: checking SST: hasSeaTemp=%d sst=%p\n",
+		(int)dataMessage.hasSeaTemp, (void*)dataMessage.sst);
+	gui->hasSeaTemp = (dataMessage.sst != NULL) || dataMessage.hasSeaTemp;
 	if (gui->gridSST) {
-		for (wxUint32 i = 0; i < oldSSTMeridian; ++i) {
+		for (wxUint32 i = 0; i < gui->myMessage.noPointsMeridian; ++i) {
 			delete[] gui->gridSST[i];
 		}
 		delete[] gui->gridSST;
@@ -129,6 +136,10 @@ void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 	}
 	gui->m_staticTextDateTime->SetLabel(ls);
 	ncdfLog("[ncdf] readncdfFile: datetime label set, calling reset/setData...\n");
+
+	// Update hasSeaTemp based on current data
+	gui->hasSeaTemp = (dataMessage.sst != NULL) || dataMessage.hasSeaTemp;
+
 	gui->pPlugIn->GetncdfOverlayFactory()->reset();
 	gui->pPlugIn->GetncdfOverlayFactory()->setData(gui,
 							   gui->pPlugIn,
@@ -140,10 +151,12 @@ void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 							   dataMessage.lastGridPointLong
 							   );
 	isReading = false;
-
-	ncdfLog("[ncdf] readncdfFile: completed, readyToRender=%d, hasCurrent=%d, hasSST=%d\n",
+	
+	ncdfLog("[ncdf] readncdfFile: completed, readyToRender=%d, points=%d, meridian=%d, parallel=%d\n",
 		gui->pPlugIn->GetncdfOverlayFactory()->isReadyToRender(),
-		(int)hasCurrent, (int)hasSST);
+		dataMessage.numberOfPoints,
+		dataMessage.noPointsMeridian,
+		dataMessage.noPointsParallel);
 }
 
 

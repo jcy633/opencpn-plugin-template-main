@@ -173,46 +173,30 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 
 	fgSizer2->Add( bSizerPart, 0, 0, 5 );
 
-	// Sea Temperature overlay
+	// Sea Temperature overlay (hidden by default)
 	wxFlexGridSizer* bSizerSeaTemp;
 	bSizerSeaTemp = new wxFlexGridSizer( 1, 4, 0, 0 );
 	bSizerSeaTemp->SetFlexibleDirection( wxBOTH );
 	bSizerSeaTemp->SetNonFlexibleGrowMode( wxFLEX_GROWMODE_SPECIFIED );
-
 	bSizerSeaTemp->Add( 24, 0, 0, wxEXPAND, 0 );
-
 	m_checkBoxSeaTemp = new wxCheckBox( m_panel1, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, 0 );
 	bSizerSeaTemp->Add( m_checkBoxSeaTemp, 0, wxALL|wxALIGN_CENTER_VERTICAL, 0 );
-
 	m_staticTextSeaTemp = new wxStaticText( m_panel1, wxID_ANY, _("Sea Temp"), wxDefaultPosition, wxDefaultSize, 0 );
 	m_staticTextSeaTemp->Wrap( -1 );
-	m_staticTextSeaTemp->SetMinSize( wxSize( 55,-1 ) );
 	bSizerSeaTemp->Add( m_staticTextSeaTemp, 0, wxALIGN_CENTER_VERTICAL|wxALL, 0 );
-
-	m_textCtrlSeaTemp = new wxTextCtrl( m_panel1, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize( 55,-1 ), wxTE_READONLY|wxTE_RIGHT );
-	bSizerSeaTemp->Add( m_textCtrlSeaTemp, 0, wxALL, 0 );
-
-	m_staticTextSeaTempUnit = new wxStaticText( m_panel1, wxID_ANY, _("\xC2\xB0""C"), wxDefaultPosition, wxDefaultSize, 0 );
-	m_staticTextSeaTempUnit->Wrap( -1 );
-	bSizerSeaTemp->Add( m_staticTextSeaTempUnit, 0, wxALL|wxALIGN_CENTER_VERTICAL, 2 );
-
 	fgSizer2->Add( bSizerSeaTemp, 0, 0, 5 );
 
-	// Sea Temperature isolines
+	// Sea Temperature isolines (hidden by default)
 	wxFlexGridSizer* bSizerSeaTempIso;
 	bSizerSeaTempIso = new wxFlexGridSizer( 1, 4, 0, 0 );
 	bSizerSeaTempIso->SetFlexibleDirection( wxBOTH );
 	bSizerSeaTempIso->SetNonFlexibleGrowMode( wxFLEX_GROWMODE_SPECIFIED );
-
 	bSizerSeaTempIso->Add( 24, 0, 0, wxEXPAND, 0 );
-
 	m_checkBoxSeaTempIso = new wxCheckBox( m_panel1, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, 0 );
 	bSizerSeaTempIso->Add( m_checkBoxSeaTempIso, 0, wxALL|wxALIGN_CENTER_VERTICAL, 0 );
-
 	m_staticTextSeaTempIso = new wxStaticText( m_panel1, wxID_ANY, _("SST Iso"), wxDefaultPosition, wxDefaultSize, 0 );
 	m_staticTextSeaTempIso->Wrap( -1 );
 	bSizerSeaTempIso->Add( m_staticTextSeaTempIso, 0, wxALIGN_CENTER_VERTICAL|wxALL, 0 );
-
 	fgSizer2->Add( bSizerSeaTempIso, 0, 0, 5 );
 
 

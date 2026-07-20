@@ -94,8 +94,6 @@ class ncdfDialog : public wxDialog
 		wxStaticText* m_staticTextParticles;
 		wxCheckBox* m_checkBoxSeaTemp;
 		wxStaticText* m_staticTextSeaTemp;
-		wxTextCtrl* m_textCtrlSeaTemp;
-		wxStaticText* m_staticTextSeaTempUnit;
 		wxCheckBox* m_checkBoxSeaTempIso;
 		wxStaticText* m_staticTextSeaTempIso;
 
