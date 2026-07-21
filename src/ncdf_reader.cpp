@@ -37,9 +37,14 @@ void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 		(int)dataMessage.noPointsMeridian, (int)dataMessage.noPointsParallel,
 		dataMessage.numberOfPoints, (int)hasCurrent, (int)hasSST);
 
-	// Save OLD grid dimensions BEFORE overwriting gui->myMessage
-	// (the old message's noPointsMeridian matches the old grid allocation)
+	// Save OLD grid pointers BEFORE overwriting (atomic swap pattern)
+	double **oldGridu = gui->gridu;
+	double **oldGridv = gui->gridv;
+	double **oldGridSST = gui->gridSST;
 	wxUint32 oldMeridian = gui->myMessage.noPointsMeridian;
+	gui->gridu = NULL;
+	gui->gridv = NULL;
+	gui->gridSST = NULL;
 
 	// Free old coordinate arrays before assignment
 	if (gui->myMessage.latValues) { free(gui->myMessage.latValues); gui->myMessage.latValues = NULL; }
@@ -49,23 +54,7 @@ void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 	gui->myMessage = dataMessage;
 	ncdfLog("[ncdf] readncdfFile: myMessage copied\n");
 
-	// Clean up old current grids using OLD dimensions
-	if (gui->gridu) {
-		for (wxUint32 i = 0; i < oldMeridian; ++i) {
-			delete[] gui->gridu[i];
-		}
-		delete[] gui->gridu;
-		gui->gridu = NULL;
-	}
-	if (gui->gridv) {
-		for (wxUint32 i = 0; i < oldMeridian; ++i) {
-			delete[] gui->gridv[i];
-		}
-		delete[] gui->gridv;
-		gui->gridv = NULL;
-	}
-
-	// Build current grids only if u/v data is available
+	// Build new current grids (old grids already NULL, no cleanup needed)
 	if (hasCurrent) {
 		gui->gridu = new double*[dataMessage.noPointsMeridian];
 		for (wxUint32 i = 0; i < dataMessage.noPointsMeridian; ++i) {
@@ -94,15 +83,8 @@ void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 		ncdfLog("[ncdf] readncdfFile: gridv built\n");
 	}
 
-	// Clean up old SST grid using OLD dimensions, then build new one
+	// Build new SST grid
 	gui->hasSeaTemp = hasSST;
-	if (gui->gridSST) {
-		for (wxUint32 i = 0; i < oldMeridian; ++i) {
-			delete[] gui->gridSST[i];
-		}
-		delete[] gui->gridSST;
-		gui->gridSST = NULL;
-	}
 	if (hasSST && dataMessage.sst) {
 		gui->gridSST = new double*[dataMessage.noPointsMeridian];
 		for (wxUint32 i = 0; i < dataMessage.noPointsMeridian; ++i) {
@@ -116,6 +98,20 @@ void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 			}
 		}
 		ncdfLog("[ncdf] readncdfFile: gridSST built\n");
+	}
+
+	// Free OLD grids AFTER new ones are built (atomic swap complete)
+	if (oldGridu) {
+		for (wxUint32 i = 0; i < oldMeridian; ++i) delete[] oldGridu[i];
+		delete[] oldGridu;
+	}
+	if (oldGridv) {
+		for (wxUint32 i = 0; i < oldMeridian; ++i) delete[] oldGridv[i];
+		delete[] oldGridv;
+	}
+	if (oldGridSST) {
+		for (wxUint32 i = 0; i < oldMeridian; ++i) delete[] oldGridSST[i];
+		delete[] oldGridSST;
 	}
 
 	wxDateTime ddt;
@@ -142,7 +138,7 @@ void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 							   dataMessage.lastGridPointLong
 							   );
 	isReading = false;
-	
+
 	ncdfLog("[ncdf] readncdfFile: completed, readyToRender=%d, points=%d, meridian=%d, parallel=%d\n",
 		gui->pPlugIn->GetncdfOverlayFactory()->isReadyToRender(),
 		dataMessage.numberOfPoints,

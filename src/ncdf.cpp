@@ -186,6 +186,7 @@ void MainDialog::UpdateTrackingControls()
 
 void MainDialog::printCurrentData()
 {
+	  if (!gridu || !gridv) return;
 	  wxString t;
       double cDir;
       double cForce;
@@ -208,6 +209,7 @@ void MainDialog::printCurrentData()
 CurrentData MainDialog::getCurrentData(double lat, double lon)
 {
 	CurrentData result = {0, 0};
+	if (!gridu || !gridv) return result;
 	wxString t;
 	double cDir;
 	double cForce;
@@ -1534,18 +1536,24 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 	        return;
 	    }
 
-	    // Clean up old grids (GRIB pattern: reset on file change)
-	    if (gridu) {
-	        for (wxUint32 i = 0; i < myMessage.noPointsMeridian; ++i) delete[] gridu[i];
-	        delete[] gridu; gridu = NULL;
+	    // Clean up old grids (atomic swap: save old, set NULL, nc_get will rebuild via readncdfFile)
+	    wxUint32 oldMeridian = myMessage.noPointsMeridian;
+	    double **oldGridu = gridu; gridu = NULL;
+	    double **oldGridv = gridv; gridv = NULL;
+	    double **oldGridSST = gridSST; gridSST = NULL;
+	    hasSeaTemp = false;
+	    // Free old grids after setting pointers to NULL (prevents stale access)
+	    if (oldGridu) {
+	        for (wxUint32 i = 0; i < oldMeridian; ++i) delete[] oldGridu[i];
+	        delete[] oldGridu;
 	    }
-	    if (gridv) {
-	        for (wxUint32 i = 0; i < myMessage.noPointsMeridian; ++i) delete[] gridv[i];
-	        delete[] gridv; gridv = NULL;
+	    if (oldGridv) {
+	        for (wxUint32 i = 0; i < oldMeridian; ++i) delete[] oldGridv[i];
+	        delete[] oldGridv;
 	    }
-	    if (gridSST) {
-	        for (wxUint32 i = 0; i < myMessage.noPointsMeridian; ++i) delete[] gridSST[i];
-	        delete[] gridSST; gridSST = NULL;
+	    if (oldGridSST) {
+	        for (wxUint32 i = 0; i < oldMeridian; ++i) delete[] oldGridSST[i];
+	        delete[] oldGridSST;
 	    }
 	    hasSeaTemp = false;
 	    m_lastSelectedTimeIndex = -1;

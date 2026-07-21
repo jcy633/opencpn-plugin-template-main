@@ -211,7 +211,7 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 	}
 
 	// Color map: GRIB-style tiled texture with caching
-	if(plugin->m_bShowCurrentForce && !m_pdc) {
+	if(plugin->m_bShowCurrentForce && gui->gridu && gui->gridv && !m_pdc) {
 #ifdef ocpnUSE_GL
       // Reset GL state to avoid inheriting GRIB's texture bindings
       glDisable(GL_TEXTURE_2D);
@@ -242,6 +242,7 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
               unsigned char globalAlpha = (unsigned char)(255 * (100 - transparency) / 100);
 
               for (int j = 0; j < nj; j++) {
+                  if (!gui->gridu[j] || !gui->gridv[j]) break;
                   int texRow = (gui->myMessage.jDirectionIncr >= 0) ? j : (nj - 1 - j);
                   for (int i = 0; i < ni; i++) {
                       int x = i + 1, y = texRow + 1;
@@ -1946,7 +1947,10 @@ void ncdfOverlayFactory::DeleteSeaTempTexture()
 
 void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
 {
-    if (!gui || !gui->gridSST || !vp) return;
+    if (!gui || !vp) return;
+    // Snapshot grid pointer — if it becomes invalid mid-render, bail safely
+    double **sstGrid = gui->gridSST;
+    if (!sstGrid) return;
     int ni = gui->myMessage.lonLength;
     int nj = gui->myMessage.latLength;
     if (ni < 2 || nj < 2) return;
@@ -1972,10 +1976,10 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
 
             // Fill texture: write RGBA directly (GRIB pattern, no wxColour overhead)
             for (int j = 0; j < nj; j++) {
-                if (!gui->gridSST[j]) break;
+                if (!sstGrid[j]) break;
                 int texRow = (gui->myMessage.jDirectionIncr >= 0) ? j : (nj - 1 - j);
                 for (int i = 0; i < ni; i++) {
-                    double val = gui->gridSST[j][i];
+                    double val = sstGrid[j][i];
                     if (val == ncdf_NOTDEF || isnan(val) || !isfinite(val)) continue;
                     int x = i + 1, y = texRow + 1;
                     if (x >= tw - 1 || y >= th - 1) continue;
@@ -2102,7 +2106,9 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
 
 void ncdfOverlayFactory::RenderSeaTempIsoLines(PlugIn_ViewPort *vp)
 {
-    if (!gui || !gui->gridSST || !vp) return;
+    if (!gui || !vp) return;
+    double **sstGrid = gui->gridSST;
+    if (!sstGrid) return;
     int ni = gui->myMessage.lonLength;
     int nj = gui->myMessage.latLength;
     if (ni < 2 || nj < 2) return;
@@ -2122,9 +2128,9 @@ void ncdfOverlayFactory::RenderSeaTempIsoLines(PlugIn_ViewPort *vp)
     // Auto-detect temperature range from data
     double minT = 1e10, maxT = -1e10;
     for (int j = 0; j < nj; j++) {
-        if (!gui->gridSST[j]) break;
+        if (!sstGrid[j]) break;
         for (int i = 0; i < ni; i++) {
-            double v = gui->gridSST[j][i];
+            double v = sstGrid[j][i];
             if (v == ncdf_NOTDEF || isnan(v) || !isfinite(v)) continue;
             if (v < minT) minT = v;
             if (v > maxT) maxT = v;
@@ -2151,7 +2157,7 @@ void ncdfOverlayFactory::RenderSeaTempIsoLines(PlugIn_ViewPort *vp)
         glLineWidth(1.0f);
 
         for (double temp = minT; temp <= maxT; temp += spacing) {
-            IsoLine isoLine(temp, gui->gridSST, nj, ni, lat_max, lon_min, incrLat, incrLon);
+            IsoLine isoLine(temp, sstGrid, nj, ni, lat_max, lon_min, incrLat, incrLon);
             if (isoLine.getNbSegments() < 1) continue;
 
             // GRIB pattern: draw segments directly with GL
@@ -2174,7 +2180,7 @@ void ncdfOverlayFactory::RenderSeaTempIsoLines(PlugIn_ViewPort *vp)
 #endif
     } else {
         for (double temp = minT; temp <= maxT; temp += spacing) {
-            IsoLine isoLine(temp, gui->gridSST, nj, ni, lat_max, lon_min, incrLat, incrLon);
+            IsoLine isoLine(temp, sstGrid, nj, ni, lat_max, lon_min, incrLat, incrLon);
             if (isoLine.getNbSegments() < 1) continue;
             isoLine.drawIsoLine(*m_pdc, vp, false, false);
             isoLine.drawIsoLineLabels(m_pdc, wxColour(80, 80, 80), vp, 40, 0, temp);
