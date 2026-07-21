@@ -913,29 +913,12 @@ int MainDialog::nc_get(wxString filestr){
 	float lastGridPointLon;
 	float scale_factor = 1.0f;
 
-	if (nc_get_att_float(ncid, NC_GLOBAL, "latitude_min", &firstGridPointLat) != NC_NOERR &&
-		nc_get_att_float(ncid, NC_GLOBAL, "lat_min", &firstGridPointLat) != NC_NOERR &&
-		nc_get_att_float(ncid, NC_GLOBAL, "min_lat", &firstGridPointLat) != NC_NOERR) {
-		firstGridPointLat = lats[0];
-	}
-
-	if (nc_get_att_float(ncid, NC_GLOBAL, "longitude_min", &firstGridPointLon) != NC_NOERR &&
-		nc_get_att_float(ncid, NC_GLOBAL, "lon_min", &firstGridPointLon) != NC_NOERR &&
-		nc_get_att_float(ncid, NC_GLOBAL, "min_lon", &firstGridPointLon) != NC_NOERR) {
-		firstGridPointLon = lons[0];
-	}
-
-	if (nc_get_att_float(ncid, NC_GLOBAL, "latitude_max", &lastGridPointLat) != NC_NOERR &&
-		nc_get_att_float(ncid, NC_GLOBAL, "lat_max", &lastGridPointLat) != NC_NOERR &&
-		nc_get_att_float(ncid, NC_GLOBAL, "max_lat", &lastGridPointLat) != NC_NOERR) {
-		lastGridPointLat = lats[latlength - 1];
-	}
-
-	if (nc_get_att_float(ncid, NC_GLOBAL, "longitude_max", &lastGridPointLon) != NC_NOERR &&
-		nc_get_att_float(ncid, NC_GLOBAL, "lon_max", &lastGridPointLon) != NC_NOERR &&
-		nc_get_att_float(ncid, NC_GLOBAL, "max_lon", &lastGridPointLon) != NC_NOERR) {
-		lastGridPointLon = lons[lonlength - 1];
-	}
+	// Always use actual coordinate arrays for bounds (GRIB pattern)
+	// Global attributes (latitude_min etc.) may not match the data grid exactly
+	firstGridPointLat = lats[0];
+	firstGridPointLon = lons[0];
+	lastGridPointLat = lats[latlength - 1];
+	lastGridPointLon = lons[lonlength - 1];
 	
 	if (nc_get_att_float(ncid, u_varid, "scale_factor", &scale_factor) != NC_NOERR) {
 		scale_factor = 1.0f;
