@@ -381,10 +381,10 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 		RenderSeaTempOverlay(vp);
 	}
 
-	// Sea temperature isolines
-	if (plugin->m_bShowSeaTempIso && gui && gui->gridSST && gui->hasSeaTemp) {
-		RenderSeaTempIsoLines(vp);
-	}
+	// Sea temperature isolines (temporarily disabled for crash diagnosis)
+	// if (plugin->m_bShowSeaTempIso && gui && gui->gridSST && gui->hasSeaTemp) {
+	// 	RenderSeaTempIsoLines(vp);
+	// }
 
     m_last_vp_scale = vp->view_scale_ppm;
     m_last_vp_latMax = vp->lat_max;
