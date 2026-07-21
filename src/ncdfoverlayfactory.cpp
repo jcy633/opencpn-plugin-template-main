@@ -1893,9 +1893,6 @@ void ncdfOverlayFactory::DeleteSeaTempTexture()
 
 void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
 {
-    FILE *dbg = fopen("C:\\ProgramData\\opencpn\\ncdf_debug.log", "a");
-    if (dbg) { fprintf(dbg, "[render] SST ENTER: gui=%p gridSST=%p\n", (void*)gui, gui ? (void*)gui->gridSST : NULL); fclose(dbg); }
-
     if (!gui || !gui->gridSST) return;
     int ni = gui->myMessage.lonLength;
     int nj = gui->myMessage.latLength;
@@ -1967,7 +1964,7 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
             delete[] texData;
         }
 
-        // Render tiled texture
+        // Render SST overlay - single quad with geographic positioning
         if (m_bHasSeaTempTexture && m_glSeaTempTexture != 0) {
             int tw = m_sstTexGLDim[0], th = m_sstTexGLDim[1];
             double potNormX = (double)m_sstTexDataDim[0] / tw;
@@ -1978,19 +1975,21 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
             double lonstep = (lon_max - lon_min) / (ni - 1);
             double clon = (lon_min + lon_max) / 2;
 
-            double pw = vp->view_scale_ppm * 1e6 / (pow(2, fabs(vp->clat) / 25));
-            if (pw < 20) pw = 20;
-            int xsquares = ceil(vp->pix_width / pw), ysquares = ceil(vp->pix_height / pw);
-            if (vp->rotation == 0 && vp->m_projection_type == PI_PROJECTION_MERCATOR)
-                xsquares = 1;
-            xsquares = wxMax(xsquares, 2);
-            ysquares = wxMax(ysquares, 2);
-
-            double xs = vp->pix_width / double(xsquares);
-            double ys = vp->pix_height / double(ysquares);
-            int ii = 0, jj = 0;
-            typedef double mx[2][2];
-            mx *lva = new mx[xsquares + 1];
+            // Compute texture coordinates for viewport corners
+            double screenX[] = {0.0, (double)vp->pix_width};
+            double screenY[] = {0.0, (double)vp->pix_height};
+            double u[2], v[2];
+            for (int sy = 0; sy < 2; sy++) {
+                for (int sx = 0; sx < 2; sx++) {
+                    double lat, lon;
+                    wxPoint p(screenX[sx], screenY[sy]);
+                    GetCanvasLLPix(vp, p, &lat, &lon);
+                    if (clon - lon > 180) lon += 360;
+                    else if (lon - clon > 180) lon -= 360;
+                    u[sx] = ((lon - lon_min) / lonstep + 1.5) / tw * potNormX;
+                    v[sy] = ((lat - lat_min) / latstep + 1.5) / th * potNormY;
+                }
+            }
 
             glEnable(GL_TEXTURE_2D);
             glBindTexture(GL_TEXTURE_2D, m_glSeaTempTexture);
@@ -1999,41 +1998,12 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
             glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
             glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
 
-            for (double y = 0; y < vp->pix_height + ys / 2; y += ys) {
-                ii = 0;
-                for (double x = 0; x < vp->pix_width + xs / 2; x += xs) {
-                    double lat, lon;
-                    wxPoint p(x, y);
-                    GetCanvasLLPix(vp, p, &lat, &lon);
-                    if (clon - lon > 180) lon += 360;
-                    else if (lon - clon > 180) lon -= 360;
-
-                    lva[ii][jj][0] = ((lon - lon_min) / lonstep + 1.5) / tw * potNormX;
-                    lva[ii][jj][1] = ((lat - lat_min) / latstep + 1.5) / th * potNormY;
-
-                    if (x > 0 && y > 0) {
-                        double u0 = lva[ii-1][!jj][0], v0 = lva[ii-1][!jj][1];
-                        double u1 = lva[ii][!jj][0],   v1 = lva[ii][!jj][1];
-                        double u2 = lva[ii][jj][0],    v2 = lva[ii][jj][1];
-                        double u3 = lva[ii-1][jj][0],  v3 = lva[ii-1][jj][1];
-
-                        if ((u0 >= 0 || u1 >= 0 || u2 >= 0 || u3 >= 0) &&
-                            (u0 <= 1 || u1 <= 1 || u2 <= 1 || u3 <= 1) &&
-                            (v0 >= 0 || v1 >= 0 || v2 >= 0 || v3 >= 0) &&
-                            (v0 <= 1 || v1 <= 1 || v2 <= 1 || v3 <= 1)) {
-                            glBegin(GL_QUADS);
-                            glTexCoord2d(u0, v0); glVertex2f(x - xs, y - ys);
-                            glTexCoord2d(u1, v1); glVertex2f(x, y - ys);
-                            glTexCoord2d(u2, v2); glVertex2f(x, y);
-                            glTexCoord2d(u3, v3); glVertex2f(x - xs, y);
-                            glEnd();
-                        }
-                    }
-                    ii++;
-                }
-                jj = !jj;
-            }
-            delete[] lva;
+            glBegin(GL_QUADS);
+            glTexCoord2d(u[0], v[0]); glVertex2f(screenX[0], screenY[0]);
+            glTexCoord2d(u[1], v[0]); glVertex2f(screenX[1], screenY[0]);
+            glTexCoord2d(u[1], v[1]); glVertex2f(screenX[1], screenY[1]);
+            glTexCoord2d(u[0], v[1]); glVertex2f(screenX[0], screenY[1]);
+            glEnd();
 
             glDisable(GL_BLEND);
             glDisable(GL_TEXTURE_2D);

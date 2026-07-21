@@ -7,10 +7,13 @@
 *.opendb
 *.opensdf
 *.sdf
+.trae/
 
 # ============ Build directories ============
 build/
 buildwin/
+build_final/
+build_ncdf/
 Release/
 Debug/
 Win32/
@@ -26,13 +29,19 @@ cmake_install.cmake
 *.sln
 cmake_final_output.txt
 cmake_output.txt
+msbuild_output.txt
+
+# CMake Visual Studio project dirs (root level)
+*.dir/
 
 # ============ Third-party dependencies (不修改) ============
 netcdf/
+netcdf-study/
 opencpn-libs/
 wxWidgets/
 grib_pi/
 cache/
+lcs/
 build-deps/
 wxWidgetsDLL.7z
 wxWidgetsDev.7z
@@ -46,7 +55,7 @@ wxWidgetsHeaders.7z
 *.ilk
 
 # ============ Crash dumps ============
-CrashDumps/
+CrashDumps
 
 # ============ Translation files ============
 *.mo
@@ -60,14 +69,23 @@ finish_tarball.cmake
 checksum.cmake
 *-conf-stamp
 copy_out
+upload.bat
+upload.sh
 
-# ============ Log files ============
+# ============ Log / temp files ============
 *.log
-
-# ============ Installer ============
-install_manifest.txt
-lcs/
+analyse.txt
 tmp_*.cpp
 *.pyc
-cache/
-lcs/
+install_manifest.txt
+
+# ============ Build helper scripts ============
+*.bat
+
+# ============ CI ============
+.circleci/
+ci/
+scripts/
+
+# ============ Claude AI ============
+.claude/

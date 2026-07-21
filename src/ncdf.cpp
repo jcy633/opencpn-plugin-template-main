@@ -750,6 +750,15 @@ int MainDialog::nc_get(wxString filestr){
 	bool hasCurrent = (u_varid != -1 && v_varid != -1);
 	bool hasSST = (sst_varid != -1);
 
+	// Store file-level data availability and cached variable IDs
+	m_fileHasCurrent = hasCurrent;
+	m_fileHasSeaTemp = hasSST;
+	m_cached_u_varid = u_varid;
+	m_cached_v_varid = v_varid;
+	m_cached_sst_varid = sst_varid;
+	ncdfLog("[ncdf] nc_get: m_fileHasCurrent=%d, m_fileHasSeaTemp=%d, cached varids: u=%d v=%d sst=%d\n",
+		(int)m_fileHasCurrent, (int)m_fileHasSeaTemp, m_cached_u_varid, m_cached_v_varid, m_cached_sst_varid);
+
 	if (!hasCurrent && !hasSST) {
 		ncdfLog("[ncdf] nc_get: no u/v and no SST, but loading file anyway for coordinate display\n");
 		// Don't return error - allow the file to load for coordinate/time display
@@ -1099,6 +1108,13 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 		return false;
 	}
 	
+	// Free existing SST data before reallocating (prevents leak on repeated calls)
+	if (dataMessage.sst) {
+		free(dataMessage.sst);
+		dataMessage.sst = NULL;
+	}
+	dataMessage.hasSeaTemp = false;
+
 	ncdfLog("[ncdf] readTimeStepData: freeing existing data\n");
 	if (dataMessage.ucurr) {
 		ncdfLog("[ncdf] readTimeStepData: freeing ucurr=%p\n", dataMessage.ucurr);
@@ -1122,7 +1138,6 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 	}
 
 	int ncid;
-	int u_varid, v_varid;
 	int retval;
 	
 	wxString filenameStr = dataMessage.fileName;
@@ -1141,27 +1156,28 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 		return false;
 	}
 	
-	ncdfLog("[ncdf] readTimeStepData: searching for u/v using CF conventions...\n");
-	
-	{
-		const char* alt_std[] = {"surface_eastward_sea_water_velocity", NULL};
-		const char* long_hints[] = {"Eastward Current Velocity", "u-velocity component of current", NULL};
-		const char* var_hints[] = {"u", "uo", "current_u", "curr_u", "u10", "u100", NULL};
-		u_varid = find_var_by_cf(ncid, "eastward_sea_water_velocity", alt_std, long_hints, var_hints);
+	// Use cached variable IDs from nc_get() (GRIB pattern: discover once, read many)
+	// Fallback to CF discovery if cache is invalid (shouldn't happen in normal flow)
+	int u_varid = m_cached_u_varid;
+	int v_varid = m_cached_v_varid;
+	if (u_varid < 0 || v_varid < 0) {
+		ncdfLog("[ncdf] readTimeStepData: cache miss, falling back to CF discovery\n");
+		{
+			const char* alt_std[] = {"surface_eastward_sea_water_velocity", NULL};
+			const char* long_hints[] = {"Eastward Current Velocity", "u-velocity component of current", NULL};
+			const char* var_hints[] = {"u", "uo", "current_u", "curr_u", "u10", "u100", NULL};
+			u_varid = find_var_by_cf(ncid, "eastward_sea_water_velocity", alt_std, long_hints, var_hints);
+		}
+		{
+			const char* alt_std[] = {"surface_northward_sea_water_velocity", NULL};
+			const char* long_hints[] = {"Northward Current Velocity", "v-velocity component of current", NULL};
+			const char* var_hints[] = {"v", "vo", "current_v", "curr_v", "v10", "v100", NULL};
+			v_varid = find_var_by_cf(ncid, "northward_sea_water_velocity", alt_std, long_hints, var_hints);
+		}
 	}
-	
-	{
-		const char* alt_std[] = {"surface_northward_sea_water_velocity", NULL};
-		const char* long_hints[] = {"Northward Current Velocity", "v-velocity component of current", NULL};
-		const char* var_hints[] = {"v", "vo", "current_v", "curr_v", "v10", "v100", NULL};
-		v_varid = find_var_by_cf(ncid, "northward_sea_water_velocity", alt_std, long_hints, var_hints);
-	}
-	
-	bool hasUV = (u_varid != -1 && v_varid != -1);
 
-	if (!hasUV) {
-		ncdfLog("[ncdf] readTimeStepData: u or v not found, will try SST only\n");
-	}
+	bool hasUV = (u_varid != -1 && v_varid != -1);
+	ncdfLog("[ncdf] readTimeStepData: hasUV=%d, u_varid=%d, v_varid=%d (cached)\n", (int)hasUV, u_varid, v_varid);
 
 	if (hasUV) {
 	ncdfLog("[ncdf] readTimeStepData: variables found, u_varid=%d, v_varid=%d\n", u_varid, v_varid);
@@ -1305,44 +1321,50 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 		}
 	}
 	
-	nc_close(ncid);
-	delete[] filename;
-	
 	ncdfLog("[ncdf] readTimeStepData: data read successfully, allocating output arrays\n");
-	
+
+	// ncid and filename are freed at the end of the function (after SST read)
+
 	dataMessage.ucurr = (double*)calloc(nbr_uv, sizeof(double));
 	if (!dataMessage.ucurr) {
 		free(u_vals);
 		free(v_vals);
 		nc_close(ncid);
+		delete[] filename;
 		return false;
 	}
 
 	dataMessage.vcurr = (double*)calloc(nbr_uv, sizeof(double));
 	if (!dataMessage.vcurr) {
 		free(dataMessage.ucurr);
+		dataMessage.ucurr = NULL;
 		free(u_vals);
 		free(v_vals);
 		nc_close(ncid);
+		delete[] filename;
 		return false;
 	}
 	
 	dataMessage.uvlats = (double*)calloc(nbr_uv, sizeof(double));
 	if (!dataMessage.uvlats) {
-		free(dataMessage.vcurr);
-		free(dataMessage.ucurr);
+		free(dataMessage.vcurr); dataMessage.vcurr = NULL;
+		free(dataMessage.ucurr); dataMessage.ucurr = NULL;
 		free(u_vals);
 		free(v_vals);
+		nc_close(ncid);
+		delete[] filename;
 		return false;
 	}
-	
+
 	dataMessage.uvlons = (double*)calloc(nbr_uv, sizeof(double));
 	if (!dataMessage.uvlons) {
-		free(dataMessage.uvlats);
-		free(dataMessage.vcurr);
-		free(dataMessage.ucurr);
+		free(dataMessage.uvlats); dataMessage.uvlats = NULL;
+		free(dataMessage.vcurr); dataMessage.vcurr = NULL;
+		free(dataMessage.ucurr); dataMessage.ucurr = NULL;
 		free(u_vals);
 		free(v_vals);
+		nc_close(ncid);
+		delete[] filename;
 		return false;
 	}
 	
@@ -1388,11 +1410,11 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 	free(v_vals);
 	} // end if (hasUV)
 
-	// Read sea surface temperature (optional, file still open)
-	// Always try to find SST variable, regardless of hasSeaTemp flag
-	if (ncid >= 0) {
-		int sst_varid_local = -1;
-		{
+	// Read sea surface temperature using cached variable ID (GRIB pattern)
+	if (ncid >= 0 && m_fileHasSeaTemp) {
+		int sst_varid_local = m_cached_sst_varid;
+		if (sst_varid_local < 0) {
+			// Fallback: discover SST variable if cache miss
 			const char* alt_std[] = {"sea_surface_temperature", "surface_temperature", NULL};
 			const char* long_hints[] = {"Sea surface temperature", "sea_water_temperature", "SST", "Temperature", "temperature", NULL};
 			const char* var_hints[] = {"thetao", "sst", "temperature", "temp", "SST", "votemper", "to", NULL};
@@ -1454,6 +1476,7 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 	ncdfLog("[ncdf] readTimeStepData: completed successfully\n");
 
 	nc_close(ncid);
+	delete[] filename;
 
 	return true;
 }
@@ -1515,15 +1538,74 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 	    wxString fn = m_treeCtrl->GetItemText(event.GetItem());
 	    wxString fileName = m_textCtrlDir->GetValue() + _T("\\") + fn;
 	    ncdfLogW(L"[ncdf] file node clicked: fn=%ls, fileName=%ls\n", (const wchar_t*)fn.c_str(), (const wchar_t*)fileName.c_str());
+
+	    // Guard against re-entrant calls: nc_get + SelectItem can trigger
+	    // onTreeSelectionChanged again. Block it and process manually.
+	    m_isTreeUpdating = true;
 	    int ret = nc_get(fileName);
 	    ncdfLog("[ncdf] nc_get returned: %d, myDataVector size=%d\n", ret, (int)myDataVector.size());
-	    // Auto-select first time step
-	    wxTreeItemIdValue cookie;
-	    wxTreeItemId firstChild = m_treeCtrl->GetFirstChild(event.GetItem(), cookie);
-	    if (firstChild.IsOk()) {
-	        m_treeCtrl->SelectItem(firstChild);
+	    m_isTreeUpdating = false;
+
+	    if (ret != 0 || myDataVector.empty()) {
+	        ncdfDialog::onTreeSelectionChanged(event);
+	        return;
 	    }
+
+	    // Manually load the first time step (don't rely on SelectItem re-entrancy)
+	    myData = myDataVector[0];
+	    m_lastSelectedTimeIndex = 0;
+	    m_sTimeline->SetValue(0);
+
+	    // Clean up old grids before reading new file data (GRIB pattern: reset on file change)
+	    // This prevents stale gridSST/gridu/gridv from previous file causing crashes
+	    if (gridu) {
+	        for (wxUint32 i = 0; i < myMessage.noPointsMeridian; ++i) delete[] gridu[i];
+	        delete[] gridu; gridu = NULL;
+	    }
+	    if (gridv) {
+	        for (wxUint32 i = 0; i < myMessage.noPointsMeridian; ++i) delete[] gridv[i];
+	        delete[] gridv; gridv = NULL;
+	    }
+	    if (gridSST) {
+	        for (wxUint32 i = 0; i < myMessage.noPointsMeridian; ++i) delete[] gridSST[i];
+	        delete[] gridSST; gridSST = NULL;
+	    }
+	    hasSeaTemp = false;
+	    pPlugIn->GetncdfOverlayFactory()->reset();
+
+	    if (readTimeStepData(myData)) {
+	        this->my_ncdfReader->readncdfFile(myData);
+	        pPlugIn->GetncdfOverlayFactory()->renderSelectionRectangle = false;
+	        RequestRefresh(m_parent);
+	    }
+
 		ncdfDialog::onTreeSelectionChanged(event);
+		// Show checkboxes based on file-level data availability
+		bool showCurrent = m_fileHasCurrent;
+		bool showSST = m_fileHasSeaTemp;
+		m_checkBoxDCurrent->Show(showCurrent);
+		m_staticText333->Show(showCurrent);
+		m_textCtrlCurrentDir->Show(showCurrent);
+		m_checkBoxBmpCurrentForce->Show(showCurrent);
+		m_staticText40->Show(showCurrent);
+		m_textCtrlCurrentForce->Show(showCurrent);
+		m_staticText41->Show(showCurrent);
+		m_checkBoxParticles->Show(showCurrent);
+		m_staticTextParticles->Show(showCurrent);
+		m_checkBoxSeaTemp->Show(showSST);
+		m_staticTextSeaTemp->Show(showSST);
+		m_checkBoxSeaTempIso->Show(showSST);
+		m_staticTextSeaTempIso->Show(showSST);
+		Layout();
+		if (!showCurrent) {
+			pPlugIn->m_bShowCurrentDir = false;
+			pPlugIn->m_bShowCurrentForce = false;
+			pPlugIn->m_bShowParticles = false;
+		}
+		if (!showSST) {
+			pPlugIn->m_bShowSeaTemp = false;
+			pPlugIn->m_bShowSeaTempIso = false;
+		}
 		return;
     }
 
@@ -1543,13 +1625,29 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 				myDataVector.clear();
 				m_lastSelectedTimeIndex = -1;
 				m_choiceTime->Clear();
+
+				// Clean up old grids before loading new file (GRIB pattern: reset on file change)
+				if (gridu) {
+					for (wxUint32 i = 0; i < myMessage.noPointsMeridian; ++i) delete[] gridu[i];
+					delete[] gridu; gridu = NULL;
+				}
+				if (gridv) {
+					for (wxUint32 i = 0; i < myMessage.noPointsMeridian; ++i) delete[] gridv[i];
+					delete[] gridv; gridv = NULL;
+				}
+				if (gridSST) {
+					for (wxUint32 i = 0; i < myMessage.noPointsMeridian; ++i) delete[] gridSST[i];
+					delete[] gridSST; gridSST = NULL;
+				}
+				hasSeaTemp = false;
+				pPlugIn->GetncdfOverlayFactory()->reset();
+
 				int ret = nc_get(fileName);
 				if (ret != 0) {
 					ncdfLog("[ncdf] onTreeSelectionChanged: nc_get failed for %s\n", (const char*)fn.mb_str());
 					return;
 				}
 				m_currentFilePath = fileName;
-				// Update idx since myDataVector was rebuilt
 				idx = data->m_index;
 			}
 		}
@@ -1597,35 +1695,35 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 		ncdfLog("[ncdf] onTreeSelectionChanged: GetItemData returned NULL\n");
 	}
 
-	// Show/hide checkboxes based on available data
-	bool hasCurrent = (gridu && gridv);
-	bool hasSST = (gridSST && hasSeaTemp);
-	ncdfLog("[ncdf] onTreeSelectionChanged: hasCurrent=%d hasSST=%d gridSST=%p hasSeaTemp=%d\n",
-		(int)hasCurrent, (int)hasSST, (void*)gridSST, (int)hasSeaTemp);
-	// Current checkboxes: show if has current data
-	m_checkBoxDCurrent->Show(hasCurrent);
-	m_staticText333->Show(hasCurrent);
-	m_textCtrlCurrentDir->Show(hasCurrent);
-	m_checkBoxBmpCurrentForce->Show(hasCurrent);
-	m_staticText40->Show(hasCurrent);
-	m_textCtrlCurrentForce->Show(hasCurrent);
-	m_staticText41->Show(hasCurrent);
-	m_checkBoxParticles->Show(hasCurrent);
-	m_staticTextParticles->Show(hasCurrent);
-	// SST checkboxes: show if has SST data
-	m_checkBoxSeaTemp->Show(hasSST);
-	m_staticTextSeaTemp->Show(hasSST);
-	m_checkBoxSeaTempIso->Show(hasSST);
-	m_staticTextSeaTempIso->Show(hasSST);
+	// Show/hide checkboxes based on file-level data availability (like GRIB plugin)
+	bool showCurrent = m_fileHasCurrent;
+	bool showSST = m_fileHasSeaTemp;
+	ncdfLog("[ncdf] onTreeSelectionChanged: showCurrent=%d showSST=%d (file-level)\n",
+		(int)showCurrent, (int)showSST);
+	// Current checkboxes: show if file has current data
+	m_checkBoxDCurrent->Show(showCurrent);
+	m_staticText333->Show(showCurrent);
+	m_textCtrlCurrentDir->Show(showCurrent);
+	m_checkBoxBmpCurrentForce->Show(showCurrent);
+	m_staticText40->Show(showCurrent);
+	m_textCtrlCurrentForce->Show(showCurrent);
+	m_staticText41->Show(showCurrent);
+	m_checkBoxParticles->Show(showCurrent);
+	m_staticTextParticles->Show(showCurrent);
+	// SST checkboxes: show if file has SST data
+	m_checkBoxSeaTemp->Show(showSST);
+	m_staticTextSeaTemp->Show(showSST);
+	m_checkBoxSeaTempIso->Show(showSST);
+	m_staticTextSeaTempIso->Show(showSST);
 	// Force layout update
 	Layout();
-	// Update plugin state
-	if (!hasCurrent) {
+	// Disable plugin state for unavailable data types
+	if (!showCurrent) {
 		pPlugIn->m_bShowCurrentDir = false;
 		pPlugIn->m_bShowCurrentForce = false;
 		pPlugIn->m_bShowParticles = false;
 	}
-	if (!hasSST) {
+	if (!showSST) {
 		pPlugIn->m_bShowSeaTemp = false;
 		pPlugIn->m_bShowSeaTempIso = false;
 	}

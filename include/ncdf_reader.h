@@ -31,9 +31,9 @@ public:
 	}
 	
 	~ncdfDataMessage() {
-		clear();
+		freeAll();
 	}
-	
+
 	void clear() {
 		if (ucurr) { free(ucurr); ucurr = NULL; }
 		if (vcurr) { free(vcurr); vcurr = NULL; }
@@ -41,9 +41,17 @@ public:
 		if (uvlons) { free(uvlons); uvlons = NULL; }
 		if (sst) { free(sst); sst = NULL; }
 		// Note: latValues, lonValues, timeValues are NOT freed here.
-		// They are file-level metadata allocated once in nc_get() and freed
-		// only when the entire myDataVector is rebuilt (nc_get or ~MainDialog).
-		// Freeing them here would break other time steps that share the same data.
+		// clear() is used for reassignment (operator=) where copyFrom()
+		// will immediately overwrite these pointers. The destructor calls
+		// freeAll() to properly release all memory including coordinates.
+	}
+
+	// Free everything including coordinate arrays (used by destructor)
+	void freeAll() {
+		clear();
+		if (latValues) { free(latValues); latValues = NULL; }
+		if (lonValues) { free(lonValues); lonValues = NULL; }
+		if (timeValues) { free(timeValues); timeValues = NULL; }
 	}
 	
 private:

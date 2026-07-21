@@ -90,6 +90,11 @@ public:
 	double** gridv;
 	double** gridSST;
 	bool hasSeaTemp;
+	bool m_fileHasCurrent = false;   // File contains u/v ocean current data
+	bool m_fileHasSeaTemp = false;   // File contains SST data
+	int m_cached_u_varid = -1;       // Cached NetCDF variable ID for u-current
+	int m_cached_v_varid = -1;       // Cached NetCDF variable ID for v-current
+	int m_cached_sst_varid = -1;     // Cached NetCDF variable ID for SST
 
 	ncdfDataMessage myncdfData, myData, myMessage;
 	vector<ncdfDataMessage> myDataVector;
