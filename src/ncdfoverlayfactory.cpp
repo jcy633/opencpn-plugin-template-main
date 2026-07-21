@@ -261,10 +261,26 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
                   }
               }
 
+              // GRIB-style border: copy adjacent row/col, then set border alpha=0
+              memcpy(texData, texData + 4 * tw, 4 * tw);
+              memcpy(texData + 4 * tw * (th - 1), texData + 4 * tw * (th - 2), 4 * tw);
+              for (int y = 0; y < th; y++) {
+                  memcpy(texData + 4 * y * tw, texData + 4 * (y * tw + 1), 4);
+                  memcpy(texData + 4 * (y * tw + tw - 1), texData + 4 * (y * tw + tw - 2), 4);
+              }
+              for (int x = 0; x < tw; x++) {
+                  texData[4 * x + 3] = 0;
+                  texData[4 * ((th - 1) * tw + x) + 3] = 0;
+              }
+              for (int y = 0; y < th; y++) {
+                  texData[4 * y * tw + 3] = 0;
+                  texData[4 * (y * tw + tw - 1) + 3] = 0;
+              }
+
               glGenTextures(1, &m_glColorTexture);
               glBindTexture(GL_TEXTURE_2D, m_glColorTexture);
-              glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
-              glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
+              glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+              glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
               glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
               glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
               glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, tw, th, 0, GL_RGBA, GL_UNSIGNED_BYTE, texData);
@@ -329,8 +345,6 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
                   double potNormY = (double)nj / th;
                   m_lva[i][j][0] = ((lon - west) / lonstep + 1.5) / tw * potNormX;
                   m_lva[i][j][1] = ((lat - south) / latstep + 1.5) / th * potNormY;
-                  if (gui->myMessage.jDirectionIncr < 0)
-                      m_lva[i][j][1] = 1.0 - m_lva[i][j][1];
 
                   if (i > 0 && y > 0) {
                       double u0 = m_lva[i-1][!j][0], v0 = m_lva[i-1][!j][1];
