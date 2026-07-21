@@ -1975,7 +1975,7 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
             delete[] texData;
         }
 
-        // Render SST overlay - GRIB-style tiled texture rendering
+        // Render SST overlay - GRIB-style single quad with per-corner lat/lon mapping
         if (m_bHasSeaTempTexture && m_glSeaTempTexture != 0) {
             int tw = m_sstTexGLDim[0], th = m_sstTexGLDim[1];
             double potNormX = (double)m_sstTexDataDim[0] / tw;
@@ -1984,36 +1984,22 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
             double lat_max = this->tlat, lon_max = this->blon;
             double latstep = fabs(lat_max - lat_min) / (nj - 1);
             double lonstep = (lon_max - lon_min) / (ni - 1);
+            if (latstep < 1e-10 || lonstep < 1e-10) return;
             double clon = (lon_min + lon_max) / 2;
-            bool repeat = (lon_min == 0 && lon_max + lonstep >= 360.);
 
-            // Tile grid: GRIB-style subdivision for non-linear projections
-            double pw = vp->view_scale_ppm * 1e6 / (pow(2, fabs(vp->clat) / 25));
-            if (pw < 20) pw = 20;
-            int xsquares = ceil(vp->pix_width / pw), ysquares = ceil(vp->pix_height / pw);
-            if (vp->rotation == 0 && vp->m_projection_type == PI_PROJECTION_MERCATOR)
-                xsquares = 1;  // Mercator: longitude is linear, fewer tiles needed
-            if (xsquares < 2) xsquares = 2;
-            if (ysquares < 2) ysquares = 2;
-            // Cap tile count to prevent excessive memory allocation
-            if (xsquares > 32) xsquares = 32;
-            if (ysquares > 32) ysquares = 32;
-
-            // Precompute texture coordinates for each tile intersection point
-            int gridW = xsquares + 1, gridH = ysquares + 1;
-            double *lva = new double[gridW * gridH * 2];
-            for (int i = 0; i < gridW; i++) {
-                double pixx = (vp->pix_width / xsquares) * i;
-                for (int j = 0; j < gridH; j++) {
-                    double pixy = (vp->pix_height / ysquares) * j;
-                    wxPoint p(pixx, pixy);
+            // Get lat/lon at viewport corners via GetCanvasLLPix (GRIB pattern)
+            double cornersX[] = {0.0, (double)vp->pix_width};
+            double cornersY[] = {0.0, (double)vp->pix_height};
+            double u[2], v[2];
+            for (int sy = 0; sy < 2; sy++) {
+                for (int sx = 0; sx < 2; sx++) {
                     double lat, lon;
+                    wxPoint p(cornersX[sx], cornersY[sy]);
                     GetCanvasLLPix(vp, p, &lat, &lon);
                     if (clon - lon > 180) lon += 360;
                     else if (lon - clon > 180) lon -= 360;
-                    int idx = (i * gridH + j) * 2;
-                    lva[idx]     = ((lon - lon_min) / lonstep - (repeat ? 1 : 0) + 1.5) / tw * potNormX;
-                    lva[idx + 1] = ((lat - lat_min) / latstep + 1.5) / th * potNormY;
+                    u[sx] = ((lon - lon_min) / lonstep + 1.5) / tw * potNormX;
+                    v[sy] = ((lat - lat_min) / latstep + 1.5) / th * potNormY;
                 }
             }
 
@@ -2024,50 +2010,12 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
             glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
             glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
 
-            double xStep = (double)vp->pix_width / xsquares;
-            double yStep = (double)vp->pix_height / ysquares;
-
-            for (int i = 0; i < xsquares; i++) {
-                for (int j = 0; j < ysquares; j++) {
-                    int i00 = (i * gridH + j) * 2;
-                    int i10 = ((i + 1) * gridH + j) * 2;
-                    int i11 = ((i + 1) * gridH + j + 1) * 2;
-                    int i01 = (i * gridH + j + 1) * 2;
-                    double u0 = lva[i00],     v0 = lva[i00 + 1];
-                    double u1 = lva[i10],     v1 = lva[i10 + 1];
-                    double u2 = lva[i11],     v2 = lva[i11 + 1];
-                    double u3 = lva[i01],     v3 = lva[i01 + 1];
-
-                    // Phase-matching for repeat textures (GRIB pattern)
-                    if (repeat) {
-                        if (u1 - u0 > .5) u1--;
-                        else if (u0 - u1 > .5) u1++;
-                        if (u2 - u0 > .5) u2--;
-                        else if (u0 - u2 > .5) u2++;
-                        if (u3 - u0 > .5) u3--;
-                        else if (u0 - u3 > .5) u3++;
-                    }
-
-                    // Viewport clipping: skip tiles outside data bounds
-                    if (!(repeat ||
-                          ((u0 >= 0 || u1 >= 0 || u2 >= 0 || u3 >= 0) &&
-                           (u0 <= 1 || u1 <= 1 || u2 <= 1 || u3 <= 1)))) continue;
-                    if (!((v0 >= 0 || v1 >= 0 || v2 >= 0 || v3 >= 0) &&
-                          (v0 <= 1 || v1 <= 1 || v2 <= 1 || v3 <= 1))) continue;
-
-                    // Winding check: skip tiles with reversed orientation
-                    if (u1 <= u0) continue;
-
-                    double x = xStep * i, y = yStep * j;
-                    glBegin(GL_QUADS);
-                    glTexCoord2d(u0, v0); glVertex2f(x, y);
-                    glTexCoord2d(u1, v1); glVertex2f(x + xStep, y);
-                    glTexCoord2d(u2, v2); glVertex2f(x + xStep, y + yStep);
-                    glTexCoord2d(u3, v3); glVertex2f(x, y + yStep);
-                    glEnd();
-                }
-            }
-            delete[] lva;
+            glBegin(GL_QUADS);
+            glTexCoord2d(u[0], v[0]); glVertex2f(cornersX[0], cornersY[0]);
+            glTexCoord2d(u[1], v[0]); glVertex2f(cornersX[1], cornersY[0]);
+            glTexCoord2d(u[1], v[1]); glVertex2f(cornersX[1], cornersY[1]);
+            glTexCoord2d(u[0], v[1]); glVertex2f(cornersX[0], cornersY[1]);
+            glEnd();
 
             glDisable(GL_BLEND);
             glDisable(GL_TEXTURE_2D);
