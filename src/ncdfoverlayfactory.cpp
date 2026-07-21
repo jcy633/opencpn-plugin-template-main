@@ -60,12 +60,14 @@ ncdfOverlayFactory::ncdfOverlayFactory()
       m_ParticleMap = nullptr;
       m_glColorTexture = 0;
       m_bHasColorTexture = false;
+      m_bNeedsColorTexRebuild = false;
       m_texDataDim[0] = m_texDataDim[1] = 0;
       m_texGLDim[0] = m_texGLDim[1] = 0;
       m_lvaSize = 0;
       m_lva = nullptr;
       m_glSeaTempTexture = 0;
       m_bHasSeaTempTexture = false;
+      m_bNeedsSeaTempTexRebuild = false;
       m_sstTexDataDim[0] = m_sstTexDataDim[1] = 0;
       m_sstTexGLDim[0] = m_sstTexGLDim[1] = 0;
 
@@ -91,10 +93,9 @@ ncdfOverlayFactory::~ncdfOverlayFactory()
 
 void ncdfOverlayFactory::setData(MainDialog *gui, ncdf_pi *plugin, ncdfDataMessage g2data, int numberOfPoints, wxDouble tlat, wxDouble tlon, wxDouble blat, wxDouble blon)
 {
-	// Mark textures for rebuild instead of deleting (no GL context here)
-	// Actual deletion happens in the next render call when GL context is active
-	m_bHasColorTexture = false;
-	m_bHasSeaTempTexture = false;
+	// Mark textures for rebuild (GL deletion deferred to render)
+	m_bNeedsColorTexRebuild = true;
+	m_bNeedsSeaTempTexRebuild = true;
 	ClearParticles();
 	m_last_vp_scale = -1;
 	m_last_vp_latMax = -99999.0;
@@ -204,6 +205,12 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
       // Reset GL state to avoid inheriting GRIB's texture bindings
       glDisable(GL_TEXTURE_2D);
       glBindTexture(GL_TEXTURE_2D, 0);
+      // Check if color texture needs rebuild (flagged by setData)
+      if (m_bNeedsColorTexRebuild) {
+          if (m_glColorTexture) { glDeleteTextures(1, &m_glColorTexture); m_glColorTexture = 0; }
+          m_bHasColorTexture = false;
+          m_bNeedsColorTexRebuild = false;
+      }
       // Build texture only if not already created
       if (!m_bHasColorTexture) {
           // Delete old texture if exists (safe here — GL context is active)
@@ -1916,6 +1923,13 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
         glBindTexture(GL_TEXTURE_2D, 0);
         glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
         glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+
+        // Check if texture needs rebuild (flagged by setData)
+        if (m_bNeedsSeaTempTexRebuild) {
+            if (m_glSeaTempTexture) { glDeleteTextures(1, &m_glSeaTempTexture); m_glSeaTempTexture = 0; }
+            m_bHasSeaTempTexture = false;
+            m_bNeedsSeaTempTexRebuild = false;
+        }
 
         if (!m_bHasSeaTempTexture) {
             // Delete old texture if exists (safe here — GL context is active)

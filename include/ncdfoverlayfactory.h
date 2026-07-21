@@ -153,6 +153,7 @@ private:
 	 // GL texture cache for color map
 	 GLuint m_glColorTexture;
 	 bool m_bHasColorTexture;
+	 bool m_bNeedsColorTexRebuild;
 	 int m_texDataDim[2];
 	 int m_texGLDim[2];
 	 int m_lvaSize;
@@ -164,6 +165,7 @@ private:
 	 // Sea temperature texture cache
 	 GLuint m_glSeaTempTexture;
 	 bool m_bHasSeaTempTexture;
+	 bool m_bNeedsSeaTempTexRebuild;
 	 int m_sstTexDataDim[2];
 	 int m_sstTexGLDim[2];
 };
