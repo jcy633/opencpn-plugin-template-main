@@ -184,6 +184,11 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	m_staticTextSeaTemp = new wxStaticText( m_panel1, wxID_ANY, _("Sea Temp"), wxDefaultPosition, wxDefaultSize, 0 );
 	m_staticTextSeaTemp->Wrap( -1 );
 	bSizerSeaTemp->Add( m_staticTextSeaTemp, 0, wxALIGN_CENTER_VERTICAL|wxALL, 0 );
+	m_textCtrlSeaTemp = new wxTextCtrl( m_panel1, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize( 55,-1 ), wxTE_READONLY|wxTE_RIGHT );
+	bSizerSeaTemp->Add( m_textCtrlSeaTemp, 0, wxALL|wxALIGN_CENTER_VERTICAL, 0 );
+	m_staticTextSeaTempUnit = new wxStaticText( m_panel1, wxID_ANY, _("\xc2\xb0""C"), wxDefaultPosition, wxDefaultSize, 0 );
+	m_staticTextSeaTempUnit->Wrap( -1 );
+	bSizerSeaTemp->Add( m_staticTextSeaTempUnit, 0, wxALL|wxALIGN_CENTER_VERTICAL, 2 );
 	fgSizer2->Add( bSizerSeaTemp, 0, 0, 5 );
 
 	// Sea Temperature isolines (hidden by default)

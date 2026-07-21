@@ -181,7 +181,18 @@ void MainDialog::UpdateTrackingControls()
 {
    this->m_textCtrlCurrentDir->Clear();
    this->m_textCtrlCurrentForce->Clear();
-   printCurrentData();
+   if (gridu && gridv) printCurrentData();
+
+   // SST temperature at cursor position
+   m_textCtrlSeaTemp->Clear();
+   if (gridSST && hasSeaTemp) {
+       double temp = myMessage.getInterpolatedValue(myMessage, gridSST, m_cursor_lon, m_cursor_lat, true);
+       if (temp != ncdf_NOTDEF && !isnan(temp) && isfinite(temp)) {
+           wxString t;
+           t.Printf(_T("%.1f"), temp);
+           m_textCtrlSeaTemp->SetValue(t);
+       }
+   }
 }
 
 void MainDialog::printCurrentData()
@@ -1581,7 +1592,8 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 		m_staticTextParticles->Show(showCurrent);
 		m_checkBoxSeaTemp->Show(showSST);
 		m_staticTextSeaTemp->Show(showSST);
-		m_checkBoxSeaTempIso->Show(showSST);
+		m_textCtrlSeaTemp->Show(showSST);
+		m_staticTextSeaTempUnit->Show(showSST);
 		m_staticTextSeaTempIso->Show(showSST);
 		Layout();
 		if (!showCurrent) {
@@ -1655,6 +1667,8 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 				m_staticTextParticles->Show(showCur);
 				m_checkBoxSeaTemp->Show(showSST);
 				m_staticTextSeaTemp->Show(showSST);
+				m_textCtrlSeaTemp->Show(showSST);
+		m_staticTextSeaTempUnit->Show(showSST);
 				m_checkBoxSeaTempIso->Show(showSST);
 				m_staticTextSeaTempIso->Show(showSST);
 				Layout();
@@ -1739,6 +1753,8 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 	// SST checkboxes: show if file has SST data
 	m_checkBoxSeaTemp->Show(showSST);
 	m_staticTextSeaTemp->Show(showSST);
+	m_textCtrlSeaTemp->Show(showSST);
+	m_staticTextSeaTempUnit->Show(showSST);
 	m_checkBoxSeaTempIso->Show(showSST);
 	m_staticTextSeaTempIso->Show(showSST);
 	// Force layout update
