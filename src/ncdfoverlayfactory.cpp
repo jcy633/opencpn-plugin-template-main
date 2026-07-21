@@ -91,14 +91,15 @@ ncdfOverlayFactory::~ncdfOverlayFactory()
 
 void ncdfOverlayFactory::setData(MainDialog *gui, ncdf_pi *plugin, ncdfDataMessage g2data, int numberOfPoints, wxDouble tlat, wxDouble tlon, wxDouble blat, wxDouble blon)
 {
-	// Always clear particles on data change for immediate refresh
-	DeleteColorTexture();
-	DeleteSeaTempTexture();
+	// Mark textures for rebuild instead of deleting (no GL context here)
+	// Actual deletion happens in the next render call when GL context is active
+	m_bHasColorTexture = false;
+	m_bHasSeaTempTexture = false;
 	ClearParticles();
 	m_last_vp_scale = -1;
 	m_last_vp_latMax = -99999.0;
 	m_bUpdateParticles = true;
-	m_particleBurstCount = 30;  // Force 30 frames of updates to rebuild trails fast
+	m_particleBurstCount = 30;
 
 	this->g2data = g2data;
 	this->numberOfPoints = numberOfPoints;
@@ -200,6 +201,11 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
       glBindTexture(GL_TEXTURE_2D, 0);
       // Build texture only if not already created
       if (!m_bHasColorTexture) {
+          // Delete old texture if exists (safe here — GL context is active)
+          if (m_glColorTexture) {
+              glDeleteTextures(1, &m_glColorTexture);
+              m_glColorTexture = 0;
+          }
           // Create and cache the texture (once per data change)
           int ni = gui->myMessage.lonLength;
           int nj = gui->myMessage.latLength;
@@ -1906,6 +1912,11 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
         glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
 
         if (!m_bHasSeaTempTexture) {
+            // Delete old texture if exists (safe here — GL context is active)
+            if (m_glSeaTempTexture) {
+                glDeleteTextures(1, &m_glSeaTempTexture);
+                m_glSeaTempTexture = 0;
+            }
             int tw = ni + 2, th = nj + 2;
             unsigned char *texData = new unsigned char[tw * th * 4];
             memset(texData, 0, tw * th * 4);
