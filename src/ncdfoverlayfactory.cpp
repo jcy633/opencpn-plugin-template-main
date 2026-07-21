@@ -1899,7 +1899,7 @@ void ncdfOverlayFactory::DeleteSeaTempTexture()
 
 void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
 {
-    if (!gui || !gui->gridSST) return;
+    if (!gui || !gui->gridSST || !vp) return;
     int ni = gui->myMessage.lonLength;
     int nj = gui->myMessage.latLength;
     if (ni < 2 || nj < 2) return;
@@ -1975,9 +1975,10 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
             delete[] texData;
         }
 
-        // Render SST overlay - GRIB-style single quad with per-corner lat/lon mapping
+        // Render SST overlay - GRIB-style tiled texture with per-corner mapping
         if (m_bHasSeaTempTexture && m_glSeaTempTexture != 0) {
             int tw = m_sstTexGLDim[0], th = m_sstTexGLDim[1];
+            if (tw < 2 || th < 2) return;
             double potNormX = (double)m_sstTexDataDim[0] / tw;
             double potNormY = (double)m_sstTexDataDim[1] / th;
             double lat_min = this->blat, lon_min = this->tlon;
@@ -1986,20 +1987,40 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
             double lonstep = (lon_max - lon_min) / (ni - 1);
             if (latstep < 1e-10 || lonstep < 1e-10) return;
             double clon = (lon_min + lon_max) / 2;
+            bool repeat = (lon_min == 0 && lon_max + lonstep >= 360.);
 
-            // Get lat/lon at viewport corners via GetCanvasLLPix (GRIB pattern)
-            double cornersX[] = {0.0, (double)vp->pix_width};
-            double cornersY[] = {0.0, (double)vp->pix_height};
-            double u[2], v[2];
-            for (int sy = 0; sy < 2; sy++) {
-                for (int sx = 0; sx < 2; sx++) {
+            // Tile grid
+            int xsquares = 2, ysquares = 2;
+            if (vp->pix_width > 200 && vp->pix_height > 200) {
+                double pw = vp->view_scale_ppm * 1e6 / (pow(2, fabs(vp->clat) / 25));
+                if (pw < 20) pw = 20;
+                xsquares = (int)ceil(vp->pix_width / pw);
+                ysquares = (int)ceil(vp->pix_height / pw);
+                if (vp->rotation == 0) xsquares = 1;
+                if (xsquares < 2) xsquares = 2;
+                if (ysquares < 2) ysquares = 2;
+                if (xsquares > 16) xsquares = 16;
+                if (ysquares > 16) ysquares = 16;
+            }
+
+            int gridW = xsquares + 1, gridH = ysquares + 1;
+            int lvaSize = gridW * gridH * 2;
+            double *lva = new(std::nothrow) double[lvaSize];
+            if (!lva) return;
+            memset(lva, 0, lvaSize * sizeof(double));
+
+            for (int i = 0; i < gridW; i++) {
+                double pixx = (vp->pix_width / (double)xsquares) * i;
+                for (int j = 0; j < gridH; j++) {
+                    double pixy = (vp->pix_height / (double)ysquares) * j;
+                    wxPoint p((int)pixx, (int)pixy);
                     double lat, lon;
-                    wxPoint p(cornersX[sx], cornersY[sy]);
                     GetCanvasLLPix(vp, p, &lat, &lon);
                     if (clon - lon > 180) lon += 360;
                     else if (lon - clon > 180) lon -= 360;
-                    u[sx] = ((lon - lon_min) / lonstep + 1.5) / tw * potNormX;
-                    v[sy] = ((lat - lat_min) / latstep + 1.5) / th * potNormY;
+                    int idx = (i * gridH + j) * 2;
+                    lva[idx]     = ((lon - lon_min) / lonstep - (repeat ? 1 : 0) + 1.5) / tw * potNormX;
+                    lva[idx + 1] = ((lat - lat_min) / latstep + 1.5) / th * potNormY;
                 }
             }
 
@@ -2010,12 +2031,41 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
             glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
             glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
 
-            glBegin(GL_QUADS);
-            glTexCoord2d(u[0], v[0]); glVertex2f(cornersX[0], cornersY[0]);
-            glTexCoord2d(u[1], v[0]); glVertex2f(cornersX[1], cornersY[0]);
-            glTexCoord2d(u[1], v[1]); glVertex2f(cornersX[1], cornersY[1]);
-            glTexCoord2d(u[0], v[1]); glVertex2f(cornersX[0], cornersY[1]);
-            glEnd();
+            double xStep = vp->pix_width / (double)xsquares;
+            double yStep = vp->pix_height / (double)ysquares;
+
+            for (int i = 0; i < xsquares; i++) {
+                for (int j = 0; j < ysquares; j++) {
+                    int i00 = (i * gridH + j) * 2;
+                    int i10 = ((i + 1) * gridH + j) * 2;
+                    int i11 = ((i + 1) * gridH + j + 1) * 2;
+                    int i01 = (i * gridH + j + 1) * 2;
+                    double u0 = lva[i00], v0 = lva[i00+1];
+                    double u1 = lva[i10], v1 = lva[i10+1];
+                    double u2 = lva[i11], v2 = lva[i11+1];
+                    double u3 = lva[i01], v3 = lva[i01+1];
+
+                    if (repeat) {
+                        if (u1 - u0 > .5) u1--; else if (u0 - u1 > .5) u1++;
+                        if (u2 - u0 > .5) u2--; else if (u0 - u2 > .5) u2++;
+                        if (u3 - u0 > .5) u3--; else if (u0 - u3 > .5) u3++;
+                    }
+
+                    if (!(repeat ||
+                          ((u0>=0||u1>=0||u2>=0||u3>=0)&&(u0<=1||u1<=1||u2<=1||u3<=1)))) continue;
+                    if (!((v0>=0||v1>=0||v2>=0||v3>=0)&&(v0<=1||v1<=1||v2<=1||v3<=1))) continue;
+                    if (u1 <= u0) continue;
+
+                    double x = xStep * i, y = yStep * j;
+                    glBegin(GL_QUADS);
+                    glTexCoord2d(u0, v0); glVertex2f((float)x, (float)y);
+                    glTexCoord2d(u1, v1); glVertex2f((float)(x+xStep), (float)y);
+                    glTexCoord2d(u2, v2); glVertex2f((float)(x+xStep), (float)(y+yStep));
+                    glTexCoord2d(u3, v3); glVertex2f((float)x, (float)(y+yStep));
+                    glEnd();
+                }
+            }
+            delete[] lva;
 
             glDisable(GL_BLEND);
             glDisable(GL_TEXTURE_2D);
