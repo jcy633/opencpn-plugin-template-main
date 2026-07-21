@@ -183,15 +183,20 @@ void MainDialog::UpdateTrackingControls()
    this->m_textCtrlCurrentForce->Clear();
    if (gridu && gridv) printCurrentData();
 
-   // SST temperature at cursor position
+   // SST temperature at cursor position — show only when data loaded and checkbox enabled
    m_textCtrlSeaTemp->Clear();
-   if (gridSST && hasSeaTemp) {
+   if (gridSST && hasSeaTemp && pPlugIn->m_bShowSeaTemp) {
        double temp = myMessage.getInterpolatedValue(myMessage, gridSST, m_cursor_lon, m_cursor_lat, true);
        if (temp != ncdf_NOTDEF && !isnan(temp) && isfinite(temp)) {
            wxString t;
            t.Printf(_T("%.1f"), temp);
            m_textCtrlSeaTemp->SetValue(t);
        }
+       m_textCtrlSeaTemp->Show(true);
+       m_staticTextSeaTempUnit->Show(true);
+   } else {
+       m_textCtrlSeaTemp->Show(false);
+       m_staticTextSeaTempUnit->Show(false);
    }
 }
 
@@ -1584,6 +1589,7 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 		m_checkBoxDCurrent->Show(showCurrent);
 		m_staticText333->Show(showCurrent);
 		m_textCtrlCurrentDir->Show(showCurrent);
+		m_staticText341->Show(showCurrent);
 		m_checkBoxBmpCurrentForce->Show(showCurrent);
 		m_staticText40->Show(showCurrent);
 		m_textCtrlCurrentForce->Show(showCurrent);
@@ -1659,6 +1665,7 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 				m_checkBoxDCurrent->Show(showCur);
 				m_staticText333->Show(showCur);
 				m_textCtrlCurrentDir->Show(showCur);
+				m_staticText341->Show(showCur);
 				m_checkBoxBmpCurrentForce->Show(showCur);
 				m_staticText40->Show(showCur);
 				m_textCtrlCurrentForce->Show(showCur);
@@ -1744,6 +1751,7 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 	m_checkBoxDCurrent->Show(showCurrent);
 	m_staticText333->Show(showCurrent);
 	m_textCtrlCurrentDir->Show(showCurrent);
+		m_staticText341->Show(showCurrent);
 	m_checkBoxBmpCurrentForce->Show(showCurrent);
 	m_staticText40->Show(showCurrent);
 	m_textCtrlCurrentForce->Show(showCurrent);
