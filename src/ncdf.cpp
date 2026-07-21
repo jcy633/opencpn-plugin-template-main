@@ -1683,8 +1683,10 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 		myData = myDataVector[idx];
 		m_lastSelectedTimeIndex = idx;
 
-		// Sync slider with tree selection
+		// Sync slider with tree selection (guard against OnTimeline re-entrancy)
+		m_isTreeUpdating = true;
 		m_sTimeline->SetValue(idx);
+		m_isTreeUpdating = false;
 		
 		wxString timeText;
 		if (myData.timeValid) {
@@ -1695,12 +1697,15 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 		m_staticTextDateTime->SetLabel(timeText);
 
 		if (readTimeStepData(myData)) {
-			ncdfLog("[ncdf] onTreeSelectionChanged: readTimeStepData succeed, hasSeaTemp=%d sst=%p\n",
+			ncdfLog("[ncdf] onTreeSelectionChanged: readTimeStepData OK, hasSeaTemp=%d sst=%p\n",
 				(int)myData.hasSeaTemp, (void*)myData.sst);
+			ncdfLog("[ncdf] onTreeSelectionChanged: calling readncdfFile...\n");
 			this->my_ncdfReader->readncdfFile(myData);
+			ncdfLog("[ncdf] onTreeSelectionChanged: readncdfFile returned\n");
 			pPlugIn->GetncdfOverlayFactory()->renderSelectionRectangle = false;
 			ncdfLog("[ncdf] onTreeSelectionChanged: requesting refresh\n");
 			RequestRefresh(m_parent);
+			ncdfLog("[ncdf] onTreeSelectionChanged: refresh requested\n");
 		} else {
 			ncdfLog("[ncdf] onTreeSelectionChanged: readTimeStepData failed\n");
 		}
@@ -1759,8 +1764,10 @@ void MainDialog::onTimeChange(wxCommandEvent& event){
         }
         m_staticTextDateTime->SetLabel(timeText);
 
-        // Sync slider
+        // Sync slider (guard against OnTimeline re-entrancy)
+        m_isTreeUpdating = true;
         m_sTimeline->SetValue(selectedIndex);
+        m_isTreeUpdating = false;
 
         readTimeStepData(myData);
         my_ncdfReader->readncdfFile(myData);
