@@ -2008,19 +2008,30 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
             if (latstep < 1e-10 || lonstep < 1e-10) return;
             double clon = (lon_min + lon_max) / 2;
 
-            // Map viewport corners to texture coordinates
-            double px[2] = {0.0, (double)vp->pix_width};
-            double py[2] = {0.0, (double)vp->pix_height};
-            double u[2], v[2];
-            for (int sj = 0; sj < 2; sj++) {
-                for (int si = 0; si < 2; si++) {
+            // Tile grid: GRIB-style subdivision for non-linear projections
+            double pw = vp->view_scale_ppm * 1e6 / (pow(2, fabs(vp->clat) / 25));
+            if (pw < 20) pw = 20;
+            int xs = (int)ceil(vp->pix_width / pw);
+            int ys = (int)ceil(vp->pix_height / pw);
+            if (vp->rotation == 0) xs = 1;
+            if (xs < 2) xs = 2; if (ys < 2) ys = 2;
+            if (xs > 16) xs = 16; if (ys > 16) ys = 16;
+            int gridW = xs + 1, gridH = ys + 1;
+            double *lva = new(std::nothrow) double[gridW * gridH * 2];
+            if (!lva) return;
+
+            for (int i = 0; i < gridW; i++) {
+                double pixx = vp->pix_width / (double)xs * i;
+                for (int j = 0; j < gridH; j++) {
+                    double pixy = vp->pix_height / (double)ys * j;
+                    wxPoint pt((int)pixx, (int)pixy);
                     double lat, lon;
-                    wxPoint pnt((int)px[si], (int)py[sj]);
-                    GetCanvasLLPix(vp, pnt, &lat, &lon);
+                    GetCanvasLLPix(vp, pt, &lat, &lon);
                     if (clon - lon > 180) lon += 360;
                     else if (lon - clon > 180) lon -= 360;
-                    u[si] = ((lon - lon_min) / lonstep + 1.5) / tw * potNormX;
-                    v[sj] = ((lat - lat_min) / latstep + 1.5) / th * potNormY;
+                    int idx = (i * gridH + j) * 2;
+                    lva[idx]     = ((lon - lon_min) / lonstep + 1.5) / tw * potNormX;
+                    lva[idx + 1] = ((lat - lat_min) / latstep + 1.5) / th * potNormY;
                 }
             }
 
@@ -2031,12 +2042,30 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
             glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
             glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
 
-            glBegin(GL_QUADS);
-            glTexCoord2d(u[0], v[0]); glVertex2f((float)px[0], (float)py[0]);
-            glTexCoord2d(u[1], v[0]); glVertex2f((float)px[1], (float)py[0]);
-            glTexCoord2d(u[1], v[1]); glVertex2f((float)px[1], (float)py[1]);
-            glTexCoord2d(u[0], v[1]); glVertex2f((float)px[0], (float)py[1]);
-            glEnd();
+            double xS = vp->pix_width / (double)xs;
+            double yS = vp->pix_height / (double)ys;
+            for (int i = 0; i < xs; i++) {
+                for (int j = 0; j < ys; j++) {
+                    int i00 = (i * gridH + j) * 2;
+                    int i10 = ((i+1) * gridH + j) * 2;
+                    int i11 = ((i+1) * gridH + j+1) * 2;
+                    int i01 = (i * gridH + j+1) * 2;
+                    // Skip tiles outside data bounds
+                    double u0 = lva[i00], u1 = lva[i10], u2 = lva[i11], u3 = lva[i01];
+                    double v0 = lva[i00+1], v1 = lva[i10+1], v2 = lva[i11+1], v3 = lva[i01+1];
+                    if (!((u0>=0||u1>=0||u2>=0||u3>=0)&&(u0<=1||u1<=1||u2<=1||u3<=1))) continue;
+                    if (!((v0>=0||v1>=0||v2>=0||v3>=0)&&(v0<=1||v1<=1||v2<=1||v3<=1))) continue;
+                    if (u1 <= u0) continue;
+                    double x = xS * i, y = yS * j;
+                    glBegin(GL_QUADS);
+                    glTexCoord2d(u0, v0); glVertex2f((float)x, (float)y);
+                    glTexCoord2d(u1, v1); glVertex2f((float)(x+xS), (float)y);
+                    glTexCoord2d(u2, v2); glVertex2f((float)(x+xS), (float)(y+yS));
+                    glTexCoord2d(u3, v3); glVertex2f((float)x, (float)(y+yS));
+                    glEnd();
+                }
+            }
+            delete[] lva;
 
             glDisable(GL_BLEND);
             glDisable(GL_TEXTURE_2D);
