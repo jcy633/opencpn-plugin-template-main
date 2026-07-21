@@ -1693,7 +1693,7 @@ void ncdfOverlayFactory::RenderParticles(PlugIn_ViewPort *vp)
             ang = atan2(vx, vy) * 180.0 / PI;  // atan2(east, north) = bearing
             vkn = mag;
         } else { vkn = 0; ang = 0; }
-        if (it.m_Duration < max_duration - history_size && vkn > 0.001 && vkn < 100) {
+        if (it.m_Duration < max_duration - history_size && vkn > 0.3 && vkn < 100) {
     // GRIB optimization: convert m/s to knots (1 m/s = 1.94 knots)
     // This makes particles move at the same speed as GRIB
     double d = vkn * run_count * 1.94;  // Match GRIB's knot-based speed
@@ -1734,16 +1734,16 @@ void ncdfOverlayFactory::RenderParticles(PlugIn_ViewPort *vp)
             double vy = gui->myMessage.getInterpolatedValue(gui->myMessage, gui->gridv, p[0], p[1], true);
             if (vx != ncdf_NOTDEF && vy != ncdf_NOTDEF && isfinite(vx) && isfinite(vy)) {
                 double mag = sqrt(vx * vx + vy * vy);
-                if (mag < 0.1) continue;  // Filter out near-zero flow
-                // Accept probability ∝ (mag/3)² — low velocity = very low acceptance
-                double prob = wxMin(1.0, (mag / 5.0) * (mag / 5.0));
+                if (mag < 0.3) continue;  // Skip below 0.3 m/s
+                // Linear: prob = (mag - 0.3) / 1.7 — increases every 0.1 m/s
+                double prob = wxMin(1.0, (mag - 0.3) / 1.7);
                 if ((double)rand() / RAND_MAX < prob) {
                     vkn = mag; ang = atan2(vx, vy) * 180.0 / PI;
                     break;
                 }
             }
         }
-        if (vkn < 0.1) continue;  // No valid position found
+        if (vkn < 0.3) continue;  // No valid position found
         Particle np;
         np.m_Duration = rand() % (max_duration / 2);
         np.m_HistoryPos = 0; np.m_HistorySize = 1;
