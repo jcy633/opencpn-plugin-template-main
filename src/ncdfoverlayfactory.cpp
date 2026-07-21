@@ -302,8 +302,6 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 
           double gridSpacingLon = (east - west) / (ni - 1);
           double gridSpacingLat = (north - south) / (nj - 1);
-          double lonstep = gridSpacingLon * (tw - 1.0) / (ni - 1.0);
-          double latstep = gridSpacingLat * (th - 1.0) / (nj - 1.0);
           double clon = (west + east) / 2.0;
 
           double pw = vp->view_scale_ppm * 1e6 / (pow(2, fabs(vp->clat) / 25));
@@ -343,8 +341,8 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 
                   double potNormX = (double)ni / tw;
                   double potNormY = (double)nj / th;
-                  m_lva[i][j][0] = ((lon - west) / lonstep + 1.5) / tw * potNormX;
-                  m_lva[i][j][1] = ((lat - south) / latstep + 1.5) / th * potNormY;
+                  m_lva[i][j][0] = ((lon - west) / gridSpacingLon + 1.5) / tw * potNormX;
+                  m_lva[i][j][1] = ((lat - south) / gridSpacingLat + 1.5) / th * potNormY;
 
                   if (i > 0 && y > 0) {
                       double u0 = m_lva[i-1][!j][0], v0 = m_lva[i-1][!j][1];
