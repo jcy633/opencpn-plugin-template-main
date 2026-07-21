@@ -2077,43 +2077,94 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
 
 void ncdfOverlayFactory::RenderSeaTempIsoLines(PlugIn_ViewPort *vp)
 {
-    if (!gui || !gui->gridSST) return;
+    if (!gui || !gui->gridSST || !vp) return;
     int ni = gui->myMessage.lonLength;
     int nj = gui->myMessage.latLength;
     if (ni < 2 || nj < 2) return;
+
+    // Auto-detect temperature range from data (GRIB pattern)
+    double minTemp = 1e10, maxTemp = -1e10;
+    for (int j = 0; j < nj; j++) {
+        for (int i = 0; i < ni; i++) {
+            double v = gui->gridSST[j][i];
+            if (v == ncdf_NOTDEF || isnan(v) || !isfinite(v)) continue;
+            if (v < minTemp) minTemp = v;
+            if (v > maxTemp) maxTemp = v;
+        }
+    }
+    if (minTemp >= maxTemp) return;
+
+    // Round to nice spacing (GRIB pattern: 2°C intervals)
+    double spacing = 2.0;
+    minTemp = floor(minTemp / spacing) * spacing;
+    maxTemp = ceil(maxTemp / spacing) * spacing;
 
     double lat_min = this->blat, lon_min = this->tlon;
     double lat_max = this->tlat, lon_max = this->blon;
     double incrLon = (lon_max - lon_min) / (ni - 1);
     double incrLat = (lat_max - lat_min) / (nj - 1);
 
-    double minTemp = -2.0;
-    double maxTemp = 32.0;
-    double spacing = 2.0;
-
-    for (double temp = minTemp; temp <= maxTemp; temp += spacing) {
-        IsoLine isoLine(temp, gui->gridSST, nj, ni,
-                        lat_max, lon_min, incrLon, incrLat);
-
-        if (isoLine.getNbSegments() < 1) continue;
-
-        if (!m_pdc) {
+    if (!m_pdc) {
 #ifdef ocpnUSE_GL
-            wxBitmap bmp(vp->pix_width, vp->pix_height, 32);
-            wxMemoryDC memDC(bmp);
-            memDC.SetBackground(wxColour(0, 0, 0, 0));
-            memDC.Clear();
-            isoLine.drawIsoLine(memDC, vp, false, false);
-            isoLine.drawIsoLineLabels(&memDC, wxColour(80,80,80), vp, 40, 0, temp);
-            memDC.SelectObject(wxNullBitmap);
-            glEnable(GL_BLEND);
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-            DrawOLBitmap(bmp, 0, 0, true);
-            glDisable(GL_BLEND);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glEnable(GL_LINE_SMOOTH);
+        glHint(GL_LINE_SMOOTH_HINT, GL_NICEST);
+        glLineWidth(1.5f);
+        glColor4ub(80, 80, 80, 200);
+
+        for (double temp = minTemp; temp <= maxTemp; temp += spacing) {
+            IsoLine isoLine(temp, gui->gridSST, nj, ni,
+                            lat_max, lon_min, incrLon, incrLat);
+            if (isoLine.getNbSegments() < 1) continue;
+
+            // Draw segments directly with GL (GRIB pattern: no wxBitmap)
+            std::list<Segment*>& trace = isoLine.getTrace();
+            glBegin(GL_LINES);
+            for (std::list<Segment*>::iterator it = trace.begin(); it != trace.end(); it++) {
+                Segment *seg = *it;
+                wxPoint ab, cd;
+                GetCanvasPixLL(vp, &ab, seg->py1, seg->px1);
+                GetCanvasPixLL(vp, &cd, seg->py2, seg->px2);
+                glVertex2i(ab.x, ab.y);
+                glVertex2i(cd.x, cd.y);
+            }
+            glEnd();
+
+            // Draw label at midpoint of first segment
+            wxString label;
+            label.Printf(_T("%.0f"), temp);
+            Segment *first = trace.front();
+            wxPoint lp;
+            GetCanvasPixLL(vp, &lp, (first->py1 + first->py2) / 2, (first->px1 + first->px2) / 2);
+            glColor4ub(60, 60, 60, 220);
+            // Simple label background
+            int tw, th;
+            wxFont font(9, wxFONTFAMILY_SWISS, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_NORMAL);
+            wxScreenDC sdc;
+            sdc.SetFont(font);
+            sdc.GetTextExtent(label, &tw, &th);
+            glColor4ub(255, 255, 255, 180);
+            glBegin(GL_QUADS);
+            glVertex2i(lp.x - 2, lp.y - 1);
+            glVertex2i(lp.x + tw + 2, lp.y - 1);
+            glVertex2i(lp.x + tw + 2, lp.y + th + 1);
+            glVertex2i(lp.x - 2, lp.y + th + 1);
+            glEnd();
+            glColor4ub(60, 60, 60, 220);
+            glLineWidth(1.5f);
+        }
+
+        glDisable(GL_LINE_SMOOTH);
+        glDisable(GL_BLEND);
 #endif
-        } else {
+    } else {
+        for (double temp = minTemp; temp <= maxTemp; temp += spacing) {
+            IsoLine isoLine(temp, gui->gridSST, nj, ni,
+                            lat_max, lon_min, incrLon, incrLat);
+            if (isoLine.getNbSegments() < 1) continue;
             isoLine.drawIsoLine(*m_pdc, vp, false, false);
-            isoLine.drawIsoLineLabels(m_pdc, wxColour(80,80,80), vp, 40, 0, temp);
+            isoLine.drawIsoLineLabels(m_pdc, wxColour(80, 80, 80), vp, 40, 0, temp);
         }
     }
 }

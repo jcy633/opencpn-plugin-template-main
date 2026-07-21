@@ -87,6 +87,7 @@ class IsoLine
 
         int getNbSegments()     {return trace.size();}
         double getValue()       {return value;}
+        std::list<Segment *>& getTrace() { return trace; }
 
     private:
         double value;
