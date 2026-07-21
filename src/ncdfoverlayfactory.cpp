@@ -172,6 +172,11 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
     if (gui->myMessage.lonLength < 2 || gui->myMessage.latLength < 2) return false;
     if (!m_bReadyToRender) return false;
 
+    // Must have at least one rendering feature enabled
+    if (!plugin->m_bShowCurrentForce && !plugin->m_bShowCurrentDir &&
+        !plugin->m_bShowParticles && !plugin->m_bShowSeaTemp &&
+        !plugin->m_bShowSeaTempIso) return false;
+
     static int s_frameDbg = 0;
     if (s_frameDbg < 200) {
         wxLogMessage(_T("[render] frame %d vp=%p"), s_frameDbg, (void*)vp);
