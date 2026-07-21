@@ -1933,62 +1933,51 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
     int ni = gui->myMessage.lonLength;
     int nj = gui->myMessage.latLength;
     if (ni < 2 || nj < 2) return;
-    wxLogMessage(_T("[SST] enter ni=%d nj=%d tex=%u has=%d"), ni, nj, m_glSeaTempTexture, (int)m_bHasSeaTempTexture);
 
     if (!m_pdc) {
 #ifdef ocpnUSE_GL
-        glDisable(GL_TEXTURE_2D);
-        glBindTexture(GL_TEXTURE_2D, 0);
-        glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
-        glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
-
-        // Check if texture needs rebuild (flagged by setData)
+        // Lazy texture rebuild (flagged by setData, safe in GL context)
         if (m_bNeedsSeaTempTexRebuild) {
             if (m_glSeaTempTexture) { glDeleteTextures(1, &m_glSeaTempTexture); m_glSeaTempTexture = 0; }
             m_bHasSeaTempTexture = false;
             m_bNeedsSeaTempTexRebuild = false;
         }
 
+        // Create texture once per data change (GRIB pattern)
         if (!m_bHasSeaTempTexture) {
-            // Delete old texture if exists (safe here — GL context is active)
-            if (m_glSeaTempTexture) {
-                glDeleteTextures(1, &m_glSeaTempTexture);
-                m_glSeaTempTexture = 0;
-            }
-            int tw = ni + 2, th = nj + 2;
-            unsigned char *texData = new unsigned char[tw * th * 4];
+            int tw = ni + 2, th = nj + 2;  // 1-pixel transparent border
+            unsigned char *texData = new(std::nothrow) unsigned char[tw * th * 4];
+            if (!texData) return;
             memset(texData, 0, tw * th * 4);
 
-            int transparency = 50;
-            if (plugin) transparency = plugin->m_iOverlayTransparency;
-            unsigned char globalAlpha = (unsigned char)(255 * (100 - transparency) / 100);
+            int transparency = plugin ? plugin->m_iOverlayTransparency : 50;
+            unsigned char alpha = (unsigned char)(255 * (100 - transparency) / 100);
 
+            // Fill texture: write RGBA directly (GRIB pattern, no wxColour overhead)
             for (int j = 0; j < nj; j++) {
                 if (!gui->gridSST[j]) break;
                 int texRow = (gui->myMessage.jDirectionIncr >= 0) ? j : (nj - 1 - j);
                 for (int i = 0; i < ni; i++) {
+                    double val = gui->gridSST[j][i];
+                    if (val == ncdf_NOTDEF || isnan(val) || !isfinite(val)) continue;
                     int x = i + 1, y = texRow + 1;
                     if (x >= tw - 1 || y >= th - 1) continue;
-                    double temp = gui->gridSST[j][i];
+                    // Write RGBA directly (avoid wxColour intermediate)
+                    wxColour c = GetSeaTempGraphicColor(val);
                     int off = 4 * (y * tw + x);
-                    if (temp != ncdf_NOTDEF && !isnan(temp) && isfinite(temp)) {
-                        wxColour c = GetSeaTempGraphicColor(temp);
-                        texData[off] = c.Red();
-                        texData[off+1] = c.Green();
-                        texData[off+2] = c.Blue();
-                        texData[off+3] = globalAlpha;
-                    }
+                    texData[off]     = c.Red();
+                    texData[off + 1] = c.Green();
+                    texData[off + 2] = c.Blue();
+                    texData[off + 3] = alpha;
                 }
             }
 
-            // GRIB-style border handling
-            memcpy(texData, texData + 4 * tw * 1, 4 * tw);
+            // GRIB-style border: copy adjacent row/col, then set border alpha=0
+            memcpy(texData, texData + 4 * tw, 4 * tw);
             memcpy(texData + 4 * tw * (th - 1), texData + 4 * tw * (th - 2), 4 * tw);
             for (int y = 0; y < th; y++) {
-                int doff = 4 * y * tw, soff = doff + 4;
-                memcpy(texData + doff, texData + soff, 4);
-                doff = 4 * (y * tw + tw - 1); soff = doff - 4;
-                memcpy(texData + doff, texData + soff, 4);
+                memcpy(texData + 4 * y * tw, texData + 4 * (y * tw + 1), 4);
+                memcpy(texData + 4 * (y * tw + tw - 1), texData + 4 * (y * tw + tw - 2), 4);
             }
             for (int x = 0; x < tw; x++) {
                 texData[4 * x + 3] = 0;
@@ -2006,29 +1995,29 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, tw, th, 0, GL_RGBA, GL_UNSIGNED_BYTE, texData);
+            delete[] texData;
+
             m_bHasSeaTempTexture = true;
             m_sstTexDataDim[0] = tw;
             m_sstTexDataDim[1] = th;
             m_sstTexGLDim[0] = tw;
             m_sstTexGLDim[1] = th;
-            delete[] texData;
         }
 
-        // Render SST overlay - single quad with four-corner GetCanvasLLPix mapping
-        if (m_bHasSeaTempTexture && m_glSeaTempTexture != 0) {
+        // Draw tiled texture (GRIB pattern)
+        if (m_bHasSeaTempTexture && m_glSeaTempTexture) {
             int tw = m_sstTexGLDim[0], th = m_sstTexGLDim[1];
-            if (tw < 2 || th < 2) return;
             double potNormX = (double)m_sstTexDataDim[0] / tw;
             double potNormY = (double)m_sstTexDataDim[1] / th;
-            double lat_min = this->blat, lon_min = this->tlon;
-            double lat_max = this->tlat, lon_max = this->blon;
+            double lat_min = blat, lon_min = tlon;
+            double lat_max = tlat, lon_max = blon;
             double latstep = fabs(lat_max - lat_min) / (nj - 1);
             double lonstep = (lon_max - lon_min) / (ni - 1);
             if (latstep < 1e-10 || lonstep < 1e-10) return;
             double clon = (lon_min + lon_max) / 2;
 
-            // Tile grid: GRIB-style subdivision for non-linear projections
-            double pw = vp->view_scale_ppm * 1e6 / (pow(2, fabs(vp->clat) / 25));
+            // Tile grid for non-linear projection handling
+            double pw = vp->view_scale_ppm * 1e6 / pow(2, fabs(vp->clat) / 25);
             if (pw < 20) pw = 20;
             int xs = (int)ceil(vp->pix_width / pw);
             int ys = (int)ceil(vp->pix_height / pw);
@@ -2036,15 +2025,16 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
             if (xs < 2) xs = 2; if (ys < 2) ys = 2;
             if (xs > 16) xs = 16; if (ys > 16) ys = 16;
             int gridW = xs + 1, gridH = ys + 1;
+
             double *lva = new(std::nothrow) double[gridW * gridH * 2];
             if (!lva) return;
 
             for (int i = 0; i < gridW; i++) {
-                double pixx = vp->pix_width / (double)xs * i;
+                double px = vp->pix_width / (double)xs * i;
                 for (int j = 0; j < gridH; j++) {
-                    double pixy = vp->pix_height / (double)ys * j;
-                    wxPoint pt((int)pixx, (int)pixy);
+                    double py = vp->pix_height / (double)ys * j;
                     double lat, lon;
+                    wxPoint pt((int)px, (int)py);
                     GetCanvasLLPix(vp, pt, &lat, &lon);
                     if (clon - lon > 180) lon += 360;
                     else if (lon - clon > 180) lon -= 360;
@@ -2059,7 +2049,7 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
             glEnable(GL_BLEND);
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
-            glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+            glColor4f(1, 1, 1, 1);
 
             double xS = vp->pix_width / (double)xs;
             double yS = vp->pix_height / (double)ys;
@@ -2069,18 +2059,17 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
                     int i10 = ((i+1) * gridH + j) * 2;
                     int i11 = ((i+1) * gridH + j+1) * 2;
                     int i01 = (i * gridH + j+1) * 2;
-                    // Skip tiles outside data bounds
-                    double u0 = lva[i00], u1 = lva[i10], u2 = lva[i11], u3 = lva[i01];
-                    double v0 = lva[i00+1], v1 = lva[i10+1], v2 = lva[i11+1], v3 = lva[i01+1];
+                    double u0=lva[i00], u1=lva[i10], u2=lva[i11], u3=lva[i01];
+                    double v0=lva[i00+1], v1=lva[i10+1], v2=lva[i11+1], v3=lva[i01+1];
                     if (!((u0>=0||u1>=0||u2>=0||u3>=0)&&(u0<=1||u1<=1||u2<=1||u3<=1))) continue;
                     if (!((v0>=0||v1>=0||v2>=0||v3>=0)&&(v0<=1||v1<=1||v2<=1||v3<=1))) continue;
                     if (u1 <= u0) continue;
                     double x = xS * i, y = yS * j;
                     glBegin(GL_QUADS);
-                    glTexCoord2d(u0, v0); glVertex2f((float)x, (float)y);
-                    glTexCoord2d(u1, v1); glVertex2f((float)(x+xS), (float)y);
-                    glTexCoord2d(u2, v2); glVertex2f((float)(x+xS), (float)(y+yS));
-                    glTexCoord2d(u3, v3); glVertex2f((float)x, (float)(y+yS));
+                    glTexCoord2d(u0,v0); glVertex2f((float)x,(float)y);
+                    glTexCoord2d(u1,v1); glVertex2f((float)(x+xS),(float)y);
+                    glTexCoord2d(u2,v2); glVertex2f((float)(x+xS),(float)(y+yS));
+                    glTexCoord2d(u3,v3); glVertex2f((float)x,(float)(y+yS));
                     glEnd();
                 }
             }
@@ -2101,7 +2090,7 @@ void ncdfOverlayFactory::RenderSeaTempIsoLines(PlugIn_ViewPort *vp)
     int nj = gui->myMessage.latLength;
     if (ni < 2 || nj < 2) return;
 
-    // Skip if viewport unchanged (avoid recreating IsoLine objects every frame)
+    // Skip if viewport unchanged (GRIB pattern: cache isolines)
     if (vp->view_scale_ppm == m_lastIso_vp_scale &&
         vp->lat_max == m_lastIso_vp_latMax &&
         vp->lat_min == m_lastIso_vp_latMin &&
@@ -2114,24 +2103,24 @@ void ncdfOverlayFactory::RenderSeaTempIsoLines(PlugIn_ViewPort *vp)
     m_lastIso_vp_lonMax = vp->lon_max;
 
     // Auto-detect temperature range from data
-    double minTemp = 1e10, maxTemp = -1e10;
+    double minT = 1e10, maxT = -1e10;
     for (int j = 0; j < nj; j++) {
         if (!gui->gridSST[j]) break;
         for (int i = 0; i < ni; i++) {
             double v = gui->gridSST[j][i];
             if (v == ncdf_NOTDEF || isnan(v) || !isfinite(v)) continue;
-            if (v < minTemp) minTemp = v;
-            if (v > maxTemp) maxTemp = v;
+            if (v < minT) minT = v;
+            if (v > maxT) maxT = v;
         }
     }
-    if (minTemp >= maxTemp) return;
+    if (minT >= maxT) return;
 
     double spacing = 2.0;
-    minTemp = floor(minTemp / spacing) * spacing;
-    maxTemp = ceil(maxTemp / spacing) * spacing;
+    minT = floor(minT / spacing) * spacing;
+    maxT = ceil(maxT / spacing) * spacing;
 
-    double lat_min = this->blat, lon_min = this->tlon;
-    double lat_max = this->tlat, lon_max = this->blon;
+    double lat_min = blat, lon_min = tlon;
+    double lat_max = tlat, lon_max = blon;
     double incrLat = (lat_max - lat_min) / (nj - 1);
     if (gui->myMessage.jDirectionIncr < 0) incrLat = -incrLat;
     double incrLon = (lon_max - lon_min) / (ni - 1);
@@ -2142,17 +2131,17 @@ void ncdfOverlayFactory::RenderSeaTempIsoLines(PlugIn_ViewPort *vp)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glEnable(GL_LINE_SMOOTH);
         glHint(GL_LINE_SMOOTH_HINT, GL_NICEST);
-        glLineWidth(1.5f);
-        glColor4ub(80, 80, 80, 200);
+        glLineWidth(1.0f);
 
-        for (double temp = minTemp; temp <= maxTemp; temp += spacing) {
-            IsoLine isoLine(temp, gui->gridSST, nj, ni,
-                            lat_max, lon_min, incrLon, incrLat);
+        for (double temp = minT; temp <= maxT; temp += spacing) {
+            IsoLine isoLine(temp, gui->gridSST, nj, ni, lat_max, lon_min, incrLon, incrLat);
             if (isoLine.getNbSegments() < 1) continue;
 
+            // GRIB pattern: draw segments directly with GL
+            glColor4ub(80, 80, 80, 200);
             std::list<Segment*>& trace = isoLine.getTrace();
             glBegin(GL_LINES);
-            for (std::list<Segment*>::iterator it = trace.begin(); it != trace.end(); it++) {
+            for (std::list<Segment*>::iterator it = trace.begin(); it != trace.end(); ++it) {
                 Segment *seg = *it;
                 wxPoint ab, cd;
                 GetCanvasPixLL(vp, &ab, seg->py1, seg->px1);
@@ -2167,9 +2156,8 @@ void ncdfOverlayFactory::RenderSeaTempIsoLines(PlugIn_ViewPort *vp)
         glDisable(GL_BLEND);
 #endif
     } else {
-        for (double temp = minTemp; temp <= maxTemp; temp += spacing) {
-            IsoLine isoLine(temp, gui->gridSST, nj, ni,
-                            lat_max, lon_min, incrLon, incrLat);
+        for (double temp = minT; temp <= maxT; temp += spacing) {
+            IsoLine isoLine(temp, gui->gridSST, nj, ni, lat_max, lon_min, incrLon, incrLat);
             if (isoLine.getNbSegments() < 1) continue;
             isoLine.drawIsoLine(*m_pdc, vp, false, false);
             isoLine.drawIsoLineLabels(m_pdc, wxColour(80, 80, 80), vp, 40, 0, temp);
