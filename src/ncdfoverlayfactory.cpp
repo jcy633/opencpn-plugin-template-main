@@ -68,6 +68,11 @@ ncdfOverlayFactory::ncdfOverlayFactory()
       m_glSeaTempTexture = 0;
       m_bHasSeaTempTexture = false;
       m_bNeedsSeaTempTexRebuild = false;
+      m_lastIso_vp_scale = -1;
+      m_lastIso_vp_latMax = -99999;
+      m_lastIso_vp_latMin = -99999;
+      m_lastIso_vp_lonMin = -99999;
+      m_lastIso_vp_lonMax = -99999;
       m_sstTexDataDim[0] = m_sstTexDataDim[1] = 0;
       m_sstTexGLDim[0] = m_sstTexGLDim[1] = 0;
 
@@ -96,6 +101,7 @@ void ncdfOverlayFactory::setData(MainDialog *gui, ncdf_pi *plugin, ncdfDataMessa
 	// Mark textures for rebuild (GL deletion deferred to render)
 	m_bNeedsColorTexRebuild = true;
 	m_bNeedsSeaTempTexRebuild = true;
+	m_lastIso_vp_scale = -1;  // Force isoline redraw on data change
 	ClearParticles();
 	m_last_vp_scale = -1;
 	m_last_vp_latMax = -99999.0;
@@ -2089,7 +2095,19 @@ void ncdfOverlayFactory::RenderSeaTempIsoLines(PlugIn_ViewPort *vp)
     int nj = gui->myMessage.latLength;
     if (ni < 2 || nj < 2) return;
 
-    // Auto-detect temperature range from data (GRIB pattern)
+    // Skip if viewport unchanged (avoid recreating IsoLine objects every frame)
+    if (vp->view_scale_ppm == m_lastIso_vp_scale &&
+        vp->lat_max == m_lastIso_vp_latMax &&
+        vp->lat_min == m_lastIso_vp_latMin &&
+        vp->lon_min == m_lastIso_vp_lonMin &&
+        vp->lon_max == m_lastIso_vp_lonMax) return;
+    m_lastIso_vp_scale = vp->view_scale_ppm;
+    m_lastIso_vp_latMax = vp->lat_max;
+    m_lastIso_vp_latMin = vp->lat_min;
+    m_lastIso_vp_lonMin = vp->lon_min;
+    m_lastIso_vp_lonMax = vp->lon_max;
+
+    // Auto-detect temperature range from data
     double minTemp = 1e10, maxTemp = -1e10;
     for (int j = 0; j < nj; j++) {
         for (int i = 0; i < ni; i++) {
@@ -2101,14 +2119,12 @@ void ncdfOverlayFactory::RenderSeaTempIsoLines(PlugIn_ViewPort *vp)
     }
     if (minTemp >= maxTemp) return;
 
-    // Round to nice spacing (GRIB pattern: 2°C intervals)
     double spacing = 2.0;
     minTemp = floor(minTemp / spacing) * spacing;
     maxTemp = ceil(maxTemp / spacing) * spacing;
 
     double lat_min = this->blat, lon_min = this->tlon;
     double lat_max = this->tlat, lon_max = this->blon;
-    // incrLat sign matches data ordering: negative if grid goes north-to-south
     double incrLat = (lat_max - lat_min) / (nj - 1);
     if (gui->myMessage.jDirectionIncr < 0) incrLat = -incrLat;
     double incrLon = (lon_max - lon_min) / (ni - 1);
@@ -2127,7 +2143,6 @@ void ncdfOverlayFactory::RenderSeaTempIsoLines(PlugIn_ViewPort *vp)
                             lat_max, lon_min, incrLon, incrLat);
             if (isoLine.getNbSegments() < 1) continue;
 
-            // Draw segments directly with GL (GRIB pattern: no wxBitmap)
             std::list<Segment*>& trace = isoLine.getTrace();
             glBegin(GL_LINES);
             for (std::list<Segment*>::iterator it = trace.begin(); it != trace.end(); it++) {
@@ -2139,29 +2154,6 @@ void ncdfOverlayFactory::RenderSeaTempIsoLines(PlugIn_ViewPort *vp)
                 glVertex2i(cd.x, cd.y);
             }
             glEnd();
-
-            // Draw label at midpoint of first segment
-            wxString label;
-            label.Printf(_T("%.0f"), temp);
-            Segment *first = trace.front();
-            wxPoint lp;
-            GetCanvasPixLL(vp, &lp, (first->py1 + first->py2) / 2, (first->px1 + first->px2) / 2);
-            glColor4ub(60, 60, 60, 220);
-            // Simple label background
-            int tw, th;
-            wxFont font(9, wxFONTFAMILY_SWISS, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_NORMAL);
-            wxScreenDC sdc;
-            sdc.SetFont(font);
-            sdc.GetTextExtent(label, &tw, &th);
-            glColor4ub(255, 255, 255, 180);
-            glBegin(GL_QUADS);
-            glVertex2i(lp.x - 2, lp.y - 1);
-            glVertex2i(lp.x + tw + 2, lp.y - 1);
-            glVertex2i(lp.x + tw + 2, lp.y + th + 1);
-            glVertex2i(lp.x - 2, lp.y + th + 1);
-            glEnd();
-            glColor4ub(60, 60, 60, 220);
-            glLineWidth(1.5f);
         }
 
         glDisable(GL_LINE_SMOOTH);

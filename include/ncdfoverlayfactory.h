@@ -168,6 +168,13 @@ private:
 	 bool m_bNeedsSeaTempTexRebuild;
 	 int m_sstTexDataDim[2];
 	 int m_sstTexGLDim[2];
+
+	 // Isoline rendering cache (skip when viewport unchanged)
+	 double m_lastIso_vp_scale;
+	 double m_lastIso_vp_latMax;
+	 double m_lastIso_vp_latMin;
+	 double m_lastIso_vp_lonMin;
+	 double m_lastIso_vp_lonMax;
 };
 
 
