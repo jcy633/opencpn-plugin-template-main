@@ -1921,7 +1921,7 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
                     if (x >= tw - 1 || y >= th - 1) continue;
                     double temp = gui->gridSST[j][i];
                     int off = 4 * (y * tw + x);
-                    if (!isnan(temp) && isfinite(temp)) {
+                    if (temp != ncdf_NOTDEF && !isnan(temp) && isfinite(temp)) {
                         wxColour c = GetSeaTempGraphicColor(temp);
                         texData[off] = c.Red();
                         texData[off+1] = c.Green();
@@ -1984,6 +1984,9 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
                 xsquares = 1;  // Mercator: longitude is linear, fewer tiles needed
             if (xsquares < 2) xsquares = 2;
             if (ysquares < 2) ysquares = 2;
+            // Cap tile count to prevent excessive memory allocation
+            if (xsquares > 32) xsquares = 32;
+            if (ysquares > 32) ysquares = 32;
 
             // Precompute texture coordinates for each tile intersection point
             int gridW = xsquares + 1, gridH = ysquares + 1;
