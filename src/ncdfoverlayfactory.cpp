@@ -1714,19 +1714,24 @@ void ncdfOverlayFactory::RenderParticles(PlugIn_ViewPort *vp)
     for (int npi = 0; npi < new_count; npi++) {
         float p[2];
         double vkn = 0, ang = 0;
-        // Velocity-based spawning: prefer high-flow areas
-        for (int attempt = 0; attempt < 20; attempt++) {
+        // Velocity-weighted spawning: high-flow = dense, low-flow = sparse
+        for (int attempt = 0; attempt < 30; attempt++) {
             p[0] = tlon + static_cast<float>(rand()) / static_cast<float>(RAND_MAX) * (blon - tlon);
             p[1] = tlat + static_cast<float>(rand()) / static_cast<float>(RAND_MAX) * (blat - tlat);
             double vx = gui->myMessage.getInterpolatedValue(gui->myMessage, gui->gridu, p[0], p[1], true);
             double vy = gui->myMessage.getInterpolatedValue(gui->myMessage, gui->gridv, p[0], p[1], true);
             if (vx != ncdf_NOTDEF && vy != ncdf_NOTDEF && isfinite(vx) && isfinite(vy)) {
                 double mag = sqrt(vx * vx + vy * vy);
-                if (mag < 0.05) continue;  // Skip near-zero flow areas
-                vkn = mag; ang = atan2(vx, vy) * 180.0 / PI;
-                break;
+                if (mag < 0.1) continue;  // Filter out near-zero flow
+                // Accept probability ∝ (mag/3)² — low velocity = very low acceptance
+                double prob = wxMin(1.0, (mag / 5.0) * (mag / 5.0));
+                if ((double)rand() / RAND_MAX < prob) {
+                    vkn = mag; ang = atan2(vx, vy) * 180.0 / PI;
+                    break;
+                }
             }
         }
+        if (vkn < 0.1) continue;  // No valid position found
         Particle np;
         np.m_Duration = rand() % (max_duration / 2);
         np.m_HistoryPos = 0; np.m_HistorySize = 1;
@@ -1955,7 +1960,7 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
 
             // Fill texture: write RGBA directly (GRIB pattern, no wxColour overhead)
             for (int j = 0; j < nj; j++) {
-                if (!gui->gridSST[j]) { wxLogMessage(_T("[SST] gridSST[%d]=NULL, aborting texture"), j); break; }
+                if (!gui->gridSST[j]) break;
                 int texRow = (gui->myMessage.jDirectionIncr >= 0) ? j : (nj - 1 - j);
                 for (int i = 0; i < ni; i++) {
                     double val = gui->gridSST[j][i];
