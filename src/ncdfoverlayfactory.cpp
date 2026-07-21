@@ -158,7 +158,7 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
     this->vp = vp;
     if (!vp) return false;
     static int s_frameDbg = 0;
-    if (s_frameDbg < 20) {
+    if (s_frameDbg < 200) {
         wxLogMessage(_T("[render] frame %d vp=%p ready=%d"), s_frameDbg, (void*)vp, (int)m_bReadyToRender);
         s_frameDbg++;
     }
@@ -377,6 +377,13 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 
     m_last_vp_scale = vp->view_scale_ppm;
     m_last_vp_latMax = vp->lat_max;
+
+    // Reset GL state to avoid corrupting other plugins (GRIB, OpenCPN core)
+    glDisable(GL_TEXTURE_2D);
+    glDisable(GL_BLEND);
+    glDisable(GL_LINE_SMOOTH);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
 
     return true;
 }
