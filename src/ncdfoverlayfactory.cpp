@@ -2101,8 +2101,10 @@ void ncdfOverlayFactory::RenderSeaTempIsoLines(PlugIn_ViewPort *vp)
 
     double lat_min = this->blat, lon_min = this->tlon;
     double lat_max = this->tlat, lon_max = this->blon;
-    double incrLon = (lon_max - lon_min) / (ni - 1);
+    // incrLat sign matches data ordering: negative if grid goes north-to-south
     double incrLat = (lat_max - lat_min) / (nj - 1);
+    if (gui->myMessage.jDirectionIncr < 0) incrLat = -incrLat;
+    double incrLon = (lon_max - lon_min) / (ni - 1);
 
     if (!m_pdc) {
 #ifdef ocpnUSE_GL

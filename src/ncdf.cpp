@@ -1592,11 +1592,6 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 		if (!showSST) {
 			pPlugIn->m_bShowSeaTemp = false;
 			pPlugIn->m_bShowSeaTempIso = false;
-		} else {
-			// Auto-enable SST rendering when SST data is available (GRIB pattern)
-			pPlugIn->m_bShowSeaTemp = true;
-			m_checkBoxSeaTemp->SetValue(true);
-			pPlugIn->m_bShowSeaTempIso = m_checkBoxSeaTempIso->GetValue();
 		}
 		return;
     }
@@ -1660,8 +1655,8 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 				m_staticTextSeaTempIso->Show(showSST);
 				Layout();
 				if (showSST) {
-					pPlugIn->m_bShowSeaTemp = true;
-					m_checkBoxSeaTemp->SetValue(true);
+					pPlugIn->m_bShowSeaTemp = false;
+					m_checkBoxSeaTemp->SetValue(false);
 				} else {
 					pPlugIn->m_bShowSeaTemp = false;
 					pPlugIn->m_bShowSeaTempIso = false;
