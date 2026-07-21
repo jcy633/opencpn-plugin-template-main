@@ -381,10 +381,10 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 		RenderSeaTempOverlay(vp);
 	}
 
-	// Sea temperature isolines (temporarily disabled for crash diagnosis)
-	// if (plugin->m_bShowSeaTempIso && gui && gui->gridSST && gui->hasSeaTemp) {
-	// 	RenderSeaTempIsoLines(vp);
-	// }
+	// Sea temperature isolines
+	if (plugin->m_bShowSeaTempIso && gui && gui->gridSST && gui->hasSeaTemp) {
+		RenderSeaTempIsoLines(vp);
+	}
 
     m_last_vp_scale = vp->view_scale_ppm;
     m_last_vp_latMax = vp->lat_max;
@@ -1955,7 +1955,7 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
 
             // Fill texture: write RGBA directly (GRIB pattern, no wxColour overhead)
             for (int j = 0; j < nj; j++) {
-                if (!gui->gridSST[j]) break;
+                if (!gui->gridSST[j]) { wxLogMessage(_T("[SST] gridSST[%d]=NULL, aborting texture"), j); break; }
                 int texRow = (gui->myMessage.jDirectionIncr >= 0) ? j : (nj - 1 - j);
                 for (int i = 0; i < ni; i++) {
                     double val = gui->gridSST[j][i];
@@ -2134,7 +2134,7 @@ void ncdfOverlayFactory::RenderSeaTempIsoLines(PlugIn_ViewPort *vp)
         glLineWidth(1.0f);
 
         for (double temp = minT; temp <= maxT; temp += spacing) {
-            IsoLine isoLine(temp, gui->gridSST, nj, ni, lat_max, lon_min, incrLon, incrLat);
+            IsoLine isoLine(temp, gui->gridSST, nj, ni, lat_max, lon_min, incrLat, incrLon);
             if (isoLine.getNbSegments() < 1) continue;
 
             // GRIB pattern: draw segments directly with GL
@@ -2157,7 +2157,7 @@ void ncdfOverlayFactory::RenderSeaTempIsoLines(PlugIn_ViewPort *vp)
 #endif
     } else {
         for (double temp = minT; temp <= maxT; temp += spacing) {
-            IsoLine isoLine(temp, gui->gridSST, nj, ni, lat_max, lon_min, incrLon, incrLat);
+            IsoLine isoLine(temp, gui->gridSST, nj, ni, lat_max, lon_min, incrLat, incrLon);
             if (isoLine.getNbSegments() < 1) continue;
             isoLine.drawIsoLine(*m_pdc, vp, false, false);
             isoLine.drawIsoLineLabels(m_pdc, wxColour(80, 80, 80), vp, 40, 0, temp);
