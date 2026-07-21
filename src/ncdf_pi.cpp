@@ -41,6 +41,26 @@
 #include "ncdf_pi.h"
 #include "ncdf.h"
 
+// Crash dump handler — generates minidump on access violation
+#include <dbghelp.h>
+#pragma comment(lib, "dbghelp.lib")
+static LONG WINAPI NcdfCrashHandler(EXCEPTION_POINTERS* pExInfo) {
+    HANDLE hFile = CreateFileA(
+        "C:\\ProgramData\\opencpn\\ncdf_crash.dmp",
+        GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile != INVALID_HANDLE_VALUE) {
+        MINIDUMP_EXCEPTION_INFORMATION mdei;
+        mdei.ThreadId = GetCurrentThreadId();
+        mdei.ExceptionPointers = pExInfo;
+        mdei.ClientPointers = FALSE;
+        MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(),
+            hFile, MiniDumpWithDataSegs, &mdei, NULL, NULL);
+        CloseHandle(hFile);
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 
 
 // the class factories, used to create and destroy instances of the PlugIn
@@ -79,6 +99,7 @@ ncdf_pi::ncdf_pi(void *ppimgr)
 
 int ncdf_pi::Init(void)
 {
+      SetUnhandledExceptionFilter(NcdfCrashHandler);
 
       AddLocaleCatalog(_T("opencpn-ncdf_pi"));
       // Set some default private member parameters
