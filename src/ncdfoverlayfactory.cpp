@@ -1964,6 +1964,7 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
             unsigned char globalAlpha = (unsigned char)(255 * (100 - transparency) / 100);
 
             for (int j = 0; j < nj; j++) {
+                if (!gui->gridSST[j]) break;
                 int texRow = (gui->myMessage.jDirectionIncr >= 0) ? j : (nj - 1 - j);
                 for (int i = 0; i < ni; i++) {
                     int x = i + 1, y = texRow + 1;
@@ -2115,6 +2116,7 @@ void ncdfOverlayFactory::RenderSeaTempIsoLines(PlugIn_ViewPort *vp)
     // Auto-detect temperature range from data
     double minTemp = 1e10, maxTemp = -1e10;
     for (int j = 0; j < nj; j++) {
+        if (!gui->gridSST[j]) break;
         for (int i = 0; i < ni; i++) {
             double v = gui->gridSST[j][i];
             if (v == ncdf_NOTDEF || isnan(v) || !isfinite(v)) continue;
