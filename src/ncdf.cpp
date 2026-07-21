@@ -1584,10 +1584,19 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 			pPlugIn->m_bShowCurrentDir = false;
 			pPlugIn->m_bShowCurrentForce = false;
 			pPlugIn->m_bShowParticles = false;
+		} else {
+			// Auto-enable current rendering when current data is available (GRIB pattern)
+			pPlugIn->m_bShowCurrentDir = m_checkBoxDCurrent->GetValue();
+			pPlugIn->m_bShowCurrentForce = m_checkBoxBmpCurrentForce->GetValue();
 		}
 		if (!showSST) {
 			pPlugIn->m_bShowSeaTemp = false;
 			pPlugIn->m_bShowSeaTempIso = false;
+		} else {
+			// Auto-enable SST rendering when SST data is available (GRIB pattern)
+			pPlugIn->m_bShowSeaTemp = true;
+			m_checkBoxSeaTemp->SetValue(true);
+			pPlugIn->m_bShowSeaTempIso = m_checkBoxSeaTempIso->GetValue();
 		}
 		return;
     }
@@ -1632,6 +1641,36 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 				}
 				m_currentFilePath = fileName;
 				idx = data->m_index;
+
+				// Auto-enable rendering for available data types (GRIB pattern)
+				bool showCur = m_fileHasCurrent;
+				bool showSST = m_fileHasSeaTemp;
+				m_checkBoxDCurrent->Show(showCur);
+				m_staticText333->Show(showCur);
+				m_textCtrlCurrentDir->Show(showCur);
+				m_checkBoxBmpCurrentForce->Show(showCur);
+				m_staticText40->Show(showCur);
+				m_textCtrlCurrentForce->Show(showCur);
+				m_staticText41->Show(showCur);
+				m_checkBoxParticles->Show(showCur);
+				m_staticTextParticles->Show(showCur);
+				m_checkBoxSeaTemp->Show(showSST);
+				m_staticTextSeaTemp->Show(showSST);
+				m_checkBoxSeaTempIso->Show(showSST);
+				m_staticTextSeaTempIso->Show(showSST);
+				Layout();
+				if (showSST) {
+					pPlugIn->m_bShowSeaTemp = true;
+					m_checkBoxSeaTemp->SetValue(true);
+				} else {
+					pPlugIn->m_bShowSeaTemp = false;
+					pPlugIn->m_bShowSeaTempIso = false;
+				}
+				if (!showCur) {
+					pPlugIn->m_bShowCurrentDir = false;
+					pPlugIn->m_bShowCurrentForce = false;
+					pPlugIn->m_bShowParticles = false;
+				}
 			}
 		}
 
