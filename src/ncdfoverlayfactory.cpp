@@ -163,9 +163,18 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 {
     this->vp = vp;
     if (!vp) return false;
+
+    // Guard: must have valid gui and at least one grid
+    if (!gui) return false;
+    bool hasCurrentGrid = (gui->gridu && gui->gridv);
+    bool hasSSTGrid = (gui->gridSST && gui->hasSeaTemp);
+    if (!hasCurrentGrid && !hasSSTGrid) return false;
+    if (gui->myMessage.lonLength < 2 || gui->myMessage.latLength < 2) return false;
+    if (!m_bReadyToRender) return false;
+
     static int s_frameDbg = 0;
     if (s_frameDbg < 200) {
-        wxLogMessage(_T("[render] frame %d vp=%p ready=%d"), s_frameDbg, (void*)vp, (int)m_bReadyToRender);
+        wxLogMessage(_T("[render] frame %d vp=%p"), s_frameDbg, (void*)vp);
         s_frameDbg++;
     }
     
@@ -183,15 +192,6 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
     }
 	// No need to clear on viewport change - texture is cached
 	m_last_vp_latMax = vp->lat_max;
-
-	if (!m_bReadyToRender) return false;
-
-	// Don't render until we have valid grid data (current or SST)
-	if (!gui) return false;
-	bool hasCurrentGrid = (gui->gridu && gui->gridv);
-	bool hasSSTGrid = (gui->gridSST && gui->hasSeaTemp);
-	if (!hasCurrentGrid && !hasSSTGrid) return false;
-	if (gui->myMessage.lonLength < 2 || gui->myMessage.latLength < 2) return false;
 
 	static int s_renderDbg = 0;
 	if (s_renderDbg < 10) {
