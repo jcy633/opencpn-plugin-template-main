@@ -1534,13 +1534,7 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 	        return;
 	    }
 
-	    // Manually load the first time step (don't rely on SelectItem re-entrancy)
-	    myData = myDataVector[0];
-	    m_lastSelectedTimeIndex = 0;
-	    m_sTimeline->SetValue(0);
-
-	    // Clean up old grids before reading new file data (GRIB pattern: reset on file change)
-	    // This prevents stale gridSST/gridu/gridv from previous file causing crashes
+	    // Clean up old grids (GRIB pattern: reset on file change)
 	    if (gridu) {
 	        for (wxUint32 i = 0; i < myMessage.noPointsMeridian; ++i) delete[] gridu[i];
 	        delete[] gridu; gridu = NULL;
@@ -1554,12 +1548,14 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 	        delete[] gridSST; gridSST = NULL;
 	    }
 	    hasSeaTemp = false;
+	    m_lastSelectedTimeIndex = -1;
 	    pPlugIn->GetncdfOverlayFactory()->reset();
 
-	    if (readTimeStepData(myData)) {
-	        this->my_ncdfReader->readncdfFile(myData);
-	        pPlugIn->GetncdfOverlayFactory()->renderSelectionRectangle = false;
-	        RequestRefresh(m_parent);
+	    // Set up timeline range (data loaded lazily when user selects a time step)
+	    int nSteps = (int)myDataVector.size();
+	    if (nSteps > 0 && m_sTimeline) {
+	        m_sTimeline->SetRange(0, nSteps - 1);
+	        m_sTimeline->SetValue(0);
 	    }
 
 		ncdfDialog::onTreeSelectionChanged(event);
