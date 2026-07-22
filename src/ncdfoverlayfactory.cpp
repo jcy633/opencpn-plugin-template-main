@@ -2123,7 +2123,7 @@ void ncdfOverlayFactory::RenderSeaTempIsoLines(PlugIn_ViewPort *vp)
     }
     if (minT >= maxT) return;
 
-    double spacing = 2.0;
+    double spacing = 1.0;
     minT = floor(minT / spacing) * spacing;
     maxT = ceil(maxT / spacing) * spacing;
 
@@ -2160,11 +2160,11 @@ void ncdfOverlayFactory::RenderSeaTempIsoLines(PlugIn_ViewPort *vp)
             }
             glEnd();
 
-            // Draw label at midpoint of every Nth segment (GRIB pattern)
-            int labelInterval = wxMax(1, (int)trace.size() / 4);  // ~4 labels per isoline
+            // Draw label at midpoint of isoline
+            int labelInterval = wxMax(1, (int)trace.size() / 2);  // label at midpoint
             int segIdx = 0;
             for (std::list<Segment*>::iterator it = trace.begin(); it != trace.end(); ++it, segIdx++) {
-                if (segIdx % labelInterval != 0) continue;
+                if (segIdx != labelInterval) continue;
                 Segment *seg = *it;
                 double midLat = (seg->py1 + seg->py2) / 2.0;
                 double midLon = (seg->px1 + seg->px2) / 2.0;
@@ -2174,14 +2174,13 @@ void ncdfOverlayFactory::RenderSeaTempIsoLines(PlugIn_ViewPort *vp)
                 wxString label;
                 label.Printf(_T("%.0f"), temp);
 
-                // Draw label text as small GL quads (no white background)
+                // Draw label text as GL lines (7-segment style, no background)
                 glColor4ub(60, 60, 60, 240);
-                int charW = 5, charH = 8;
+                int charW = 7, charH = 11;
                 int textW = label.length() * charW;
                 int x0 = mp.x - textW / 2;
                 int y0 = mp.y - charH / 2;
 
-                // Draw each character as simple line segments
                 for (unsigned int ci = 0; ci < label.length(); ci++) {
                     int cx = x0 + ci * charW;
                     int cy = y0;
