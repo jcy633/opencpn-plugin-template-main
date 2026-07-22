@@ -82,6 +82,7 @@ MainDialog::MainDialog(wxWindow *parent) : ncdfDialog( parent ), m_isTreeUpdatin
 	m_checkBoxDCurrent->Hide();
 	m_staticText333->Hide();
 	m_textCtrlCurrentDir->Hide();
+	m_staticText341->Hide();
 	m_checkBoxBmpCurrentForce->Hide();
 	m_staticText40->Hide();
 	m_textCtrlCurrentForce->Hide();
@@ -90,6 +91,8 @@ MainDialog::MainDialog(wxWindow *parent) : ncdfDialog( parent ), m_isTreeUpdatin
 	m_staticTextParticles->Hide();
 	m_checkBoxSeaTemp->Hide();
 	m_staticTextSeaTemp->Hide();
+	m_textCtrlSeaTemp->Hide();
+	m_staticTextSeaTempUnit->Hide();
 	m_checkBoxSeaTempIso->Hide();
 	m_staticTextSeaTempIso->Hide();
 
@@ -183,20 +186,17 @@ void MainDialog::UpdateTrackingControls()
    this->m_textCtrlCurrentForce->Clear();
    if (gridu && gridv) printCurrentData();
 
-   // SST temperature at cursor position — show only when data loaded and checkbox enabled
+   // SST temperature at cursor position — show when SST data is available
    m_textCtrlSeaTemp->Clear();
-   if (gridSST && hasSeaTemp && pPlugIn->m_bShowSeaTemp) {
+   if (gridSST && hasSeaTemp) {
        double temp = myMessage.getInterpolatedValue(myMessage, gridSST, m_cursor_lon, m_cursor_lat, true);
        if (temp != ncdf_NOTDEF && !isnan(temp) && isfinite(temp)) {
            wxString t;
-           t.Printf(_T("%.1f"), temp);
+           wxString unit = wxString::FromUTF8("\xc2\xb0""C");
+           t.Printf(_T("%.1f "), temp);
+           t += unit;
            m_textCtrlSeaTemp->SetValue(t);
        }
-       m_textCtrlSeaTemp->Show(true);
-       m_staticTextSeaTempUnit->Show(true);
-   } else {
-       m_textCtrlSeaTemp->Show(false);
-       m_staticTextSeaTempUnit->Show(false);
    }
 }
 
@@ -213,12 +213,12 @@ void MainDialog::printCurrentData()
 			if ((cDir != ncdf_NOTDEF) && (cForce != ncdf_NOTDEF))
 			{
 				double force = sqrt(cDir*cDir + cForce*cForce)*3.6 / 1.852;
-				t.Printf(_T("%3.1f"), force);
-				this->m_textCtrlCurrentForce->AppendText(t);
+				t.Printf(_T("%3.1f kts"), force);
+				this->m_textCtrlCurrentForce->SetValue(t);
 				double dir = 90. + (atan2(cForce, -cDir)  * 180. / PI) - 180;
 				if (dir < 0) dir = 360 + dir;
-				t.Printf(_T("%3.1f"), dir);
-				this->m_textCtrlCurrentDir->AppendText(t);
+				t.Printf(_T("%3.1f Deg"), dir);
+				this->m_textCtrlCurrentDir->SetValue(t);
 			}
 }
 
@@ -1589,17 +1589,14 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 		m_checkBoxDCurrent->Show(showCurrent);
 		m_staticText333->Show(showCurrent);
 		m_textCtrlCurrentDir->Show(showCurrent);
-		m_staticText341->Show(showCurrent);
 		m_checkBoxBmpCurrentForce->Show(showCurrent);
 		m_staticText40->Show(showCurrent);
 		m_textCtrlCurrentForce->Show(showCurrent);
-		m_staticText41->Show(showCurrent);
 		m_checkBoxParticles->Show(showCurrent);
 		m_staticTextParticles->Show(showCurrent);
 		m_checkBoxSeaTemp->Show(showSST);
 		m_staticTextSeaTemp->Show(showSST);
 		m_textCtrlSeaTemp->Show(showSST);
-		m_staticTextSeaTempUnit->Show(showSST);
 		m_staticTextSeaTempIso->Show(showSST);
 		Layout();
 		if (!showCurrent) {
@@ -1665,17 +1662,14 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 				m_checkBoxDCurrent->Show(showCur);
 				m_staticText333->Show(showCur);
 				m_textCtrlCurrentDir->Show(showCur);
-				m_staticText341->Show(showCur);
 				m_checkBoxBmpCurrentForce->Show(showCur);
 				m_staticText40->Show(showCur);
 				m_textCtrlCurrentForce->Show(showCur);
-				m_staticText41->Show(showCur);
 				m_checkBoxParticles->Show(showCur);
 				m_staticTextParticles->Show(showCur);
 				m_checkBoxSeaTemp->Show(showSST);
 				m_staticTextSeaTemp->Show(showSST);
 				m_textCtrlSeaTemp->Show(showSST);
-		m_staticTextSeaTempUnit->Show(showSST);
 				m_checkBoxSeaTempIso->Show(showSST);
 				m_staticTextSeaTempIso->Show(showSST);
 				Layout();
@@ -1751,18 +1745,15 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 	m_checkBoxDCurrent->Show(showCurrent);
 	m_staticText333->Show(showCurrent);
 	m_textCtrlCurrentDir->Show(showCurrent);
-		m_staticText341->Show(showCurrent);
 	m_checkBoxBmpCurrentForce->Show(showCurrent);
 	m_staticText40->Show(showCurrent);
 	m_textCtrlCurrentForce->Show(showCurrent);
-	m_staticText41->Show(showCurrent);
 	m_checkBoxParticles->Show(showCurrent);
 	m_staticTextParticles->Show(showCurrent);
 	// SST checkboxes: show if file has SST data
 	m_checkBoxSeaTemp->Show(showSST);
 	m_staticTextSeaTemp->Show(showSST);
 	m_textCtrlSeaTemp->Show(showSST);
-	m_staticTextSeaTempUnit->Show(showSST);
 	m_checkBoxSeaTempIso->Show(showSST);
 	m_staticTextSeaTempIso->Show(showSST);
 	// Force layout update
