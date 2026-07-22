@@ -2139,15 +2139,16 @@ void ncdfOverlayFactory::RenderSeaTempIsoLines(PlugIn_ViewPort *vp)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glEnable(GL_LINE_SMOOTH);
         glHint(GL_LINE_SMOOTH_HINT, GL_NICEST);
-        glLineWidth(1.0f);
 
         for (double temp = minT; temp <= maxT; temp += spacing) {
             IsoLine isoLine(temp, sstGrid, nj, ni, lat_max, lon_min, incrLat, incrLon);
             if (isoLine.getNbSegments() < 1) continue;
 
-            // GRIB pattern: draw segments directly with GL
-            glColor4ub(80, 80, 80, 200);
             std::list<Segment*>& trace = isoLine.getTrace();
+
+            // Draw isoline segments
+            glColor4ub(80, 80, 80, 220);
+            glLineWidth(1.0f);
             glBegin(GL_LINES);
             for (std::list<Segment*>::iterator it = trace.begin(); it != trace.end(); ++it) {
                 Segment *seg = *it;
@@ -2158,6 +2159,58 @@ void ncdfOverlayFactory::RenderSeaTempIsoLines(PlugIn_ViewPort *vp)
                 glVertex2i(cd.x, cd.y);
             }
             glEnd();
+
+            // Draw label at midpoint of every Nth segment (GRIB pattern)
+            int labelInterval = wxMax(1, (int)trace.size() / 4);  // ~4 labels per isoline
+            int segIdx = 0;
+            for (std::list<Segment*>::iterator it = trace.begin(); it != trace.end(); ++it, segIdx++) {
+                if (segIdx % labelInterval != 0) continue;
+                Segment *seg = *it;
+                double midLat = (seg->py1 + seg->py2) / 2.0;
+                double midLon = (seg->px1 + seg->px2) / 2.0;
+                wxPoint mp;
+                GetCanvasPixLL(vp, &mp, midLat, midLon);
+
+                wxString label;
+                label.Printf(_T("%.0f"), temp);
+
+                // Draw label text as small GL quads (no white background)
+                glColor4ub(60, 60, 60, 240);
+                int charW = 5, charH = 8;
+                int textW = label.length() * charW;
+                int x0 = mp.x - textW / 2;
+                int y0 = mp.y - charH / 2;
+
+                // Draw each character as simple line segments
+                for (unsigned int ci = 0; ci < label.length(); ci++) {
+                    int cx = x0 + ci * charW;
+                    int cy = y0;
+                    char ch = label[ci];
+                    glBegin(GL_LINES);
+                    if (ch == '-' || ch == '~') {
+                        glVertex2i(cx, cy + charH/2); glVertex2i(cx + charW, cy + charH/2);
+                    } else if (ch >= '0' && ch <= '9') {
+                        // 7-segment style digit rendering
+                        int d = ch - '0';
+                        // Top
+                        if (d!=1 && d!=4) { glVertex2i(cx+1,cy); glVertex2i(cx+charW-1,cy); }
+                        // Top-right
+                        if (d!=5 && d!=6) { glVertex2i(cx+charW-1,cy); glVertex2i(cx+charW-1,cy+charH/2); }
+                        // Bottom-right
+                        if (d!=2) { glVertex2i(cx+charW-1,cy+charH/2); glVertex2i(cx+charW-1,cy+charH); }
+                        // Bottom
+                        if (d!=1 && d!=4 && d!=7) { glVertex2i(cx+1,cy+charH); glVertex2i(cx+charW-1,cy+charH); }
+                        // Bottom-left
+                        if (d!=1 && d!=3 && d!=4 && d!=5 && d!=7 && d!=9) { glVertex2i(cx+1,cy+charH/2); glVertex2i(cx+1,cy+charH); }
+                        // Top-left
+                        if (d!=1 && d!=2 && d!=3 && d!=7) { glVertex2i(cx+1,cy); glVertex2i(cx+1,cy+charH/2); }
+                        // Middle
+                        if (d!=0 && d!=1 && d!=7) { glVertex2i(cx+1,cy+charH/2); glVertex2i(cx+charW-1,cy+charH/2); }
+                    }
+                    glEnd();
+                }
+                break;  // One label per isoline is enough
+            }
         }
 
         glDisable(GL_LINE_SMOOTH);
