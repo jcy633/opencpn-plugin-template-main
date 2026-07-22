@@ -237,9 +237,7 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
               unsigned char *texData = new unsigned char[tw * th * 4];
               memset(texData, 0, tw * th * 4);
 
-              int transparency = 50;
-              if (plugin) transparency = plugin->m_iOverlayTransparency;
-              unsigned char globalAlpha = (unsigned char)(255 * (100 - transparency) / 100);
+              unsigned char globalAlpha = 255;  // Fully opaque
 
               for (int j = 0; j < nj; j++) {
                   if (!gui->gridu[j] || !gui->gridv[j]) break;
@@ -1971,8 +1969,7 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
             if (!texData) return;
             memset(texData, 0, tw * th * 4);
 
-            int transparency = plugin ? plugin->m_iOverlayTransparency : 50;
-            unsigned char alpha = (unsigned char)(255 * (100 - transparency) / 100);
+            unsigned char alpha = 255;  // Fully opaque
 
             // Fill texture: write RGBA directly (GRIB pattern, no wxColour overhead)
             for (int j = 0; j < nj; j++) {
@@ -2112,18 +2109,6 @@ void ncdfOverlayFactory::RenderSeaTempIsoLines(PlugIn_ViewPort *vp)
     int ni = gui->myMessage.lonLength;
     int nj = gui->myMessage.latLength;
     if (ni < 2 || nj < 2) return;
-
-    // Skip if viewport unchanged (GRIB pattern: cache isolines)
-    if (vp->view_scale_ppm == m_lastIso_vp_scale &&
-        vp->lat_max == m_lastIso_vp_latMax &&
-        vp->lat_min == m_lastIso_vp_latMin &&
-        vp->lon_min == m_lastIso_vp_lonMin &&
-        vp->lon_max == m_lastIso_vp_lonMax) return;
-    m_lastIso_vp_scale = vp->view_scale_ppm;
-    m_lastIso_vp_latMax = vp->lat_max;
-    m_lastIso_vp_latMin = vp->lat_min;
-    m_lastIso_vp_lonMin = vp->lon_min;
-    m_lastIso_vp_lonMax = vp->lon_max;
 
     // Auto-detect temperature range from data
     double minT = 1e10, maxT = -1e10;
