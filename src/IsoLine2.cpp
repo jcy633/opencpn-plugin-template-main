@@ -28,6 +28,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <wx/graphics.h>
 
 #include "IsoLine2.h"
+#include "ncdfdata.h"  // for ncdf_NOTDEF
 
 static void GenerateSpline(int n, wxPoint points[]);
 static void ClearSplineList();
@@ -543,7 +544,11 @@ void Segment::intersectionAreteGrille(int i,int j, int k,int l, double *x, doubl
         dec = 0.5;
     if (fabs(dec)>1)
         dec = 0.5;
-    *x = a+(b-a)*dec;
+    // GRIB pattern: longitude wrapping correction
+    double xd = b - a;
+    if (xd < -180) xd += 360;
+    else if (xd > 180) xd -= 360;
+    *x = a + xd*dec;
     // Ordonnée
     a = tlat+j*incrLat;//rec->getY(j);
     b = tlat+l*incrLat;//rec->getY(l);
@@ -581,13 +586,15 @@ void IsoLine::extractIsoLine(double **rec)
     {
         for (i=1; i<W; i++)
         {
-          //  x = rec->getX(i);
-          //  y = rec->getY(j);
-
             a = rec[ j-1][ i-1];
             b = rec[ j-1][ i  ];
             c = rec[ j ][ i-1];
             d = rec[ j  ][ i  ];
+
+            // GRIB pattern: skip cells with missing data
+            if (a == ncdf_NOTDEF || b == ncdf_NOTDEF ||
+                c == ncdf_NOTDEF || d == ncdf_NOTDEF)
+                continue;
 
             // Détermine si 1 ou 2 segments traversent la case ab-cd
             // a  b

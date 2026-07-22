@@ -2146,15 +2146,17 @@ void ncdfOverlayFactory::RenderSeaTempIsoLines(PlugIn_ViewPort *vp)
 
             std::list<Segment*>& trace = isoLine.getTrace();
 
-            // Draw isoline segments
+            // Draw isoline segments (GRIB style: 2px width)
             glColor4ub(80, 80, 80, 220);
-            glLineWidth(1.0f);
+            glLineWidth(2.0f);
             glBegin(GL_LINES);
             for (std::list<Segment*>::iterator it = trace.begin(); it != trace.end(); ++it) {
                 Segment *seg = *it;
                 wxPoint ab, cd;
                 GetCanvasPixLL(vp, &ab, seg->py1, seg->px1);
                 GetCanvasPixLL(vp, &cd, seg->py2, seg->px2);
+                // Anti-meridian detection: skip segments spanning too far (GRIB pattern)
+                if (fabs(ab.x - cd.x) > vp->pix_width / 2) continue;
                 glVertex2i(ab.x, ab.y);
                 glVertex2i(cd.x, cd.y);
             }
