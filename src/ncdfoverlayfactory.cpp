@@ -2155,62 +2155,47 @@ void ncdfOverlayFactory::RenderSeaTempIsoLines(PlugIn_ViewPort *vp)
                 wxPoint ab, cd;
                 GetCanvasPixLL(vp, &ab, seg->py1, seg->px1);
                 GetCanvasPixLL(vp, &cd, seg->py2, seg->px2);
-                // Anti-meridian detection: skip segments spanning too far (GRIB pattern)
                 if (fabs(ab.x - cd.x) > vp->pix_width / 2) continue;
                 glVertex2i(ab.x, ab.y);
                 glVertex2i(cd.x, cd.y);
             }
             glEnd();
 
-            // Draw label at midpoint of isoline
-            int labelInterval = wxMax(1, (int)trace.size() / 2);  // label at midpoint
+            // Draw labels (GRIB pattern: every density segments, with collision avoidance)
+            wxString label;
+            label.Printf(_T("%.0f"), temp);
+            int density = wxMax(4, (int)trace.size() / 3);  // ~3 labels per isoline
             int segIdx = 0;
+            wxRect prevLabel;
             for (std::list<Segment*>::iterator it = trace.begin(); it != trace.end(); ++it, segIdx++) {
-                if (segIdx != labelInterval) continue;
+                if (segIdx % density != 0) continue;
                 Segment *seg = *it;
                 double midLat = (seg->py1 + seg->py2) / 2.0;
                 double midLon = (seg->px1 + seg->px2) / 2.0;
                 wxPoint mp;
                 GetCanvasPixLL(vp, &mp, midLat, midLon);
 
-                wxString label;
-                label.Printf(_T("%.0f"), temp);
+                // Collision avoidance (GRIB pattern)
+                wxFont font(9, wxFONTFAMILY_SWISS, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_NORMAL);
+                int tw, th;
+                wxScreenDC sdc;
+                sdc.SetFont(font);
+                sdc.GetTextExtent(label, &tw, &th);
+                wxRect r(mp.x - tw/2 - 2, mp.y - th/2 - 1, tw + 4, th + 2);
+                if (prevLabel.width > 0 && prevLabel.Intersects(r)) continue;
+                prevLabel = r;
 
-                // Draw label text as GL lines (7-segment style, no background)
-                glColor4ub(60, 60, 60, 240);
-                int charW = 7, charH = 11;
-                int textW = label.length() * charW;
-                int x0 = mp.x - textW / 2;
-                int y0 = mp.y - charH / 2;
-
-                for (unsigned int ci = 0; ci < label.length(); ci++) {
-                    int cx = x0 + ci * charW;
-                    int cy = y0;
-                    char ch = label[ci];
-                    glBegin(GL_LINES);
-                    if (ch == '-' || ch == '~') {
-                        glVertex2i(cx, cy + charH/2); glVertex2i(cx + charW, cy + charH/2);
-                    } else if (ch >= '0' && ch <= '9') {
-                        // 7-segment style digit rendering
-                        int d = ch - '0';
-                        // Top
-                        if (d!=1 && d!=4) { glVertex2i(cx+1,cy); glVertex2i(cx+charW-1,cy); }
-                        // Top-right
-                        if (d!=5 && d!=6) { glVertex2i(cx+charW-1,cy); glVertex2i(cx+charW-1,cy+charH/2); }
-                        // Bottom-right
-                        if (d!=2) { glVertex2i(cx+charW-1,cy+charH/2); glVertex2i(cx+charW-1,cy+charH); }
-                        // Bottom
-                        if (d!=1 && d!=4 && d!=7) { glVertex2i(cx+1,cy+charH); glVertex2i(cx+charW-1,cy+charH); }
-                        // Bottom-left
-                        if (d!=1 && d!=3 && d!=4 && d!=5 && d!=7 && d!=9) { glVertex2i(cx+1,cy+charH/2); glVertex2i(cx+1,cy+charH); }
-                        // Top-left
-                        if (d!=1 && d!=2 && d!=3 && d!=7) { glVertex2i(cx+1,cy); glVertex2i(cx+1,cy+charH/2); }
-                        // Middle
-                        if (d!=0 && d!=1 && d!=7) { glVertex2i(cx+1,cy+charH/2); glVertex2i(cx+charW-1,cy+charH/2); }
-                    }
-                    glEnd();
-                }
-                break;  // One label per isoline is enough
+                // Render label as bitmap and draw (GRIB pattern)
+                wxBitmap bmp(tw + 4, th + 2, 32);
+                wxMemoryDC mdc(bmp);
+                mdc.SetBackground(wxColour(255, 255, 255, 0));
+                mdc.Clear();
+                mdc.SetFont(font);
+                mdc.SetTextForeground(wxColour(60, 60, 60));
+                mdc.DrawText(label, 2, 1);
+                mdc.SelectObject(wxNullBitmap);
+                DrawOLBitmap(bmp, mp.x - tw/2 - 2, mp.y - th/2 - 1, true);
+                break;  // One label per isoline
             }
         }
 
