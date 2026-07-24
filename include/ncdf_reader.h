@@ -12,12 +12,14 @@ class ncdfDataMessage
 public:
 	ncdfDataMessage() : ucurr(NULL), vcurr(NULL), uvlats(NULL), uvlons(NULL),
 		sst(NULL), hasSeaTemp(false),
+		salinity(NULL), hasSalinity(false),
 		latValues(NULL), lonValues(NULL), timeValues(NULL), /*depthValues(NULL),*/
 		timeIndex(-1), /*depthIndex(0),*/ timeValid(false) {}
-	
+
 	ncdfDataMessage(const ncdfDataMessage& other) :
 		ucurr(NULL), vcurr(NULL), uvlats(NULL), uvlons(NULL),
 		sst(NULL), hasSeaTemp(false),
+		salinity(NULL), hasSalinity(false),
 		latValues(NULL), lonValues(NULL), timeValues(NULL), timeIndex(-1) {
 		copyFrom(other);
 	}
@@ -40,6 +42,7 @@ public:
 		if (uvlats) { free(uvlats); uvlats = NULL; }
 		if (uvlons) { free(uvlons); uvlons = NULL; }
 		if (sst) { free(sst); sst = NULL; }
+		if (salinity) { free(salinity); salinity = NULL; }
 		// Note: latValues, lonValues, timeValues are NOT freed here.
 		// clear() is used for reassignment (operator=) where copyFrom()
 		// will immediately overwrite these pointers. The destructor calls
@@ -149,6 +152,11 @@ private:
 			memcpy(sst, other.sst, nbr_uv * sizeof(double));
 		}
 		hasSeaTemp = other.hasSeaTemp;
+		if (other.salinity) {
+			salinity = (double*)calloc(nbr_uv, sizeof(double));
+			memcpy(salinity, other.salinity, nbr_uv * sizeof(double));
+		}
+		hasSalinity = other.hasSalinity;
 	}
 	
 public:
@@ -207,6 +215,8 @@ public:
 	wxDouble* uvlons;
 	wxDouble* sst;
 	bool hasSeaTemp;
+	wxDouble* salinity;
+	bool hasSalinity;
 	int			numberOfPoints;
 	wxString   fileName;
 	

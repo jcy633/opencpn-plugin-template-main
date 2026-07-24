@@ -90,11 +90,15 @@ public:
 	double** gridv;
 	double** gridSST;
 	bool hasSeaTemp;
+	double** gridSalinity;
+	bool hasSalinity;
 	bool m_fileHasCurrent = false;   // File contains u/v ocean current data
 	bool m_fileHasSeaTemp = false;   // File contains SST data
+	bool m_fileHasSalinity = false;  // File contains salinity data
 	int m_cached_u_varid = -1;       // Cached NetCDF variable ID for u-current
 	int m_cached_v_varid = -1;       // Cached NetCDF variable ID for v-current
 	int m_cached_sst_varid = -1;     // Cached NetCDF variable ID for SST
+	int m_cached_sal_varid = -1;     // Cached NetCDF variable ID for salinity
 
 	ncdfDataMessage myncdfData, myData, myMessage;
 	vector<ncdfDataMessage> myDataVector;
@@ -148,6 +152,7 @@ protected:
 	virtual void onParticlesClick( wxCommandEvent& event );
 	virtual void onSeaTempClick( wxCommandEvent& event );
 	virtual void onSeaTempIsoClick( wxCommandEvent& event );
+	virtual void onSalinityClick( wxCommandEvent& event );
 	void fillDirTree(wxString dir, bool start, wxTreeItemId id);
 	void addChildren(wxTreeItemId id, wxString s);
 	void readData(wxTreeItemId itemId);

@@ -28,23 +28,26 @@ void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 {
 	bool hasCurrent = (dataMessage.ucurr && dataMessage.vcurr);
 	bool hasSST = (dataMessage.sst != NULL) || dataMessage.hasSeaTemp;
+	bool hasSal = (dataMessage.salinity != NULL) || dataMessage.hasSalinity;
 
-	if (!hasCurrent && !hasSST) {
+	if (!hasCurrent && !hasSST && !hasSal) {
 		return;
 	}
 
-	ncdfLog("[ncdf] readncdfFile: entering, meridian=%d, parallel=%d, points=%d, hasCurrent=%d, hasSST=%d\n",
+	ncdfLog("[ncdf] readncdfFile: entering, meridian=%d, parallel=%d, points=%d, hasCurrent=%d, hasSST=%d, hasSal=%d\n",
 		(int)dataMessage.noPointsMeridian, (int)dataMessage.noPointsParallel,
-		dataMessage.numberOfPoints, (int)hasCurrent, (int)hasSST);
+		dataMessage.numberOfPoints, (int)hasCurrent, (int)hasSST, (int)hasSal);
 
 	// Save OLD grid pointers BEFORE overwriting (atomic swap pattern)
 	double **oldGridu = gui->gridu;
 	double **oldGridv = gui->gridv;
 	double **oldGridSST = gui->gridSST;
+	double **oldGridSalinity = gui->gridSalinity;
 	wxUint32 oldMeridian = gui->myMessage.noPointsMeridian;
 	gui->gridu = NULL;
 	gui->gridv = NULL;
 	gui->gridSST = NULL;
+	gui->gridSalinity = NULL;
 
 	// Free old coordinate arrays before assignment
 	if (gui->myMessage.latValues) { free(gui->myMessage.latValues); gui->myMessage.latValues = NULL; }
@@ -100,6 +103,25 @@ void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 		ncdfLog("[ncdf] readncdfFile: gridSST built\n");
 	}
 
+	// Build new salinity grid
+	gui->hasSalinity = hasSal;
+	ncdfLog("[ncdf] readncdfFile: salinity check: salinity=%p hasSalinity=%d hasSal=%d\n",
+		(void*)dataMessage.salinity, (int)dataMessage.hasSalinity, (int)hasSal);
+	if (hasSal && dataMessage.salinity) {
+		gui->gridSalinity = new double*[dataMessage.noPointsMeridian];
+		for (wxUint32 i = 0; i < dataMessage.noPointsMeridian; ++i) {
+			gui->gridSalinity[i] = new double[dataMessage.noPointsParallel];
+		}
+		int c_sal = 0;
+		for (wxUint32 i = 0; i < dataMessage.noPointsMeridian; i++) {
+			for (wxUint32 j = 0; j < dataMessage.noPointsParallel; j++) {
+				gui->gridSalinity[i][j] = dataMessage.salinity[c_sal];
+				c_sal++;
+			}
+		}
+		ncdfLog("[ncdf] readncdfFile: gridSalinity built\n");
+	}
+
 	// Free OLD grids AFTER new ones are built (atomic swap complete)
 	if (oldGridu) {
 		for (wxUint32 i = 0; i < oldMeridian; ++i) delete[] oldGridu[i];
@@ -112,6 +134,10 @@ void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 	if (oldGridSST) {
 		for (wxUint32 i = 0; i < oldMeridian; ++i) delete[] oldGridSST[i];
 		delete[] oldGridSST;
+	}
+	if (oldGridSalinity) {
+		for (wxUint32 i = 0; i < oldMeridian; ++i) delete[] oldGridSalinity[i];
+		delete[] oldGridSalinity;
 	}
 
 	wxDateTime ddt;

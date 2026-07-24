@@ -76,7 +76,9 @@ MainDialog::MainDialog(wxWindow *parent) : ncdfDialog( parent ), m_isTreeUpdatin
 	gridu = NULL;
 	gridv = NULL;
 	gridSST = NULL;
+	gridSalinity = NULL;
 	hasSeaTemp = false;
+	hasSalinity = false;
 
 	// Hide all data checkboxes by default (shown when data is loaded)
 	m_checkBoxDCurrent->Hide();
@@ -95,6 +97,9 @@ MainDialog::MainDialog(wxWindow *parent) : ncdfDialog( parent ), m_isTreeUpdatin
 	m_staticTextSeaTempUnit->Hide();
 	m_checkBoxSeaTempIso->Hide();
 	m_staticTextSeaTempIso->Hide();
+	m_checkBoxSalinity->Hide();
+	m_staticTextSalinity->Hide();
+	m_textCtrlSalinity->Hide();
 
 	m_bpPrev->SetBitmap(wxBitmap(prev1));
 	m_bpNext->SetBitmap(wxBitmap(next1));
@@ -196,6 +201,17 @@ void MainDialog::UpdateTrackingControls()
            t.Printf(_T("%.1f "), temp);
            t += unit;
            m_textCtrlSeaTemp->SetValue(t);
+       }
+   }
+
+   // Salinity at cursor position — show when salinity data is available
+   m_textCtrlSalinity->Clear();
+   if (gridSalinity && hasSalinity) {
+       double sal = myMessage.getInterpolatedValue(myMessage, gridSalinity, m_cursor_lon, m_cursor_lat, true);
+       if (sal != ncdf_NOTDEF && !isnan(sal) && isfinite(sal)) {
+           wxString t;
+           t.Printf(_T("%.1f g/kg"), sal);
+           m_textCtrlSalinity->SetValue(t);
        }
    }
 }
@@ -753,6 +769,16 @@ int MainDialog::nc_get(wxString filestr){
 	}
 	ncdfLog("[ncdf] nc_get: sst_varid=%d\n", sst_varid);
 
+	/* sea surface salinity (optional) */
+	int sal_varid = -1;
+	{
+		const char* alt_std[] = {"sea_surface_salinity", "surface_salinity", NULL};
+		const char* long_hints[] = {"Sea surface salinity", "sea_water_salinity", "Salinity", "salinity", NULL};
+		const char* var_hints[] = {"so", "salinity", "salt", "vosaline", "sos", "SSS", NULL};
+		sal_varid = find_var_by_cf(ncid, "sea_water_salinity", alt_std, long_hints, var_hints);
+	}
+	ncdfLog("[ncdf] nc_get: sal_varid=%d\n", sal_varid);
+
 	/* depth - commented out */
 	/*int depth_varid = -1;
 	{
@@ -767,13 +793,16 @@ int MainDialog::nc_get(wxString filestr){
 
 	bool hasCurrent = (u_varid != -1 && v_varid != -1);
 	bool hasSST = (sst_varid != -1);
+	bool hasSalinity = (sal_varid != -1);
 
 	// Store file-level data availability and cached variable IDs
 	m_fileHasCurrent = hasCurrent;
 	m_fileHasSeaTemp = hasSST;
+	m_fileHasSalinity = hasSalinity;
 	m_cached_u_varid = u_varid;
 	m_cached_v_varid = v_varid;
 	m_cached_sst_varid = sst_varid;
+	m_cached_sal_varid = sal_varid;
 	ncdfLog("[ncdf] nc_get: m_fileHasCurrent=%d, m_fileHasSeaTemp=%d, cached varids: u=%d v=%d sst=%d\n",
 		(int)m_fileHasCurrent, (int)m_fileHasSeaTemp, m_cached_u_varid, m_cached_v_varid, m_cached_sst_varid);
 
@@ -1061,6 +1090,7 @@ int MainDialog::nc_get(wxString filestr){
 		myncdfData.latLength = latlength;
 		myncdfData.lonLength = lonlength;
 		myncdfData.hasSeaTemp = hasSST;
+		myncdfData.hasSalinity = hasSalinity;
 		/*myncdfData.depthLength = depthlength;*/
 		
 		myncdfData.latValues = (wxDouble*)calloc(latlength, sizeof(wxDouble));
@@ -1115,6 +1145,13 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 		dataMessage.sst = NULL;
 	}
 	dataMessage.hasSeaTemp = false;
+
+	// Free existing salinity data before reallocating
+	if (dataMessage.salinity) {
+		free(dataMessage.salinity);
+		dataMessage.salinity = NULL;
+	}
+	dataMessage.hasSalinity = false;
 
 	ncdfLog("[ncdf] readTimeStepData: freeing existing data\n");
 	if (dataMessage.ucurr) {
@@ -1474,6 +1511,61 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 		}
 	}
 
+	// Read sea salinity using cached variable ID (GRIB pattern)
+	if (ncid >= 0 && m_fileHasSalinity) {
+		int sal_varid_local = m_cached_sal_varid;
+		if (sal_varid_local < 0) {
+			const char* alt_std[] = {"sea_surface_salinity", "surface_salinity", NULL};
+			const char* long_hints[] = {"Sea surface salinity", "sea_water_salinity", "Salinity", "salinity", NULL};
+			const char* var_hints[] = {"so", "salinity", "salt", "vosaline", "sos", "SSS", NULL};
+			sal_varid_local = find_var_by_cf(ncid, "sea_water_salinity", alt_std, long_hints, var_hints);
+		}
+		if (sal_varid_local != -1) {
+			size_t nbr_uv = dataMessage.latLength * dataMessage.lonLength;
+			float* sal_vals = (float*)calloc(nbr_uv, sizeof(float));
+			if (sal_vals) {
+				int sal_ndims;
+				nc_inq_varndims(ncid, sal_varid_local, &sal_ndims);
+				int sal_dimids[NC_MAX_DIMS];
+				nc_inq_vardimid(ncid, sal_varid_local, sal_dimids);
+				size_t sal_start[NC_MAX_DIMS] = {0};
+				size_t sal_count[NC_MAX_DIMS] = {0};
+				for (int d = 0; d < sal_ndims; d++) {
+					char dimname[NC_MAX_NAME + 1];
+					size_t dimlen;
+					nc_inq_dim(ncid, sal_dimids[d], dimname, &dimlen);
+					if (strstr(dimname, "time") || strstr(dimname, "Time")) {
+						sal_start[d] = dataMessage.timeIndex;
+						sal_count[d] = 1;
+					} else if (strstr(dimname, "lat") || strstr(dimname, "Lat")) {
+						sal_count[d] = dataMessage.latLength;
+					} else if (strstr(dimname, "lon") || strstr(dimname, "Lon")) {
+						sal_count[d] = dataMessage.lonLength;
+					} else {
+						sal_count[d] = 1;
+					}
+				}
+				nc_get_vara_float(ncid, sal_varid_local, sal_start, sal_count, sal_vals);
+
+				float sal_fill = -32767.0f;
+				nc_get_att_float(ncid, sal_varid_local, "_FillValue", &sal_fill);
+
+				dataMessage.salinity = (double*)calloc(nbr_uv, sizeof(double));
+				for (size_t k = 0; k < nbr_uv; k++) {
+					double val = (double)sal_vals[k];
+					if (!isnan(val) && isfinite(val) && val != sal_fill && val > 0.0 && val < 100.0) {
+						dataMessage.salinity[k] = val;
+					} else {
+						dataMessage.salinity[k] = ncdf_NOTDEF;
+					}
+				}
+				free(sal_vals);
+				ncdfLog("[ncdf] readTimeStepData: Salinity read\n");
+				dataMessage.hasSalinity = true;
+			}
+		}
+	}
+
 	ncdfLog("[ncdf] readTimeStepData: completed successfully\n");
 
 	nc_close(ncid);
@@ -1557,7 +1649,9 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 	    double **oldGridu = gridu; gridu = NULL;
 	    double **oldGridv = gridv; gridv = NULL;
 	    double **oldGridSST = gridSST; gridSST = NULL;
+	    double **oldGridSalinity = gridSalinity; gridSalinity = NULL;
 	    hasSeaTemp = false;
+	    hasSalinity = false;
 	    // Free old grids after setting pointers to NULL (prevents stale access)
 	    if (oldGridu) {
 	        for (wxUint32 i = 0; i < oldMeridian; ++i) delete[] oldGridu[i];
@@ -1571,7 +1665,10 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 	        for (wxUint32 i = 0; i < oldMeridian; ++i) delete[] oldGridSST[i];
 	        delete[] oldGridSST;
 	    }
-	    hasSeaTemp = false;
+	    if (oldGridSalinity) {
+	        for (wxUint32 i = 0; i < oldMeridian; ++i) delete[] oldGridSalinity[i];
+	        delete[] oldGridSalinity;
+	    }
 	    m_lastSelectedTimeIndex = -1;
 	    pPlugIn->GetncdfOverlayFactory()->reset();
 
@@ -1598,6 +1695,10 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 		m_staticTextSeaTemp->Show(showSST);
 		m_textCtrlSeaTemp->Show(showSST);
 		m_staticTextSeaTempIso->Show(showSST);
+		bool showSalinity = m_fileHasSalinity;
+		m_checkBoxSalinity->Show(showSalinity);
+		m_staticTextSalinity->Show(showSalinity);
+		m_textCtrlSalinity->Show(showSalinity);
 		Layout();
 		if (!showCurrent) {
 			pPlugIn->m_bShowCurrentDir = false;
@@ -1611,6 +1712,13 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 		if (!showSST) {
 			pPlugIn->m_bShowSeaTemp = false;
 			pPlugIn->m_bShowSeaTempIso = false;
+		}
+		if (showSalinity) {
+			// Auto-enable salinity rendering when salinity data is available
+			pPlugIn->m_bShowSalinity = true;
+			m_checkBoxSalinity->SetValue(true);
+		} else {
+			pPlugIn->m_bShowSalinity = false;
 		}
 		return;
     }
@@ -1645,7 +1753,12 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 					for (wxUint32 i = 0; i < myMessage.noPointsMeridian; ++i) delete[] gridSST[i];
 					delete[] gridSST; gridSST = NULL;
 				}
+				if (gridSalinity) {
+					for (wxUint32 i = 0; i < myMessage.noPointsMeridian; ++i) delete[] gridSalinity[i];
+					delete[] gridSalinity; gridSalinity = NULL;
+				}
 				hasSeaTemp = false;
+				hasSalinity = false;
 				pPlugIn->GetncdfOverlayFactory()->reset();
 
 				int ret = nc_get(fileName);
@@ -1672,6 +1785,10 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 				m_textCtrlSeaTemp->Show(showSST);
 				m_checkBoxSeaTempIso->Show(showSST);
 				m_staticTextSeaTempIso->Show(showSST);
+				bool showSal = m_fileHasSalinity;
+				m_checkBoxSalinity->Show(showSal);
+				m_staticTextSalinity->Show(showSal);
+				m_textCtrlSalinity->Show(showSal);
 				Layout();
 				if (showSST) {
 					pPlugIn->m_bShowSeaTemp = false;
@@ -1684,6 +1801,12 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 					pPlugIn->m_bShowCurrentDir = false;
 					pPlugIn->m_bShowCurrentForce = false;
 					pPlugIn->m_bShowParticles = false;
+				}
+				if (showSal) {
+					pPlugIn->m_bShowSalinity = true;
+					m_checkBoxSalinity->SetValue(true);
+				} else {
+					pPlugIn->m_bShowSalinity = false;
 				}
 			}
 		}
@@ -1739,8 +1862,9 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 	// Show/hide checkboxes based on file-level data availability (like GRIB plugin)
 	bool showCurrent = m_fileHasCurrent;
 	bool showSST = m_fileHasSeaTemp;
-	ncdfLog("[ncdf] onTreeSelectionChanged: showCurrent=%d showSST=%d (file-level)\n",
-		(int)showCurrent, (int)showSST);
+	bool showSalinity = m_fileHasSalinity;
+	ncdfLog("[ncdf] onTreeSelectionChanged: showCurrent=%d showSST=%d showSalinity=%d (file-level)\n",
+		(int)showCurrent, (int)showSST, (int)showSalinity);
 	// Current checkboxes: show if file has current data
 	m_checkBoxDCurrent->Show(showCurrent);
 	m_staticText333->Show(showCurrent);
@@ -1756,6 +1880,11 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 	m_textCtrlSeaTemp->Show(showSST);
 	m_checkBoxSeaTempIso->Show(showSST);
 	m_staticTextSeaTempIso->Show(showSST);
+	// Salinity checkboxes: show if file has salinity data
+	bool showSal = m_fileHasSalinity;
+	m_checkBoxSalinity->Show(showSal);
+	m_staticTextSalinity->Show(showSal);
+	m_textCtrlSalinity->Show(showSal);
 	// Force layout update
 	Layout();
 	// Disable plugin state for unavailable data types
@@ -1767,6 +1896,12 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 	if (!showSST) {
 		pPlugIn->m_bShowSeaTemp = false;
 		pPlugIn->m_bShowSeaTempIso = false;
+	}
+	if (showSal) {
+		pPlugIn->m_bShowSalinity = true;
+		m_checkBoxSalinity->SetValue(true);
+	} else {
+		pPlugIn->m_bShowSalinity = false;
 	}
 
 	ncdfLog("[ncdf] onTreeSelectionChanged: completed\n");
@@ -1897,6 +2032,12 @@ void MainDialog::onSeaTempClick(wxCommandEvent& event)
 void MainDialog::onSeaTempIsoClick(wxCommandEvent& event)
 {
 	pPlugIn->m_bShowSeaTempIso = m_checkBoxSeaTempIso->GetValue();
+	RequestRefresh(m_parent);
+}
+
+void MainDialog::onSalinityClick(wxCommandEvent& event)
+{
+	pPlugIn->m_bShowSalinity = m_checkBoxSalinity->GetValue();
 	RequestRefresh(m_parent);
 }
 

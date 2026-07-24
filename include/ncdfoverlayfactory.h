@@ -99,6 +99,10 @@ public:
      void RenderSeaTempIsoLines(PlugIn_ViewPort *vp);
      void DeleteSeaTempTexture();
 
+     wxColour GetSalinityGraphicColor(double sal_psu);
+     void RenderSalinityOverlay(PlugIn_ViewPort *vp);
+     void DeleteSalinityTexture();
+
      PlugIn_ViewPort 	*vp;
 	 bool 		m_bReadyToRender;
 	 bool		renderSelectionRectangle;
@@ -168,6 +172,13 @@ private:
 	 bool m_bNeedsSeaTempTexRebuild;
 	 int m_sstTexDataDim[2];
 	 int m_sstTexGLDim[2];
+
+	 // Salinity texture cache
+	 GLuint m_glSalinityTexture;
+	 bool m_bHasSalinityTexture;
+	 bool m_bNeedsSalinityTexRebuild;
+	 int m_salTexDataDim[2];
+	 int m_salTexGLDim[2];
 
 	 // Isoline rendering cache (skip when viewport unchanged)
 	 double m_lastIso_vp_scale;

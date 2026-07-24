@@ -101,6 +101,7 @@ public:
       bool              m_bShowParticles;
       bool              m_bShowSeaTemp;
       bool              m_bShowSeaTempIso;
+      bool              m_bShowSalinity;
       int               m_iOverlayTransparency;
       int               m_iArrowSpacing;
       int               m_iNumberSpacing;

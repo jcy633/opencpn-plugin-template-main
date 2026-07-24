@@ -98,6 +98,10 @@ class ncdfDialog : public wxDialog
 		wxStaticText* m_staticTextSeaTempUnit;
 		wxCheckBox* m_checkBoxSeaTempIso;
 		wxStaticText* m_staticTextSeaTempIso;
+		wxCheckBox* m_checkBoxSalinity;
+		wxStaticText* m_staticTextSalinity;
+		wxTextCtrl* m_textCtrlSalinity;
+		virtual void onSalinityClick( wxCommandEvent& event ) { event.Skip(); }
 
 		ncdfDialog( wxWindow* parent, wxWindowID id = wxID_ANY, const wxString& title = _("ncdf Dialog"), const wxPoint& pos = wxDefaultPosition, const wxSize& size = wxSize( 280,460 ), long style = wxDEFAULT_DIALOG_STYLE|wxRESIZE_BORDER );
 

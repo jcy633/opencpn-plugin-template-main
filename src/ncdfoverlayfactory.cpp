@@ -75,6 +75,11 @@ ncdfOverlayFactory::ncdfOverlayFactory()
       m_lastIso_vp_lonMax = -99999;
       m_sstTexDataDim[0] = m_sstTexDataDim[1] = 0;
       m_sstTexGLDim[0] = m_sstTexGLDim[1] = 0;
+      m_glSalinityTexture = 0;
+      m_bHasSalinityTexture = false;
+      m_bNeedsSalinityTexRebuild = false;
+      m_salTexDataDim[0] = m_salTexDataDim[1] = 0;
+      m_salTexGLDim[0] = m_salTexGLDim[1] = 0;
 
       // Timer for particle animation (GRIB-style ONE_SHOT)
       m_tParticleTimer.Bind(wxEVT_TIMER, [this](wxTimerEvent&) {
@@ -101,6 +106,7 @@ void ncdfOverlayFactory::setData(MainDialog *gui, ncdf_pi *plugin, ncdfDataMessa
 	// Mark textures for rebuild (GL deletion deferred to render)
 	m_bNeedsColorTexRebuild = true;
 	m_bNeedsSeaTempTexRebuild = true;
+	m_bNeedsSalinityTexRebuild = true;
 	m_lastIso_vp_scale = -1;  // Force isoline redraw on data change
 	ClearParticles();
 	m_last_vp_scale = -1;
@@ -168,14 +174,15 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
     if (!gui) return false;
     bool hasCurrentGrid = (gui->gridu && gui->gridv);
     bool hasSSTGrid = (gui->gridSST && gui->hasSeaTemp);
-    if (!hasCurrentGrid && !hasSSTGrid) return false;
+    bool hasSalinityGrid = (gui->gridSalinity && gui->hasSalinity);
+    if (!hasCurrentGrid && !hasSSTGrid && !hasSalinityGrid) return false;
     if (gui->myMessage.lonLength < 2 || gui->myMessage.latLength < 2) return false;
     if (!m_bReadyToRender) return false;
 
     // Must have at least one rendering feature enabled
     if (!plugin->m_bShowCurrentForce && !plugin->m_bShowCurrentDir &&
         !plugin->m_bShowParticles && !plugin->m_bShowSeaTemp &&
-        !plugin->m_bShowSeaTempIso) return false;
+        !plugin->m_bShowSeaTempIso && !plugin->m_bShowSalinity) return false;
 
     static int s_frameDbg = 0;
     if (s_frameDbg < 200) {
@@ -395,6 +402,11 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 	// Sea temperature isolines
 	if (plugin->m_bShowSeaTempIso && gui && gui->gridSST && gui->hasSeaTemp) {
 		RenderSeaTempIsoLines(vp);
+	}
+
+	// Salinity overlay
+	if (plugin->m_bShowSalinity && gui && gui->gridSalinity && gui->hasSalinity) {
+		RenderSalinityOverlay(vp);
 	}
 
     m_last_vp_scale = vp->view_scale_ppm;
@@ -1934,6 +1946,56 @@ wxColour ncdfOverlayFactory::GetSeaTempGraphicColor(double temp_c)
     return wxColour(0xff, 0x00, 0x00);
 }
 
+wxColour ncdfOverlayFactory::GetSalinityGraphicColor(double sal_psu)
+{
+    // Salinity color map: 30-38‰ range
+    // sky blue → azure → deep sea blue → bright cyan-green → golden yellow → orange-red
+    static const double stops[][4] = {
+        {30.0, 0x87, 0xCE, 0xEB},  // sky blue
+        {31.0, 0x60, 0xB0, 0xE0},  // light azure
+        {32.0, 0x40, 0x90, 0xD0},  // azure
+        {33.0, 0x20, 0x70, 0xC0},  // medium azure
+        {34.0, 0x10, 0x50, 0xA0},  // deep sea blue
+        {35.0, 0x00, 0x80, 0x80},  // teal (transition)
+        {35.5, 0x20, 0xA0, 0x70},  // cyan-green
+        {36.0, 0x40, 0xC0, 0x60},  // bright cyan-green
+        {36.5, 0x80, 0xC0, 0x40},  // yellow-green
+        {37.0, 0xC0, 0xB0, 0x20},  // golden
+        {37.5, 0xE0, 0xA0, 0x10},  // golden yellow
+        {38.0, 0xE0, 0x70, 0x20},  // orange
+        {38.5, 0xD0, 0x40, 0x20},  // orange-red
+        {39.0, 0xC0, 0x20, 0x20},  // red
+    };
+    const int nStops = sizeof(stops) / sizeof(stops[0]);
+
+    if (sal_psu >= stops[nStops - 1][0])
+        return wxColour(0xFF, 0x00, 0x00);
+    if (sal_psu <= stops[0][0])
+        return wxColour((unsigned char)stops[0][1], (unsigned char)stops[0][2], (unsigned char)stops[0][3]);
+
+    for (int i = 1; i < nStops; i++) {
+        if (sal_psu <= stops[i][0]) {
+            double range = stops[i][0] - stops[i-1][0];
+            double t = (range > 0) ? (sal_psu - stops[i-1][0]) / range : 0;
+            t = t * t * (3.0 - 2.0 * t);  // smoothstep
+            unsigned char r = (unsigned char)(stops[i-1][1] + t * (stops[i][1] - stops[i-1][1]));
+            unsigned char g = (unsigned char)(stops[i-1][2] + t * (stops[i][2] - stops[i-1][2]));
+            unsigned char b = (unsigned char)(stops[i-1][3] + t * (stops[i][3] - stops[i-1][3]));
+            return wxColour(r, g, b);
+        }
+    }
+    return wxColour(0xFF, 0x00, 0x00);
+}
+
+void ncdfOverlayFactory::DeleteSalinityTexture()
+{
+    if (m_bHasSalinityTexture && m_glSalinityTexture) {
+        glDeleteTextures(1, &m_glSalinityTexture);
+        m_glSalinityTexture = 0;
+        m_bHasSalinityTexture = false;
+    }
+}
+
 void ncdfOverlayFactory::DeleteSeaTempTexture()
 {
     if (m_bHasSeaTempTexture && m_glSeaTempTexture) {
@@ -2064,6 +2126,162 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
 
             glEnable(GL_TEXTURE_2D);
             glBindTexture(GL_TEXTURE_2D, m_glSeaTempTexture);
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+            glColor4f(1, 1, 1, 1);
+
+            double xS = vp->pix_width / (double)xs;
+            double yS = vp->pix_height / (double)ys;
+            for (int i = 0; i < xs; i++) {
+                for (int j = 0; j < ys; j++) {
+                    int i00 = (i * gridH + j) * 2;
+                    int i10 = ((i+1) * gridH + j) * 2;
+                    int i11 = ((i+1) * gridH + j+1) * 2;
+                    int i01 = (i * gridH + j+1) * 2;
+                    double u0=lva[i00], u1=lva[i10], u2=lva[i11], u3=lva[i01];
+                    double v0=lva[i00+1], v1=lva[i10+1], v2=lva[i11+1], v3=lva[i01+1];
+                    if (!((u0>=0||u1>=0||u2>=0||u3>=0)&&(u0<=1||u1<=1||u2<=1||u3<=1))) continue;
+                    if (!((v0>=0||v1>=0||v2>=0||v3>=0)&&(v0<=1||v1<=1||v2<=1||v3<=1))) continue;
+                    if (u1 <= u0) continue;
+                    double x = xS * i, y = yS * j;
+                    glBegin(GL_QUADS);
+                    glTexCoord2d(u0,v0); glVertex2f((float)x,(float)y);
+                    glTexCoord2d(u1,v1); glVertex2f((float)(x+xS),(float)y);
+                    glTexCoord2d(u2,v2); glVertex2f((float)(x+xS),(float)(y+yS));
+                    glTexCoord2d(u3,v3); glVertex2f((float)x,(float)(y+yS));
+                    glEnd();
+                }
+            }
+            delete[] lva;
+
+            glDisable(GL_BLEND);
+            glDisable(GL_TEXTURE_2D);
+            glBindTexture(GL_TEXTURE_2D, 0);
+        }
+#endif
+    }
+}
+
+void ncdfOverlayFactory::RenderSalinityOverlay(PlugIn_ViewPort *vp)
+{
+    if (!gui || !vp) return;
+    double **salGrid = gui->gridSalinity;
+    if (!salGrid) return;
+    int ni = gui->myMessage.lonLength;
+    int nj = gui->myMessage.latLength;
+    if (ni < 2 || nj < 2) return;
+
+    if (!m_pdc) {
+#ifdef ocpnUSE_GL
+        // Lazy texture rebuild (flagged by setData, safe in GL context)
+        if (m_bNeedsSalinityTexRebuild) {
+            if (m_glSalinityTexture) { glDeleteTextures(1, &m_glSalinityTexture); m_glSalinityTexture = 0; }
+            m_bHasSalinityTexture = false;
+            m_bNeedsSalinityTexRebuild = false;
+        }
+
+        // Create texture once per data change (GRIB pattern)
+        if (!m_bHasSalinityTexture) {
+            int tw = ni + 2, th = nj + 2;  // 1-pixel transparent border
+            unsigned char *texData = new(std::nothrow) unsigned char[tw * th * 4];
+            if (!texData) return;
+            memset(texData, 0, tw * th * 4);
+
+            unsigned char alpha = 255;  // Fully opaque
+
+            // Fill texture: write RGBA directly
+            for (int j = 0; j < nj; j++) {
+                if (!salGrid[j]) break;
+                int texRow = (gui->myMessage.jDirectionIncr >= 0) ? j : (nj - 1 - j);
+                for (int i = 0; i < ni; i++) {
+                    double val = salGrid[j][i];
+                    if (val == ncdf_NOTDEF || isnan(val) || !isfinite(val)) continue;
+                    int x = i + 1, y = texRow + 1;
+                    if (x >= tw - 1 || y >= th - 1) continue;
+                    wxColour c = GetSalinityGraphicColor(val);
+                    int off = 4 * (y * tw + x);
+                    texData[off]     = c.Red();
+                    texData[off + 1] = c.Green();
+                    texData[off + 2] = c.Blue();
+                    texData[off + 3] = alpha;
+                }
+            }
+
+            // GRIB-style border: copy adjacent row/col, then set border alpha=0
+            memcpy(texData, texData + 4 * tw, 4 * tw);
+            memcpy(texData + 4 * tw * (th - 1), texData + 4 * tw * (th - 2), 4 * tw);
+            for (int y = 0; y < th; y++) {
+                memcpy(texData + 4 * y * tw, texData + 4 * (y * tw + 1), 4);
+                memcpy(texData + 4 * (y * tw + tw - 1), texData + 4 * (y * tw + tw - 2), 4);
+            }
+            for (int x = 0; x < tw; x++) {
+                texData[4 * x + 3] = 0;
+                texData[4 * ((th - 1) * tw + x) + 3] = 0;
+            }
+            for (int y = 0; y < th; y++) {
+                texData[4 * y * tw + 3] = 0;
+                texData[4 * (y * tw + tw - 1) + 3] = 0;
+            }
+
+            glGenTextures(1, &m_glSalinityTexture);
+            glBindTexture(GL_TEXTURE_2D, m_glSalinityTexture);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, tw, th, 0, GL_RGBA, GL_UNSIGNED_BYTE, texData);
+            delete[] texData;
+
+            m_bHasSalinityTexture = true;
+            m_salTexDataDim[0] = tw;
+            m_salTexDataDim[1] = th;
+            m_salTexGLDim[0] = tw;
+            m_salTexGLDim[1] = th;
+        }
+
+        // Draw tiled texture (GRIB pattern)
+        if (m_bHasSalinityTexture && m_glSalinityTexture) {
+            int tw = m_salTexGLDim[0], th = m_salTexGLDim[1];
+            double potNormX = (double)m_salTexDataDim[0] / tw;
+            double potNormY = (double)m_salTexDataDim[1] / th;
+            double lat_min = blat, lon_min = tlon;
+            double lat_max = tlat, lon_max = blon;
+            double latstep = fabs(lat_max - lat_min) / (nj - 1);
+            double lonstep = (lon_max - lon_min) / (ni - 1);
+            if (latstep < 1e-10 || lonstep < 1e-10) return;
+            double clon = (lon_min + lon_max) / 2;
+
+            // Tile grid for non-linear projection handling
+            double pw = vp->view_scale_ppm * 1e6 / pow(2, fabs(vp->clat) / 25);
+            if (pw < 20) pw = 20;
+            int xs = (int)ceil(vp->pix_width / pw);
+            int ys = (int)ceil(vp->pix_height / pw);
+            if (vp->rotation == 0) xs = 1;
+            if (xs < 2) xs = 2; if (ys < 2) ys = 2;
+            if (xs > 16) xs = 16; if (ys > 16) ys = 16;
+            int gridW = xs + 1, gridH = ys + 1;
+
+            double *lva = new(std::nothrow) double[gridW * gridH * 2];
+            if (!lva) return;
+
+            for (int i = 0; i < gridW; i++) {
+                double px = vp->pix_width / (double)xs * i;
+                for (int j = 0; j < gridH; j++) {
+                    double py = vp->pix_height / (double)ys * j;
+                    double lat, lon;
+                    wxPoint pt((int)px, (int)py);
+                    GetCanvasLLPix(vp, pt, &lat, &lon);
+                    if (clon - lon > 180) lon += 360;
+                    else if (lon - clon > 180) lon -= 360;
+                    int idx = (i * gridH + j) * 2;
+                    lva[idx]     = ((lon - lon_min) / lonstep + 1.5) / tw * potNormX;
+                    lva[idx + 1] = ((lat - lat_min) / latstep + 1.5) / th * potNormY;
+                }
+            }
+
+            glEnable(GL_TEXTURE_2D);
+            glBindTexture(GL_TEXTURE_2D, m_glSalinityTexture);
             glEnable(GL_BLEND);
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
