@@ -8,6 +8,40 @@ class ncdfDataMessage;
 
 extern void ncdfLog(const char* format, ...);
 
+// FillGrid: neighbor mean filling for missing data (GRIB pattern)
+// Two passes: vertical neighbors, then horizontal neighbors
+// Fills ncdf_NOTDEF cells with mean of 2+ valid neighbors
+static void FillGrid(double **grid, int ni, int nj)
+{
+    if (!grid || ni < 3 || nj < 3) return;
+
+    // Pass 1: vertical neighbors
+    for (int i = 0; i < ni; i++) {
+        for (int j = 1; j < nj - 1; j++) {
+            if (grid[j][i] == ncdf_NOTDEF) {
+                double acc = 0;
+                int cnt = 0;
+                if (grid[j - 1][i] != ncdf_NOTDEF) { acc += grid[j - 1][i]; cnt++; }
+                if (grid[j + 1][i] != ncdf_NOTDEF) { acc += grid[j + 1][i]; cnt++; }
+                if (cnt >= 2) grid[j][i] = acc / cnt;
+            }
+        }
+    }
+
+    // Pass 2: horizontal neighbors
+    for (int j = 0; j < nj; j++) {
+        for (int i = 1; i < ni - 1; i++) {
+            if (grid[j][i] == ncdf_NOTDEF) {
+                double acc = 0;
+                int cnt = 0;
+                if (grid[j][i - 1] != ncdf_NOTDEF) { acc += grid[j][i - 1]; cnt++; }
+                if (grid[j][i + 1] != ncdf_NOTDEF) { acc += grid[j][i + 1]; cnt++; }
+                if (cnt >= 2) grid[j][i] = acc / cnt;
+            }
+        }
+    }
+}
+
 ncdfReader::ncdfReader(MainDialog *md)
 {
 	gui = md;
@@ -84,6 +118,11 @@ void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 			}
 		}
 		ncdfLog("[ncdf] readncdfFile: gridv built\n");
+
+		// GRIB pattern: FillGrid after building grids
+		FillGrid(gui->gridu, dataMessage.noPointsParallel, dataMessage.noPointsMeridian);
+		FillGrid(gui->gridv, dataMessage.noPointsParallel, dataMessage.noPointsMeridian);
+		ncdfLog("[ncdf] readncdfFile: gridu/gridv FillGrid done\n");
 	}
 
 	// Build new SST grid
@@ -101,6 +140,10 @@ void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 			}
 		}
 		ncdfLog("[ncdf] readncdfFile: gridSST built\n");
+
+		// GRIB pattern: FillGrid after building SST grid
+		FillGrid(gui->gridSST, dataMessage.noPointsParallel, dataMessage.noPointsMeridian);
+		ncdfLog("[ncdf] readncdfFile: gridSST FillGrid done\n");
 	}
 
 	// Build new salinity grid
@@ -120,6 +163,10 @@ void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 			}
 		}
 		ncdfLog("[ncdf] readncdfFile: gridSalinity built\n");
+
+		// GRIB pattern: FillGrid after building salinity grid
+		FillGrid(gui->gridSalinity, dataMessage.noPointsParallel, dataMessage.noPointsMeridian);
+		ncdfLog("[ncdf] readncdfFile: gridSalinity FillGrid done\n");
 	}
 
 	// Free OLD grids AFTER new ones are built (atomic swap complete)
