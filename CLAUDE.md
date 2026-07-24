@@ -1,0 +1,103 @@
+## Hard Constraints
+- 插件编译必须使用 `d:\opencpn-plugin-template-main\build` 目录
+- 编译命令：`cd build && "D:\VS\MSBuild\Current\Bin\MSBuild.exe" "ncdf_pi.vcxproj" -p:Configuration=Release -p:Platform=Win32 -t:Build -v:minimal`
+- 编译输出DLL位于：`d:\opencpn-plugin-template-main\build\Release\ncdf_pi.dll`（注意是build/Release/，不是根目录的Release/）
+- 部署：将 `build\Release\ncdf_pi.dll` 复制到 `C:\Users\季曹阳\AppData\Local\opencpn\plugins\`
+- 部署完成后启动OpenCPN：`start "" "C:\Program Files (x86)\OpenCPN\opencpn.exe"`（直接用exe，不用快捷方式）
+- 如果DLL被占用，先 `taskkill //f //im opencpn.exe` 再部署
+- rebuild.bat 已配置自动关闭OpenCPN、部署、重启
+- OpenCPN运行日志位于C:\ProgramData\opencpn\opencpn.log
+- OpenCPN崩溃日志位于C:\Users\季曹阳\AppData\Local\CrashDumps\
+- 插件的调试日志位于C:\ProgramData\opencpn\ncdf_debug.log
+- 分析运行日志和崩溃日志时必须显示时间戳信息，便于追踪问题发生的时间点
+- 渲染数据传递必须使用CurrentData结构体，禁止通过全局变量传递
+- 配置状态（显示方向/强度）必须通过m_bShowCurrentDir/m_bShowCurrentForce持久化，禁止直接读取GUI控件
+- 插件必须支持读取符合CF规范的nc4文件
+- nc4文件读取必须采用按时间步长切块读取方式，仅在更换时间节点时读取对应数据
+- 时间步数据切换时必须释放上一次读取的数据，防止堆泄漏
+- 读取全局属性时必须尝试多种属性名（如latitude_min、lat_min、min_lat），失败时从数据数组推断边界信息
+- 坐标数组（latValues、lonValues）和U/V数据（ucurr、vcurr）使用前必须进行空指针检查
+- 时间步切换时必须重置m_lastSelectedTimeIndex索引为-1
+- 读取nc4文件时必须读取_FillValue属性替代硬编码的-32767
+- 变量维度顺序必须动态检测，支持任意排列
+- nc4文件读取必须支持double类型数据读取和转换
+- 错误处理必须使用nc_close + return替代ERR宏
+- 维度名必须支持"lat"/"lon"作为替代
+- 目录树仅显示扩展名为.nc和.nc4的文件
+- 选择目录后必须手动调用fillDirTree刷新目录树
+- 在fillDirTree函数中必须使用Freeze()/Thaw()防止树控件更新时触发事件
+- 调试日志必须使用自定义ncdfLog/ncdfLogW函数（基于fprintf），确保在Release版本中也能输出
+- Windows路径必须使用\分隔符，避免混用/导致路径解析问题
+- fillDirTree中调用DeleteAllItems()前必须断开事件连接，防止触发onTreeSelectionChanged事件导致崩溃
+- 禁止在nc_get函数中使用wxString::mb_str()返回的临时对象指针，必须使用new char[]动态分配内存并在所有退出点正确释放
+- ncdfDataMessage::copyFrom()中必须先赋值latLength、lonLength、timeLength，再进行内存分配
+- onFileButtonClick函数中禁止重复调用fillDirTree（SetValue已触发onDirChanged）
+- fillDirTree函数中禁止调用addChildren（避免nc文件读取）
+- fillDirTree和addChildren函数中已重新启用SetItemData，但MyTreeItemData仅存储int索引（m_index），不存储ncdfDataMessage副本（避免深拷贝崩溃）
+- onTreeSelectionChanged和readData通过data->m_index访问myDataVector[idx]，不再直接依赖MyTreeItemData的myData成员
+- 树操作必须使用m_isTreeUpdating标志位保护，防止DeleteAllItems()触发的事件导致状态不一致
+- nc4文件变量识别必须优先通过读取`standard_name`属性（u分量：eastward_sea_water_velocity，v分量：northward_sea_water_velocity，纬度：latitude，经度：longitude，时间：time），找不到时回退到硬编码名称匹配
+- nc_get函数中必须添加函数启动、myDataVector.clear()前后、文件名处理过程的详细调试日志，便于定位崩溃步骤
+- nc_get函数中必须检查find_dim_by_var返回的维度ID是否有效（不为-1）
+- nc_get函数中必须为nc_inq_dimlen添加错误检查，防止使用无效维度ID导致崩溃
+- nc_get函数中必须检查返回值，若为非零则跳过该文件，不处理无效数据
+- 树控件中日期后面的括号里不显示时间，改为显示维度中的垂直高度（描述海洋的垂直分层）
+- wxTreeCtrl::DeleteAllItems()会自动删除关联的wxTreeItemData对象，禁止在DeleteAllItems前手动delete，否则导致double-free崩溃
+- readData函数中logFile在多个提前返回分支中未关闭，会导致文件句柄资源泄漏；必须在函数退出前统一检查并关闭logFile
+- ncdfDataMessage::copyFrom方法只复制了指针地址，没有重新分配内存复制数据，会导致两个对象析构时对同一指针调用两次free，造成double free错误；必须为每个动态分配指针重新分配内存并拷贝数据
+- 位图缓存仅在缩放级别变化或视口超出数据覆盖范围时重建，数据区域内移动地图时复用位图
+- 渲染方式切换通过插件对话框中m_checkBoxDCurrent（控制m_bShowCurrentDir）和m_checkBoxBmpCurrentForce（控制m_bShowCurrentForce）复选框实现，状态改变需实时保存并触发刷新
+- 颜色渲染必须使用直接纹理创建（CreateGLTexture），避免wxImage中间层，直接写入RGBA数据数组
+- 箭头绘制必须使用LineBuffer缓存系统预计算箭头形状，通过glDrawArrays批量绘制
+- 纹理创建必须使用数据原生网格尺寸（latLength, lonLength），支持自动降采样/升采样到1024x1024限制
+- 纹理绘制必须采用分块绘制策略，根据视图缩放计算块大小，处理非线性投影
+- 颜色映射必须使用GetSeaCurrentGraphicColorRaw直接写入RGBA，避免wxColour对象开销
+- 箭头颜色必须随速度变化，使用GetSeaCurrentGraphicColorRaw获取颜色
+- 渲染时必须启用OpenGL抗锯齿（GL_LINE_SMOOTH和GL_BLEND），设置glHint(GL_LINE_SMOOTH_HINT, GL_NICEST)
+- 纹理上传必须设置OpenGL像素存储参数优化效率，添加双线性插值提升低分辨率数据渲染质量
+- 纹理绘制需支持全球数据重复渲染（repeat = true），使用GetCanvasLLPix转换像素坐标为经纬度映射到纹理坐标
+- 墨卡托投影下（vp->rotation == 0 && vp->m_projection_type == PI_PROJECTION_MERCATOR），经度方向设为线性（xsquares=1）减少分块数量
+- 全球数据分块跨越日期变更线时，通过u1 - u0 > .5时u1--校正纹理坐标相位，避免纹理撕裂
+- 纹理绘制前检查块的纹理坐标是否在[0,1]范围内，跳过完全在纹理外的块（repeat模式除外）
+- 行缓冲采用j = !j交替读写优化，替代整行memcpy复制
+- 纹理生成使用next_power_of_two()计算最近的2的幂尺寸，提升兼容性和采样性能
+- 新增m_texDataDim[2]记录实际数据尺寸，通过potNormX/potNormY归一化数据坐标到POT纹理空间
+- 纹理内存初始化使用memset将POT纹理缓冲区初始化为0，确保未使用区域为透明黑色
+- 箭头角度计算必须包含vp->rotation：double ang = atan2(g2data.vcurr[mi], -g2data.ucurr[mi]) + vp->rotation
+- 箭头大小随速度缩放：double scale = wxMax(1.0, vkn / 5.0)
+- DrawGLLine函数中禁止使用逐行glPushAttrib/glPopAttrib调用，仅保留必要的glColor4ub、glLineWidth和glBegin/glEnd
+- 颜色索引查找必须使用二分查找算法，将时间复杂度从O(n)降低到O(log n)
+- 海流箭头绘制支持固定间距模式（通过m_bFixedSpacing标志切换），解决不同缩放级别下箭头密度不一致问题
+- 颜色映射支持动态切换（ColorMapType枚举：CurrentMap、WindMap、GenericMap、SeaTempMap），通过m_colorMapType成员变量控制
+- 固定间距箭头绘制需添加间距计算的安全防护，避免除零错误
+-可以参考grib插件的相关功能的代码，对本插件的功能的代码进行优化。
+## Engineering Conventions
+- 循环变量应使用size_t类型避免有符号/无符号不匹配
+- C++17及以上环境中禁止使用废弃的register关键字
+- 数组分配必须使用calloc(n, sizeof(type))确保元素数量和大小正确
+- 内存释放后必须将指针置为NULL避免野指针
+- 数据填充顺序必须根据维度顺序调整循环嵌套
+
+## Lessons Learned
+- 硬编码全局属性名会导致部分nc4文件无法读取边界信息
+- 时间步切换时未重置索引会导致数据读取错误
+- 坐标数组和U/V数据缺少空指针检查会导致运行时崩溃
+- 使用ERR宏进行错误处理会导致资源未释放
+- 硬编码维度顺序会导致部分nc4文件数据填充错误
+- 硬编码-32767作为填充值会导致数据精度问题
+- 类型转换时未使用临时变量会导致_FillValue栈损坏
+- wxTextCtrl::SetValue()不会触发wxEVT_COMMAND_TEXT_UPDATED事件，需手动刷新目录树
+- 编译完成后必须检查DLL文件的生成时间是否与当前时间接近，若时间不符说明编译未成功，需删除缓存文件重新编译
+- 编译完成后部署流程：将新编译的ncdf_pi.dll复制到"C:\Users\季曹阳\AppData\Local\opencpn\plugins"下
+- MyTreeItemData构造函数中myFile成员变量未正确赋值会导致文件名信息丢失和崩溃
+- 颜色位图渲染（RenderncdfCurrentBmp）计算量大，频繁重建导致地图移动卡顿
+- 使用glDrawPixels逐帧上传位图数据到GPU会导致渲染性能低下，必须使用OpenGL纹理（glTexImage2D）替代
+- 线性查找颜色索引在颜色映射表较大时效率较低，二分查找是更优方案
+- ncdfDataMessage::getInterpolatedValue等函数按值传递会导致每帧120K次数据复制卡死，必须用const引用
+- ncdf数据速度分量符号与GRIB相反：粒子方向用atan2(vx, vy)，不是atan2(-vx, -vy)
+- Vertex arrays批量渲染会导致堆损坏（clearBmp/ClearParticles竞争），必须用immediate mode GL
+- 粒子速度缩放：5x太大跳过涡流，2x是平衡点
+- 粒子密度滑块用wxSL_MIN_MAX_LABELS|wxSL_VALUE_LABEL显示标签
+- 非线性密度公式：density = 4.0 * exp(slider - 7)
+- GRIB粒子流动感关键：lip/sip双缓冲插值，整条轨迹随m_Run平滑移动
+- koa-connect wrapper caused ctx leaks, so native rewrite is required

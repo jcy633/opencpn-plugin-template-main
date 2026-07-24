@@ -1,6 +1,5 @@
 #ifndef HELPER_H
 #define HELPER_H
-#define __64BIT__
 
 #include "wx/wx.h"
 
@@ -30,3 +29,4 @@ private:
 };
 
 #endif // HELPER_H
+#define __64BIT__

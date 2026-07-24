@@ -350,16 +350,23 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
                   m_lva[i][j][0] = ((lon - west) / gridSpacingLon + 1.5) / tw * potNormX;
                   m_lva[i][j][1] = ((lat - south) / gridSpacingLat + 1.5) / th * potNormY;
 
+                  // Handle south-to-north data ordering (GRIB pattern)
+                  if (gui->myMessage.jDirectionIncr < 0)
+                      m_lva[i][j][1] = 1.0 - m_lva[i][j][1];
+
                   if (i > 0 && y > 0) {
                       double u0 = m_lva[i-1][!j][0], v0 = m_lva[i-1][!j][1];
                       double u1 = m_lva[i  ][!j][0], v1 = m_lva[i  ][!j][1];
                       double u2 = m_lva[i  ][ j][0], v2 = m_lva[i  ][ j][1];
                       double u3 = m_lva[i-1][ j][0], v3 = m_lva[i-1][ j][1];
 
+                      // Bounds check: at least one corner must be in [0,1] range
                       if ((u0 >= 0 || u1 >= 0 || u2 >= 0 || u3 >= 0) &&
                           (u0 <= 1 || u1 <= 1 || u2 <= 1 || u3 <= 1) &&
                           (v0 >= 0 || v1 >= 0 || v2 >= 0 || v3 >= 0) &&
                           (v0 <= 1 || v1 <= 1 || v2 <= 1 || v3 <= 1)) {
+                          // Winding check: skip tiles with reversed orientation (GRIB pattern)
+                          if (u1 <= u0) continue;
                           float sx = (float)(x - xs), sy = (float)(y - ys);
                           float sw = (float)xs, sh = (float)ys;
                           glBegin(GL_QUADS);

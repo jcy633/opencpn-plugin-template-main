@@ -1,0 +1,99 @@
+# ============ IDE / Editor ============
+.vs/
+*.suo
+*.user
+*.aps
+*.ncb
+*.opendb
+*.opensdf
+*.sdf
+.trae/
+
+# ============ Build directories ============
+build/
+buildwin/
+build_final/
+build_ncdf/
+Release/
+Debug/
+Win32/
+x64/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+*.vcxproj
+*.vcxproj.filters
+*.slnx
+*.sln
+cmake_final_output.txt
+cmake_output.txt
+msbuild_output.txt
+
+# CMake Visual Studio project dirs (root level)
+*.dir/
+
+# ============ Third-party dependencies (不修改) ============
+netcdf/
+netcdf-study/
+opencpn-libs/
+wxWidgets/
+grib_pi/
+cache/
+lcs/
+build-deps/
+wxWidgetsDLL.7z
+wxWidgetsDev.7z
+wxWidgetsHeaders.7z
+
+# ============ Binary / Library files ============
+*.dll
+*.lib
+*.exp
+*.pdb
+*.ilk
+
+# ============ Crash dumps ============
+CrashDumps
+
+# ============ Translation files ============
+*.mo
+
+# ============ Flatpak/Android build ============
+*.xml.in
+*.yaml
+*.sha256
+build_flatpak.cmake
+finish_tarball.cmake
+checksum.cmake
+*-conf-stamp
+copy_out
+upload.bat
+upload.sh
+
+# ============ Log / temp files ============
+*.log
+analyse.txt
+tmp_*.cpp
+*.pyc
+install_manifest.txt
+
+# ============ Build helper scripts ============
+*.bat
+
+# ============ CI ============
+.circleci/
+ci/
+scripts/
+
+# ============ Claude AI ============
+.claude/
+
+# ============ Codeium specific ============
+CLAUDE.md
+manual/
+flatpak/
+*.travis.yml
+appveyor.yml
+opencpn-build-deps_1.0_amd64.*
