@@ -1706,8 +1706,12 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 			pPlugIn->m_bShowParticles = false;
 		} else {
 			// Auto-enable current rendering when current data is available (GRIB pattern)
-			pPlugIn->m_bShowCurrentDir = m_checkBoxDCurrent->GetValue();
-			pPlugIn->m_bShowCurrentForce = m_checkBoxBmpCurrentForce->GetValue();
+			pPlugIn->m_bShowCurrentDir = true;
+			pPlugIn->m_bShowCurrentForce = true;
+			pPlugIn->m_bShowParticles = true;
+			m_checkBoxDCurrent->SetValue(true);
+			m_checkBoxBmpCurrentForce->SetValue(true);
+			m_checkBoxParticles->SetValue(true);
 		}
 		if (!showSST) {
 			pPlugIn->m_bShowSeaTemp = false;
@@ -1801,6 +1805,13 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 					pPlugIn->m_bShowCurrentDir = false;
 					pPlugIn->m_bShowCurrentForce = false;
 					pPlugIn->m_bShowParticles = false;
+				} else {
+					pPlugIn->m_bShowCurrentDir = true;
+					pPlugIn->m_bShowCurrentForce = true;
+					pPlugIn->m_bShowParticles = true;
+					m_checkBoxDCurrent->SetValue(true);
+					m_checkBoxBmpCurrentForce->SetValue(true);
+					m_checkBoxParticles->SetValue(true);
 				}
 				if (showSal) {
 					pPlugIn->m_bShowSalinity = true;
@@ -1838,7 +1849,7 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 		if (myData.timeValid) {
 			timeText = myData.dataDateTime.Format(_T("%Y-%m-%d %H:00"));
 		} else {
-			timeText = wxString::Format(_("时间%d"), idx + 1);
+			timeText = wxString::Format(_("time%d"), idx + 1);
 		}
 		m_staticTextDateTime->SetLabel(timeText);
 
@@ -1918,7 +1929,7 @@ void MainDialog::onTimeChange(wxCommandEvent& event){
         if (myData.timeValid) {
             timeText = myData.dataDateTime.Format(_T("%Y-%m-%d %H:00"));
         } else {
-            timeText = wxString::Format(_("时间%d"), selectedIndex + 1);
+            timeText = wxString::Format(_("time%d"), selectedIndex + 1);
         }
         m_staticTextDateTime->SetLabel(timeText);
 
@@ -1953,7 +1964,7 @@ void MainDialog::OnTimeline(wxScrollEvent& event)
         if (myData.timeValid) {
             timeText = myData.dataDateTime.Format(_T("%Y-%m-%d %H:00"));
         } else {
-            timeText = wxString::Format(_("时间%d"), selectedIndex + 1);
+            timeText = wxString::Format(_("time%d"), selectedIndex + 1);
         }
         m_staticTextDateTime->SetLabel(timeText);
 
@@ -2131,7 +2142,7 @@ void MainDialog::addChildren(wxTreeItemId id, wxString fn)
 		if ((*it).timeValid) {
 			timeText = dt.Format(_T("%Y-%m-%d %H:00"));
 		} else {
-			timeText = wxString::Format(_("时间%d"), timeIndex + 1);
+			timeText = wxString::Format(_("time%d"), timeIndex + 1);
 		}
 		
 		/* depth - commented out */

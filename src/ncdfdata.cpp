@@ -295,13 +295,20 @@ double ncdfData::getInterpolatedValue(double** grid, double px, double py, bool 
 
 	bool h00, h01, h10, h11;
 	int nbval = 0;     // how many values in grid ?
-	if ((h00 = hasValue(grid, message->noPointsMeridian, message->noPointsParallel, i0, j0)))
+	int ni = message->noPointsParallel;
+	int nj = message->noPointsMeridian;
+
+	// Handle longitude wrapping for global data (GRIB pattern)
+	int i1 = i0 + 1;
+	if (i1 >= ni) i1 = i0;  // Wrap around for global data
+
+	if ((h00 = hasValue(grid, nj, ni, i0, j0)))
 		nbval++;
-	if ((h10 = hasValue(grid, message->noPointsMeridian, message->noPointsParallel, i0 + 1, j0)))
+	if ((h10 = hasValue(grid, nj, ni, i1, j0)))
 		nbval++;
-	if ((h01 = hasValue(grid, message->noPointsMeridian, message->noPointsParallel, i0, j0 + 1)))
+	if ((h01 = hasValue(grid, nj, ni, i0, j0 + 1)))
 		nbval++;
-	if ((h11 = hasValue(grid, message->noPointsMeridian, message->noPointsParallel, i0 + 1, j0 + 1)))
+	if ((h11 = hasValue(grid, nj, ni, i1, j0 + 1)))
 		nbval++;
 
 	if (nbval <3) {
@@ -320,9 +327,9 @@ double ncdfData::getInterpolatedValue(double** grid, double px, double py, bool 
 		}
 		else {
 			if (dy < 0.5)
-				val = grid[j0][i0 + 1];
+				val = grid[j0][i1];
 			else
-				val = grid[j0 + 1][i0 + 1];
+				val = grid[j0 + 1][i1];
 		}
 		//		printf("%i %i %f\n",j0,i0,val);
 		return val;
@@ -339,12 +346,10 @@ double ncdfData::getInterpolatedValue(double** grid, double px, double py, bool 
 	// ky = distance(xa,y)
 	if (nbval == 4)
 	{
-		int n = 1;
-
 		double x00 = grid[j0][i0];		// x01 x11
-		double x01 = grid[j0 + n][i0];		// x00 x10
-		double x10 = grid[j0][i0 + n];
-		double x11 = grid[j0 + n][i0 + n];
+		double x01 = grid[j0 + 1][i0];		// x00 x10
+		double x10 = grid[j0][i1];
+		double x11 = grid[j0 + 1][i1];
 		if (x10 - x11 > 90) x11 += 360.0;
 		else if (x11 - x10 > 90) x10 += 360.0;
 		if (x00 - x01 > 90) x01 += 360.0;
@@ -510,13 +515,20 @@ double ncdfDataMessage::getInterpolatedValue(const ncdfDataMessage& g2message, d
 
 	bool h00, h01, h10, h11;
 	int nbval = 0;     // how many values in grid ?
-	if ((h00 = hasValue(grid, g2message.noPointsMeridian, g2message.noPointsParallel, i0, j0)))
+	int ni = g2message.noPointsParallel;
+	int nj = g2message.noPointsMeridian;
+
+	// Handle longitude wrapping for global data (GRIB pattern)
+	int i1 = i0 + 1;
+	if (i1 >= ni) i1 = i0;  // Wrap around for global data
+
+	if ((h00 = hasValue(grid, nj, ni, i0, j0)))
 		nbval++;
-	if ((h10 = hasValue(grid, g2message.noPointsMeridian, g2message.noPointsParallel, i0 + 1, j0)))
+	if ((h10 = hasValue(grid, nj, ni, i1, j0)))
 		nbval++;
-	if ((h01 = hasValue(grid, g2message.noPointsMeridian, g2message.noPointsParallel, i0, j0 + 1)))
+	if ((h01 = hasValue(grid, nj, ni, i0, j0 + 1)))
 		nbval++;
-	if ((h11 = hasValue(grid, g2message.noPointsMeridian, g2message.noPointsParallel, i0 + 1, j0 + 1)))
+	if ((h11 = hasValue(grid, nj, ni, i1, j0 + 1)))
 		nbval++;
 
 	if (nbval <3) {
@@ -535,12 +547,12 @@ double ncdfDataMessage::getInterpolatedValue(const ncdfDataMessage& g2message, d
 		}
 		else {
 			if (dy < 0.5)
-				val = grid[j0][i0 + 1];
+				val = grid[j0][i1];
 			else
-				val = grid[j0 + 1][i0 + 1];
+				val = grid[j0 + 1][i1];
 		}
 		//		printf("%i %i %f\n",j0,i0,val);
-		
+
 		return val;
 	}
 
@@ -555,12 +567,10 @@ double ncdfDataMessage::getInterpolatedValue(const ncdfDataMessage& g2message, d
 	// ky = distance(xa,y)
 	if (nbval == 4)
 	{
-		int n = 1;
-
 		double x00 = grid[j0][i0];		// x01 x11
-		double x01 = grid[j0 + n][i0];		// x00 x10
-		double x10 = grid[j0][i0 + n];
-		double x11 = grid[j0 + n][i0 + n];
+		double x01 = grid[j0 + 1][i0];		// x00 x10
+		double x10 = grid[j0][i1];
+		double x11 = grid[j0 + 1][i1];
 		if (x10 - x11 > 90) x11 += 360.0;
 		else if (x11 - x10 > 90) x10 += 360.0;
 		if (x00 - x01 > 90) x01 += 360.0;
@@ -653,10 +663,16 @@ bool ncdfDataMessage::isPointInMap(const ncdfDataMessage& g2message, double x, d
 
 bool ncdfDataMessage::isXInMap(const ncdfDataMessage& g2message, double x) const
 {
-	wxDouble lastlon;
+	wxDouble lastlon = g2message.lastGridPointLong;
+
+	// Handle global data wrapping (GRIB pattern)
+	// If data covers full 360°, accept any longitude
+	double range = fabs(g2message.lastGridPointLong - g2message.firstGridPointLong);
+	if (range + fabs(g2message.iDirectionIncr) >= 360)
+		return true;
 
 	if (g2message.firstGridPointLong > 180. && g2message.lastGridPointLong < 180.0)
-		lastlon = g2message.lastGridPointLong + 360;  else lastlon = g2message.lastGridPointLong;
+		lastlon = g2message.lastGridPointLong + 360;
 
 	if (g2message.iDirectionIncr > 0)
 		return x >= g2message.firstGridPointLong && x <= lastlon;
