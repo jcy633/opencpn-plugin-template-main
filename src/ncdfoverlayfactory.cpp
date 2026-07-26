@@ -2077,7 +2077,7 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
             // Check if data covers full 0-360 longitude (GRIB pattern)
             double lonMin = tlon, lonMax = blon;
             double gridSpacingLon = (lonMax - lonMin) / (ni - 1);
-            bool repeat = (lonMin == 0 && lonMax + gridSpacingLon >= 360);
+            bool repeat = (lonMax - lonMin + gridSpacingLon >= 360);
 
             // For repeat mode: no horizontal border, but add 1 extra column for seamless wrapping
             int borderH = repeat ? 0 : 1;
@@ -2278,7 +2278,7 @@ void ncdfOverlayFactory::RenderSalinityOverlay(PlugIn_ViewPort *vp)
             // Check if data covers full 0-360 longitude (GRIB pattern)
             double lonMin = tlon, lonMax = blon;
             double gridSpacingLon = (lonMax - lonMin) / (ni - 1);
-            bool repeat = (lonMin == 0 && lonMax + gridSpacingLon >= 360);
+            bool repeat = (lonMax - lonMin + gridSpacingLon >= 360);
 
             // For repeat mode: no horizontal border, but add 1 extra column for seamless wrapping
             int borderH = repeat ? 0 : 1;
