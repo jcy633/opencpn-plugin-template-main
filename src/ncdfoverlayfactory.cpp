@@ -368,15 +368,12 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
                   wxPoint p(x, y);
                   GetCanvasLLPix(vp, p, &lat, &lon);
 
-                  // Only wrap longitude for non-repeat mode (GRIB pattern)
+                  // GRIB pattern: only wrap longitude for non-repeat mode
                   if (!repeat) {
                       if (clon - lon > 180) lon += 360;
                       else if (lon - clon > 180) lon -= 360;
-                  } else {
-                      // For repeat mode: normalize longitude to data range [west, west+360)
-                      while (lon < west) lon += 360;
-                      while (lon >= west + 360) lon -= 360;
                   }
+                  // For repeat mode: use raw lon, let GL_REPEAT handle wrapping
 
                   double potNormX = (double)ni / tw;
                   double potNormY = (double)nj / th;
@@ -2195,15 +2192,12 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
                     double lat, lon;
                     wxPoint pt((int)px, (int)py);
                     GetCanvasLLPix(vp, pt, &lat, &lon);
-                    // Only wrap longitude for non-repeat mode (GRIB pattern)
+                    // GRIB pattern: only wrap longitude for non-repeat mode
                     if (!repeat) {
                         if (clon - lon > 180) lon += 360;
                         else if (lon - clon > 180) lon -= 360;
-                    } else {
-                        // For repeat mode: normalize longitude to data range
-                        while (lon < lon_min) lon += 360;
-                        while (lon >= lon_min + 360) lon -= 360;
                     }
+                    // For repeat mode: use raw lon, let GL_REPEAT handle wrapping
                     int idx = (i * gridH + j) * 2;
                     lva[idx]     = ((lon - lon_min) / lonstep - repeat + 1.5) / tw * potNormX;
                     lva[idx + 1] = ((lat - lat_min) / latstep + 1.5) / th * potNormY;
@@ -2398,15 +2392,12 @@ void ncdfOverlayFactory::RenderSalinityOverlay(PlugIn_ViewPort *vp)
                     double lat, lon;
                     wxPoint pt((int)px, (int)py);
                     GetCanvasLLPix(vp, pt, &lat, &lon);
-                    // Only wrap longitude for non-repeat mode (GRIB pattern)
+                    // GRIB pattern: only wrap longitude for non-repeat mode
                     if (!repeat) {
                         if (clon - lon > 180) lon += 360;
                         else if (lon - clon > 180) lon -= 360;
-                    } else {
-                        // For repeat mode: normalize longitude to data range
-                        while (lon < lon_min) lon += 360;
-                        while (lon >= lon_min + 360) lon -= 360;
                     }
+                    // For repeat mode: use raw lon, let GL_REPEAT handle wrapping
                     int idx = (i * gridH + j) * 2;
                     lva[idx]     = ((lon - lon_min) / lonstep - repeat + 1.5) / tw * potNormX;
                     lva[idx + 1] = ((lat - lat_min) / latstep + 1.5) / th * potNormY;
