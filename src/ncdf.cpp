@@ -197,10 +197,10 @@ void MainDialog::UpdateTrackingControls()
        double temp = myMessage.getInterpolatedValue(myMessage, gridSST, m_cursor_lon, m_cursor_lat, true);
        if (temp != ncdf_NOTDEF && !isnan(temp) && isfinite(temp)) {
            wxString t;
-           wxString unit = wxString::FromUTF8("\xc2\xb0""C");
-           t.Printf(_T("%.1f "), temp);
-           t += unit;
+           t.Printf(_T("%.1f °C"), temp);
            m_textCtrlSeaTemp->SetValue(t);
+       } else {
+           m_textCtrlSeaTemp->SetValue(_T("--"));
        }
    }
 
@@ -212,6 +212,8 @@ void MainDialog::UpdateTrackingControls()
            wxString t;
            t.Printf(_T("%.1f g/kg"), sal);
            m_textCtrlSalinity->SetValue(t);
+       } else {
+           m_textCtrlSalinity->SetValue(_T("--"));
        }
    }
 }

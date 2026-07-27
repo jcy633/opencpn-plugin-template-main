@@ -186,6 +186,11 @@ private:
 	 double m_lastIso_vp_latMin;
 	 double m_lastIso_vp_lonMin;
 	 double m_lastIso_vp_lonMax;
+
+	 // Cached isoline segments (rebuild only on data change, GRIB pattern)
+	 bool m_bNeedsIsoRebuild;
+	 struct IsoSeg { double lat1, lon1, lat2, lon2; };
+	 std::vector<IsoSeg> m_isoSegments;
 };
 
 

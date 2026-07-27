@@ -73,6 +73,7 @@ ncdfOverlayFactory::ncdfOverlayFactory()
       m_lastIso_vp_latMin = -99999;
       m_lastIso_vp_lonMin = -99999;
       m_lastIso_vp_lonMax = -99999;
+      m_bNeedsIsoRebuild = true;
       m_sstTexDataDim[0] = m_sstTexDataDim[1] = 0;
       m_sstTexGLDim[0] = m_sstTexGLDim[1] = 0;
       m_glSalinityTexture = 0;
@@ -108,6 +109,7 @@ void ncdfOverlayFactory::setData(MainDialog *gui, ncdf_pi *plugin, const ncdfDat
 	m_bNeedsSeaTempTexRebuild = true;
 	m_bNeedsSalinityTexRebuild = true;
 	m_lastIso_vp_scale = -1;  // Force isoline redraw on data change
+	m_bNeedsIsoRebuild = true;  // Rebuild cached isolines
 	ClearParticles();
 	m_last_vp_scale = -1;
 	m_last_vp_latMax = -99999.0;
@@ -2469,28 +2471,45 @@ void ncdfOverlayFactory::RenderSeaTempIsoLines(PlugIn_ViewPort *vp)
     int nj = gui->myMessage.latLength;
     if (ni < 2 || nj < 2) return;
 
-    // Auto-detect temperature range from data
-    double minT = 1e10, maxT = -1e10;
-    for (int j = 0; j < nj; j++) {
-        if (!sstGrid[j]) break;
-        for (int i = 0; i < ni; i++) {
-            double v = sstGrid[j][i];
-            if (v == ncdf_NOTDEF || isnan(v) || !isfinite(v)) continue;
-            if (v < minT) minT = v;
-            if (v > maxT) maxT = v;
+    // Rebuild cached isolines only when data changes (GRIB pattern)
+    if (m_bNeedsIsoRebuild) {
+        m_isoSegments.clear();
+
+        double minT = 1e10, maxT = -1e10;
+        for (int j = 0; j < nj; j++) {
+            if (!sstGrid[j]) break;
+            for (int i = 0; i < ni; i++) {
+                double v = sstGrid[j][i];
+                if (v == ncdf_NOTDEF || isnan(v) || !isfinite(v)) continue;
+                if (v < minT) minT = v;
+                if (v > maxT) maxT = v;
+            }
         }
+
+        if (minT < maxT) {
+            double spacing = 1.0;
+            minT = floor(minT / spacing) * spacing;
+            maxT = ceil(maxT / spacing) * spacing;
+            double lat_max = tlat, lon_min = tlon;
+            double incrLat = (lat_max - blat) / (nj - 1);
+            if (gui->myMessage.jDirectionIncr < 0) incrLat = -incrLat;
+            double incrLon = (blon - lon_min) / (ni - 1);
+
+            for (double temp = minT; temp <= maxT; temp += spacing) {
+                IsoLine isoLine(temp, sstGrid, nj, ni, lat_max, lon_min, incrLat, incrLon);
+                std::list<Segment*>& trace = isoLine.getTrace();
+                for (std::list<Segment*>::iterator it = trace.begin(); it != trace.end(); ++it) {
+                    Segment *seg = *it;
+                    IsoSeg s = {seg->py1, seg->px1, seg->py2, seg->px2};
+                    m_isoSegments.push_back(s);
+                }
+            }
+            wxLogMessage(_T("[iso] cached %d segments"), (int)m_isoSegments.size());
+        }
+        m_bNeedsIsoRebuild = false;
     }
-    if (minT >= maxT) return;
 
-    double spacing = 1.0;
-    minT = floor(minT / spacing) * spacing;
-    maxT = ceil(maxT / spacing) * spacing;
-
-    double lat_min = blat, lon_min = tlon;
-    double lat_max = tlat, lon_max = blon;
-    double incrLat = (lat_max - lat_min) / (nj - 1);
-    if (gui->myMessage.jDirectionIncr < 0) incrLat = -incrLat;
-    double incrLon = (lon_max - lon_min) / (ni - 1);
+    if (m_isoSegments.empty()) return;
 
     if (!m_pdc) {
 #ifdef ocpnUSE_GL
@@ -2498,76 +2517,23 @@ void ncdfOverlayFactory::RenderSeaTempIsoLines(PlugIn_ViewPort *vp)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glEnable(GL_LINE_SMOOTH);
         glHint(GL_LINE_SMOOTH_HINT, GL_NICEST);
+        glLineWidth(1.0f);
+        glColor4ub(80, 80, 80, 220);
 
-        for (double temp = minT; temp <= maxT; temp += spacing) {
-            IsoLine isoLine(temp, sstGrid, nj, ni, lat_max, lon_min, incrLat, incrLon);
-            if (isoLine.getNbSegments() < 1) continue;
-
-            std::list<Segment*>& trace = isoLine.getTrace();
-
-            // Draw isoline segments (GRIB style: 2px width)
-            glColor4ub(80, 80, 80, 220);
-            glLineWidth(2.0f);
-            glBegin(GL_LINES);
-            for (std::list<Segment*>::iterator it = trace.begin(); it != trace.end(); ++it) {
-                Segment *seg = *it;
-                wxPoint ab, cd;
-                GetCanvasPixLL(vp, &ab, seg->py1, seg->px1);
-                GetCanvasPixLL(vp, &cd, seg->py2, seg->px2);
-                if (fabs(ab.x - cd.x) > vp->pix_width / 2) continue;
-                glVertex2i(ab.x, ab.y);
-                glVertex2i(cd.x, cd.y);
-            }
-            glEnd();
-
-            // Draw labels (GRIB pattern: every density segments, with collision avoidance)
-            wxString label;
-            label.Printf(_T("%.0f"), temp);
-            int density = wxMax(4, (int)trace.size() / 3);  // ~3 labels per isoline
-            int segIdx = 0;
-            wxRect prevLabel;
-            for (std::list<Segment*>::iterator it = trace.begin(); it != trace.end(); ++it, segIdx++) {
-                if (segIdx % density != 0) continue;
-                Segment *seg = *it;
-                double midLat = (seg->py1 + seg->py2) / 2.0;
-                double midLon = (seg->px1 + seg->px2) / 2.0;
-                wxPoint mp;
-                GetCanvasPixLL(vp, &mp, midLat, midLon);
-
-                // Collision avoidance (GRIB pattern)
-                wxFont font(9, wxFONTFAMILY_SWISS, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_NORMAL);
-                int tw, th;
-                wxScreenDC sdc;
-                sdc.SetFont(font);
-                sdc.GetTextExtent(label, &tw, &th);
-                wxRect r(mp.x - tw/2 - 2, mp.y - th/2 - 1, tw + 4, th + 2);
-                if (prevLabel.width > 0 && prevLabel.Intersects(r)) continue;
-                prevLabel = r;
-
-                // Render label as bitmap and draw (GRIB pattern)
-                wxBitmap bmp(tw + 4, th + 2, 32);
-                wxMemoryDC mdc(bmp);
-                mdc.SetBackground(wxColour(255, 255, 255, 0));
-                mdc.Clear();
-                mdc.SetFont(font);
-                mdc.SetTextForeground(wxColour(60, 60, 60));
-                mdc.DrawText(label, 2, 1);
-                mdc.SelectObject(wxNullBitmap);
-                DrawOLBitmap(bmp, mp.x - tw/2 - 2, mp.y - th/2 - 1, true);
-                break;  // One label per isoline
-            }
+        glBegin(GL_LINES);
+        for (size_t k = 0; k < m_isoSegments.size(); k++) {
+            const IsoSeg& s = m_isoSegments[k];
+            wxPoint ab, cd;
+            GetCanvasPixLL(vp, &ab, s.lat1, s.lon1);
+            GetCanvasPixLL(vp, &cd, s.lat2, s.lon2);
+            if (fabs((double)ab.x - cd.x) > vp->pix_width / 2) continue;
+            glVertex2i(ab.x, ab.y);
+            glVertex2i(cd.x, cd.y);
         }
+        glEnd();
 
         glDisable(GL_LINE_SMOOTH);
         glDisable(GL_BLEND);
 #endif
-    } else {
-        for (double temp = minT; temp <= maxT; temp += spacing) {
-            IsoLine isoLine(temp, sstGrid, nj, ni, lat_max, lon_min, incrLat, incrLon);
-            if (isoLine.getNbSegments() < 1) continue;
-            isoLine.drawIsoLine(*m_pdc, vp, false, false);
-            isoLine.drawIsoLineLabels(m_pdc, wxColour(80, 80, 80), vp, 40, 0, temp);
-        }
     }
 }
-
