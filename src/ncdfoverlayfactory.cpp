@@ -101,7 +101,7 @@ ncdfOverlayFactory::~ncdfOverlayFactory()
     ClearParticles();
 }
 
-void ncdfOverlayFactory::setData(MainDialog *gui, ncdf_pi *plugin, ncdfDataMessage g2data, int numberOfPoints, wxDouble tlat, wxDouble tlon, wxDouble blat, wxDouble blon)
+void ncdfOverlayFactory::setData(MainDialog *gui, ncdf_pi *plugin, const ncdfDataMessage& g2data, int numberOfPoints, wxDouble tlat, wxDouble tlon, wxDouble blat, wxDouble blon)
 {
 	// Mark textures for rebuild (GL deletion deferred to render)
 	m_bNeedsColorTexRebuild = true;
@@ -114,7 +114,7 @@ void ncdfOverlayFactory::setData(MainDialog *gui, ncdf_pi *plugin, ncdfDataMessa
 	m_bUpdateParticles = true;
 	m_particleBurstCount = 30;
 
-	this->g2data = g2data;
+	// Don't deep copy data — use gui->myMessage directly (avoids 140MB copy for global data)
 	this->numberOfPoints = numberOfPoints;
     this->gui = gui;
     this->plugin = plugin;
@@ -175,7 +175,11 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
     bool hasCurrentGrid = (gui->gridu && gui->gridv);
     bool hasSSTGrid = (gui->gridSST && gui->hasSeaTemp);
     bool hasSalinityGrid = (gui->gridSalinity && gui->hasSalinity);
-    if (!hasCurrentGrid && !hasSSTGrid && !hasSalinityGrid) return false;
+    if (!hasCurrentGrid && !hasSSTGrid && !hasSalinityGrid) {
+        static int s_nullDbg = 0;
+        if (s_nullDbg < 5) { wxLogMessage(_T("[render] SKIP: gridu=%p gridv=%p gridSST=%p gridSal=%p"), (void*)gui->gridu, (void*)gui->gridv, (void*)gui->gridSST, (void*)gui->gridSalinity); s_nullDbg++; }
+        return false;
+    }
     if (gui->myMessage.lonLength < 2 || gui->myMessage.latLength < 2) return false;
     if (!m_bReadyToRender) return false;
 
@@ -185,8 +189,8 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
         !plugin->m_bShowSeaTempIso && !plugin->m_bShowSalinity) return false;
 
     static int s_frameDbg = 0;
-    if (s_frameDbg < 200) {
-        wxLogMessage(_T("[render] frame %d vp=%p"), s_frameDbg, (void*)vp);
+    if (s_frameDbg < 5) {
+        wxLogMessage(_T("[render] frame %d gridu=%p gridv=%p gridSST=%p gridSal=%p"), s_frameDbg, (void*)gui->gridu, (void*)gui->gridv, (void*)gui->gridSST, (void*)gui->gridSalinity);
         s_frameDbg++;
     }
     
@@ -220,6 +224,7 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 	// Color map: GRIB-style tiled texture with caching
 	if(plugin->m_bShowCurrentForce && gui->gridu && gui->gridv && !m_pdc) {
 #ifdef ocpnUSE_GL
+	  wxLogMessage(_T("[render] color map: gridu=%p gridv=%p ni=%d nj=%d"), (void*)gui->gridu, (void*)gui->gridv, gui->myMessage.lonLength, gui->myMessage.latLength);
       // Reset GL state to avoid inheriting GRIB's texture bindings
       glDisable(GL_TEXTURE_2D);
       glBindTexture(GL_TEXTURE_2D, 0);
@@ -406,8 +411,8 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
                             (u0 <= 1 || u1 <= 1 || u2 <= 1 || u3 <= 1))) &&
                           (v0 >= 0 || v1 >= 0 || v2 >= 0 || v3 >= 0) &&
                           (v0 <= 1 || v1 <= 1 || v2 <= 1 || v3 <= 1)) {
-                          // Winding check: skip tiles with reversed orientation (GRIB pattern)
-                          if (u1 <= u0) continue;
+                          // Winding check: skip reversed tiles (not for repeat mode)
+                          if (!repeat && u1 <= u0) continue;
                           float sx = (float)(x - xs), sy = (float)(y - ys);
                           float sw = (float)xs, sh = (float)ys;
                           glBegin(GL_QUADS);
@@ -578,7 +583,7 @@ bool ncdfOverlayFactory::RenderncdfCurrentBmp()
 					  }
 
 					  //    This could take a while....
-			      if (g2data.ucurr == NULL || g2data.vcurr == NULL){
+			      if (gui->myMessage.ucurr == NULL || gui->myMessage.vcurr == NULL){
 					  return false;
 				  }
                               wxImage gr_image(width, height);

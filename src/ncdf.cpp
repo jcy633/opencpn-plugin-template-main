@@ -1919,9 +1919,11 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 }
 
 void MainDialog::onTimeChange(wxCommandEvent& event){
+    if (m_isTreeUpdating) return;
     int selectedIndex = m_choiceTime->GetSelection();
 
-    if (selectedIndex >= 0 && selectedIndex < (int)myDataVector.size()) {
+    if (selectedIndex >= 0 && selectedIndex < (int)myDataVector.size() &&
+        selectedIndex != m_lastSelectedTimeIndex) {
         myData = myDataVector[selectedIndex];
         m_lastSelectedTimeIndex = selectedIndex;
 
@@ -1946,7 +1948,11 @@ void MainDialog::onTimeChange(wxCommandEvent& event){
 
 void MainDialog::OnTimeline(wxScrollEvent& event)
 {
+    if (m_isTreeUpdating) return;
     int selectedIndex = m_sTimeline->GetValue();
+
+    // Skip if same time step (prevent redundant readncdfFile calls)
+    if (selectedIndex == m_lastSelectedTimeIndex) return;
 
     // Only switch time steps within the current file (don't load new files)
     if (selectedIndex >= 0 && selectedIndex < (int)myDataVector.size()) {
