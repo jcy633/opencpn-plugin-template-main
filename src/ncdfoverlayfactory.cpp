@@ -59,6 +59,14 @@ ncdfOverlayFactory::ncdfOverlayFactory()
       m_space = 0;
       m_ParticleMap = nullptr;
       m_glColorTexture = 0;
+
+      // Pre-compute arrow shape (GRIB LineBuffer pattern)
+      // Shaft: from -10 to +10
+      m_ArrowBuffer.pushLine(-10, 0, 10, 0);
+      // Head: V shape
+      m_ArrowBuffer.pushLine(-10, 0, -3, 5);
+      m_ArrowBuffer.pushLine(-10, 0, -3, -5);
+      m_ArrowBuffer.Finalize();
       m_bHasColorTexture = false;
       m_bNeedsColorTexRebuild = false;
       m_texDataDim[0] = m_texDataDim[1] = 0;
@@ -525,30 +533,31 @@ void ncdfOverlayFactory::RenderncdfCurrent()
     if (lat_sp < 0.5) lat_sp = 0.5;
     if (lon_sp < 0.5) lon_sp = 0.5;
 
-    // GRIB pattern: expand bounds slightly to cover viewport edges
     double start_lat = floor(vp->lat_min / lat_sp) * lat_sp;
     double start_lon = floor(vp->lon_min / lon_sp) * lon_sp;
     double end_lat = vp->lat_max + lat_sp;
     double end_lon = vp->lon_max + lon_sp;
 
-    // Safety: cap total iterations to prevent freeze
-    int maxIter = 5000;
-    int iterCount = 0;
-
-    static int s_arrowDbg = 0;
-    if (s_arrowDbg < 5) {
-        wxLogMessage(_T("[arrow] vp lon[%.1f,%.1f] lat[%.1f,%.1f] sp=%.3f,%.3f start_lon=%.1f end_lon=%.1f dx=%.0f dy=%.0f"),
-            vp->lon_min, vp->lon_max, vp->lat_min, vp->lat_max, lon_sp, lat_sp, start_lon, end_lon, dx, dy);
-        s_arrowDbg++;
-    }
-
     wxColour colour;
     GetGlobalColor(_T("UBLCK"), &colour);
+
+    // Set GL state ONCE before the loop (GRIB pattern)
+#ifdef ocpnUSE_GL
+    if (!m_pdc) {
+        glEnable(GL_LINE_SMOOTH);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glHint(GL_LINE_SMOOTH_HINT, GL_NICEST);
+        glLineWidth(2.0f);
+    }
+#endif
+
+    int maxIter = 5000;
+    int iterCount = 0;
 
     for (double lat = start_lat; lat <= end_lat && iterCount < maxIter; lat += lat_sp) {
         for (double lon = start_lon; lon <= end_lon && iterCount < maxIter; lon += lon_sp) {
             iterCount++;
-            // Normalize longitude to [-180, 180] for data lookup
             double nlon = lon;
             while (nlon > 180.0) nlon -= 360.0;
             while (nlon < -180.0) nlon += 360.0;
@@ -559,11 +568,20 @@ void ncdfOverlayFactory::RenderncdfCurrent()
             if (mag < 0.01) continue;
             wxPoint p;
             GetCanvasPixLL(vp, &p, lat, lon);
-            double dir = 90.0 + (atan2(vy, -vx) * 180.0 / PI);
-            if (dir < 0) dir += 360.0;
-            drawWaveArrow(p.x, p.y, dir - 90, colour);
+            // Direction: atan2(east, north) + rotation
+            double dir = atan2(vy, -vx) + vp->rotation;
+            double scale = wxMax(1.0, mag);
+            drawLineBuffer(m_ArrowBuffer.lines, m_ArrowBuffer.count,
+                           p.x, p.y, dir, scale, colour);
         }
     }
+
+#ifdef ocpnUSE_GL
+    if (!m_pdc) {
+        glDisable(GL_LINE_SMOOTH);
+        glDisable(GL_BLEND);
+    }
+#endif
 }
 bool ncdfOverlayFactory::RenderncdfCurrentBmp()
 {
@@ -685,29 +703,57 @@ bool ncdfOverlayFactory::RenderncdfCurrentBmp()
 }
 
 
-void ncdfOverlayFactory::drawWaveArrow(int i, int j, double ang, wxColour arrowColor)
-{
-    // Simple solid single arrow (GRIB-style direction arrow)
-    double si = sin(ang * PI / 180.);
-    double co = cos(ang * PI / 180.);
-    int arrowSize = 20;
-    int dec = -arrowSize / 2;
+void ncdfOverlayFactory::ArrowBuffer::pushLine(float x0, float y0, float x1, float y1) {
+    buffer.push_back(x0); buffer.push_back(y0);
+    buffer.push_back(x1); buffer.push_back(y1);
+}
 
-    wxPen pen(arrowColor, 2);
+void ncdfOverlayFactory::ArrowBuffer::Finalize() {
+    count = (int)(buffer.size() / 4);
+    lines = new float[buffer.size()];
+    for (size_t i = 0; i < buffer.size(); i++) lines[i] = buffer[i];
+    buffer.clear();
+}
+
+void ncdfOverlayFactory::drawLineBuffer(float *lines, int count, int x, int y,
+                                         double ang, double scale, wxColour colour)
+{
+    float six = sinf((float)ang), cox = cosf((float)ang);
+    float vertexes[40];
+    int n = wxMin(count, 10);  // max 10 line segments = 20 floats
+    for (int i = 0; i < 2 * n; i++) {
+        float *k = lines + 2 * i;
+        vertexes[2 * i + 0] = k[0] * cox * scale + k[1] * six * scale + x;
+        vertexes[2 * i + 1] = k[0] * six * scale - k[1] * cox * scale + y;
+    }
+
     if (m_pdc) {
+        wxPen pen(colour, 2);
         m_pdc->SetPen(pen);
-        m_pdc->SetBrush(*wxTRANSPARENT_BRUSH);
+        for (int i = 0; i < n; i++) {
+            float *l = vertexes + 4 * i;
+            m_pdc->DrawLine(l[0], l[1], l[2], l[3]);
+        }
     }
 #ifdef ocpnUSE_GL
-    else
-        glColor3ub(arrowColor.Red(), arrowColor.Green(), arrowColor.Blue());
+    else {
+        glColor4ub(colour.Red(), colour.Green(), colour.Blue(), 255);
+        glBegin(GL_LINES);
+        for (int i = 0; i < n; i++) {
+            float *l = vertexes + 4 * i;
+            glVertex2f(l[0], l[1]);
+            glVertex2f(l[2], l[3]);
+        }
+        glEnd();
+    }
 #endif
+}
 
-    // Arrow shaft
-    drawTransformedLine(pen, si, co, i, j, dec, 0, dec + arrowSize, 0);
-    // Arrow head (V shape)
-    drawTransformedLine(pen, si, co, i, j, dec, 0, dec + 7, 5);
-    drawTransformedLine(pen, si, co, i, j, dec, 0, dec + 7, -5);
+// Legacy drawWaveArrow kept for DC mode compatibility
+void ncdfOverlayFactory::drawWaveArrow(int i, int j, double ang, wxColour arrowColor)
+{
+    drawLineBuffer(m_ArrowBuffer.lines, m_ArrowBuffer.count, i, j,
+                   ang * PI / 180.0, 1.0, arrowColor);
 }
 
 void ncdfOverlayFactory::drawTransformedLine( wxPen pen, double si, double co,int di, int dj, int i,int j, int k,int l)

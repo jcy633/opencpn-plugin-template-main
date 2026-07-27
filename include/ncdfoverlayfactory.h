@@ -72,7 +72,21 @@ public:
      bool RenderncdfCurrentBmp();
 
      void drawWaveArrow(int i, int j, double ang, wxColour arrowColor);
-     
+     void drawLineBuffer(float *lines, int count, int x, int y, double ang, double scale, wxColour colour);
+
+     // LineBuffer: pre-computed arrow shape for batch GL rendering
+     struct ArrowBuffer {
+         float *lines;
+         int count;
+         ArrowBuffer() : lines(nullptr), count(0) {}
+         ~ArrowBuffer() { delete[] lines; }
+         void pushLine(float x0, float y0, float x1, float y1);
+         void Finalize();
+     private:
+         std::vector<float> buffer;
+     };
+     ArrowBuffer m_ArrowBuffer;
+
      void drawTransformedLine( wxPen pen, double si, double co,int di, int dj, int i,int j, int k,int l);
 	 void DrawGLLine(double x1, double y1, double x2, double y2, double width, wxColour myColour);
 	 void DrawOLBitmap(const wxBitmap &bitmap, wxCoord x, wxCoord y, bool usemask);
