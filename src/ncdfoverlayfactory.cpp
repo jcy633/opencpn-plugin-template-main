@@ -513,7 +513,7 @@ void ncdfOverlayFactory::RenderncdfCurrent()
     int nj = gui->myMessage.latLength;
     if (ni < 2 || nj < 2) return;
 
-    // GRIB-style geographic grid with 80px minimum spacing
+    // GRIB pattern: pixel-based spacing → geographic spacing
     int arrowSpacing = 80;
     wxPoint p1, p2;
     GetCanvasPixLL(vp, &p1, vp->clat, vp->clon);
@@ -525,22 +525,40 @@ void ncdfOverlayFactory::RenderncdfCurrent()
     if (lat_sp < 0.5) lat_sp = 0.5;
     if (lon_sp < 0.5) lon_sp = 0.5;
 
+    // GRIB pattern: expand bounds slightly to cover viewport edges
     double start_lat = floor(vp->lat_min / lat_sp) * lat_sp;
     double start_lon = floor(vp->lon_min / lon_sp) * lon_sp;
+    double end_lat = vp->lat_max + lat_sp;
+    double end_lon = vp->lon_max + lon_sp;
+
+    // Safety: cap total iterations to prevent freeze
+    int maxIter = 5000;
+    int iterCount = 0;
+
+    static int s_arrowDbg = 0;
+    if (s_arrowDbg < 5) {
+        wxLogMessage(_T("[arrow] vp lon[%.1f,%.1f] lat[%.1f,%.1f] sp=%.3f,%.3f start_lon=%.1f end_lon=%.1f dx=%.0f dy=%.0f"),
+            vp->lon_min, vp->lon_max, vp->lat_min, vp->lat_max, lon_sp, lat_sp, start_lon, end_lon, dx, dy);
+        s_arrowDbg++;
+    }
 
     wxColour colour;
     GetGlobalColor(_T("UBLCK"), &colour);
 
-    for (double lat = start_lat; lat <= vp->lat_max; lat += lat_sp) {
-        for (double lon = start_lon; lon <= vp->lon_max; lon += lon_sp) {
-            double vx = gui->myMessage.getInterpolatedValue(gui->myMessage, gui->gridu, lon, lat, true);
-            double vy = gui->myMessage.getInterpolatedValue(gui->myMessage, gui->gridv, lon, lat, true);
+    for (double lat = start_lat; lat <= end_lat && iterCount < maxIter; lat += lat_sp) {
+        for (double lon = start_lon; lon <= end_lon && iterCount < maxIter; lon += lon_sp) {
+            iterCount++;
+            // Normalize longitude to [-180, 180] for data lookup
+            double nlon = lon;
+            while (nlon > 180.0) nlon -= 360.0;
+            while (nlon < -180.0) nlon += 360.0;
+            double vx = gui->myMessage.getInterpolatedValue(gui->myMessage, gui->gridu, nlon, lat, true);
+            double vy = gui->myMessage.getInterpolatedValue(gui->myMessage, gui->gridv, nlon, lat, true);
             if (vx == ncdf_NOTDEF || vy == ncdf_NOTDEF || !isfinite(vx) || !isfinite(vy)) continue;
             double mag = sqrt(vx * vx + vy * vy);
             if (mag < 0.01) continue;
             wxPoint p;
             GetCanvasPixLL(vp, &p, lat, lon);
-            if (!PointInLLBox(vp, lon, lat)) continue;
             double dir = 90.0 + (atan2(vy, -vx) * 180.0 / PI);
             if (dir < 0) dir += 360.0;
             drawWaveArrow(p.x, p.y, dir - 90, colour);
@@ -1490,14 +1508,16 @@ void ncdfOverlayFactory::drawTriangle(wxDC *pmdc, wxPen pen, bool south,
       }
 }
 
-// Is the given point in the vp ??
+// Is the given point in the vp ?? (GRIB pattern: handle date line crossing)
 bool PointInLLBox(PlugIn_ViewPort *vp, double x, double y)
 {
-
-
-    if (  x >= (vp->lon_min) && x <= (vp->lon_max) &&
-            y >= (vp->lat_min) && y <= (vp->lat_max) )
-            return TRUE;
+    if (y < vp->lat_min || y > vp->lat_max) return FALSE;
+    double m_minx = vp->lon_min;
+    double m_maxx = vp->lon_max;
+    // Wrap longitude into the same range as the viewport
+    if (x < m_maxx - 360.0) x += 360.0;
+    else if (x > m_minx + 360.0) x -= 360.0;
+    if (x >= m_minx && x <= m_maxx) return TRUE;
     return FALSE;
 }
 
