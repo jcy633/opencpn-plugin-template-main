@@ -1838,12 +1838,6 @@ void ncdfOverlayFactory::RenderParticles(PlugIn_ViewPort *vp)
             p[0] = pp[0] + asinf(sa * sD / cy) * 180.0f / (float)PI;
             p[1] = asinf(sy * cD + cy * sD * ca) * 180.0f / (float)PI;
 
-            // Normalize longitude to [-180, 180] to prevent date line discontinuity
-            while (p[0] > 180.0f) p[0] -= 360.0f;
-            while (p[0] < -180.0f) p[0] += 360.0f;
-            if (p[1] > 90.0f) p[1] = 90.0f;
-            if (p[1] < -90.0f) p[1] = -90.0f;
-
             // Viewport recycling: respawn off-screen particles within viewport
             wxPoint ps;
             GetCanvasPixLL(vp, &ps, p[1], p[0]);
@@ -1934,9 +1928,6 @@ void ncdfOverlayFactory::RenderParticles(PlugIn_ViewPort *vp)
                 float sa = sinf(fakeAngr), ca = cosf(fakeAngr);
                 fakePos[0] = fakePos[0] + asinf(sa * sD / cy) * 180.0f / (float)PI;
                 fakePos[1] = asinf(sy * cD + cy * sD * ca) * 180.0f / (float)PI;
-                // Normalize longitude
-                while (fakePos[0] > 180.0f) fakePos[0] -= 360.0f;
-                while (fakePos[0] < -180.0f) fakePos[0] += 360.0f;
             }
             np.m_History[h].m_Pos[0] = fakePos[0];
             np.m_History[h].m_Pos[1] = fakePos[1];
