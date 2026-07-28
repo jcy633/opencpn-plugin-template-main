@@ -1837,9 +1837,28 @@ void ncdfOverlayFactory::RenderParticles(PlugIn_ViewPort *vp)
             float sa = sinf(angr), ca = cosf(angr);
             p[0] = pp[0] + asinf(sa * sD / cy) * 180.0f / (float)PI;
             p[1] = asinf(sy * cD + cy * sD * ca) * 180.0f / (float)PI;
+
+            // Viewport recycling: respawn off-screen particles within viewport
             wxPoint ps;
             GetCanvasPixLL(vp, &ps, p[1], p[0]);
             n.m_Screen[0] = ps.x; n.m_Screen[1] = ps.y;
+            int margin = 50;
+            if (ps.x < -margin || ps.x > (int)vp->pix_width + margin ||
+                ps.y < -margin || ps.y > (int)vp->pix_height + margin) {
+                // Respawn at random viewport pixel
+                wxPoint rp(rand() % wxMax(1, (int)vp->pix_width),
+                           rand() % wxMax(1, (int)vp->pix_height));
+                double rlat, rlon;
+                GetCanvasLLPix(vp, rp, &rlat, &rlon);
+                p[0] = (float)rlon; p[1] = (float)rlat;
+                n.m_Screen[0] = (float)rp.x; n.m_Screen[1] = (float)rp.y;
+                // Clear old history
+                for (int h = 0; h < MAX_PARTICLE_HISTORY; h++)
+                    it.m_History[h].m_Pos[0] = -10000;
+                it.m_HistorySize = 1;
+                it.m_HistoryPos = 0;
+                n.m_Pos[0] = p[0]; n.m_Pos[1] = p[1];
+            }
             wxColour c = GetSeaCurrentGraphicColor(vkn);
             n.m_Color[0] = c.Red(); n.m_Color[1] = c.Green(); n.m_Color[2] = c.Blue();
             it.m_Velocity = vkn;  // Store velocity for trail length control
@@ -1850,18 +1869,22 @@ void ncdfOverlayFactory::RenderParticles(PlugIn_ViewPort *vp)
     int total_particles = (int)(density * ni * nj);
     int max_grid = ni * nj;
     if (total_particles > max_grid) total_particles = max_grid;
-    if (total_particles > 50000) total_particles = 50000;
+    if (total_particles > 100000) total_particles = 100000;
     int remove = ((int)particles.size() - total_particles) / 16;
     for (int i = 0; i < remove; i++) particles.pop_back();
     int run = 0;
     int new_count = (total_particles - (int)particles.size()) / 64;  // GRIB spawn rate
+    int vpw = wxMax(1, (int)vp->pix_width);
+    int vph = wxMax(1, (int)vp->pix_height);
     for (int npi = 0; npi < new_count; npi++) {
         float p[2];
         double vkn = 0, ang = 0;
-        // Velocity-weighted spawning: high-flow = dense, low-flow = sparse
+        // Velocity-weighted spawning within viewport pixels
         for (int attempt = 0; attempt < 30; attempt++) {
-            p[0] = tlon + static_cast<float>(rand()) / static_cast<float>(RAND_MAX) * (blon - tlon);
-            p[1] = tlat + static_cast<float>(rand()) / static_cast<float>(RAND_MAX) * (blat - tlat);
+            wxPoint rp(rand() % vpw, rand() % vph);
+            double rlat, rlon;
+            GetCanvasLLPix(vp, rp, &rlat, &rlon);
+            p[0] = (float)rlon; p[1] = (float)rlat;
             double vx = gui->myMessage.getInterpolatedValue(gui->myMessage, gui->gridu, p[0], p[1], true);
             double vy = gui->myMessage.getInterpolatedValue(gui->myMessage, gui->gridv, p[0], p[1], true);
             if (vx != ncdf_NOTDEF && vy != ncdf_NOTDEF && isfinite(vx) && isfinite(vy)) {
