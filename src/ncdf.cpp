@@ -1498,7 +1498,11 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 				dataMessage.sst = (double*)calloc(nbr_uv, sizeof(double));
 				for (size_t k = 0; k < nbr_uv; k++) {
 					double val = (double)sst_vals[k];
-					if (!isnan(val) && isfinite(val) && val != sst_fill && val > 100.0) {
+					// Kelvin: typical 271~308K; Celsius: typical -2~35°C
+					// Upper bound catches NetCDF default fill value (9.96921e+36)
+					double minValid = isKelvin ? 100.0 : -10.0;
+					double maxValid = isKelvin ? 370.0 : 50.0;
+					if (!isnan(val) && isfinite(val) && val != sst_fill && val > minValid && val < maxValid) {
 						dataMessage.sst[k] = isKelvin ? (val - 273.15) : val;
 					} else {
 						dataMessage.sst[k] = ncdf_NOTDEF;
