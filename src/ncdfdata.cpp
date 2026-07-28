@@ -266,7 +266,7 @@ double ncdfData::getInterpolatedValue(double** grid, double px, double py, bool 
 {
 	double val;
 
-	//   if (!isPointInMap(px,py)) return ncdf_NOTDEF;   
+	//   if (!isPointInMap(px,py)) return ncdf_NOTDEF;
 	if (!isPointInMap(px, py)) {
 		px += 360.0;               // tour du monde à droite ?
 		if (!isPointInMap(px, py)) {
@@ -276,6 +276,11 @@ double ncdfData::getInterpolatedValue(double** grid, double px, double py, bool 
 			}
 		}
 	}
+
+	// Normalize longitude to data range for grid index calculation
+	double dataEnd = message->lastGridPointLong + message->iDirectionIncr;
+	while (px > dataEnd) px -= 360.0;
+	while (px < message->firstGridPointLong) px += 360.0;
 
 	double pi, pj;     // coord. in grid unit
 	pi = (px - message->firstGridPointLong) / message->iDirectionIncr;//(px-Lo1)/Di;
@@ -480,7 +485,7 @@ double ncdfDataMessage::getInterpolatedValue(const ncdfDataMessage& g2message, d
 {
 	double val;
 
-	//   if (!isPointInMap(px,py)) return ncdf_NOTDEF;   
+	//   if (!isPointInMap(px,py)) return ncdf_NOTDEF;
 	if (!isPointInMap(g2message, px, py)) {
 		px += 360.0;               // tour du monde à droite ?
 		if (!isPointInMap(g2message, px, py)) {
@@ -490,7 +495,13 @@ double ncdfDataMessage::getInterpolatedValue(const ncdfDataMessage& g2message, d
 			}
 		}
 	}
-	
+
+	// Normalize longitude to data range for grid index calculation
+	// Fixes: [0,360] data + negative query (e.g., -175° → 185°)
+	//        [-180,180] data + >180 query (e.g., 185° → -175°)
+	double dataEnd = g2message.lastGridPointLong + g2message.iDirectionIncr;
+	while (px > dataEnd) px -= 360.0;
+	while (px < g2message.firstGridPointLong) px += 360.0;
 
 	double pi, pj;     // coord. in grid unit
 	if (fabs(g2message.iDirectionIncr) < 1e-10 || fabs(g2message.jDirectionIncr) < 1e-10)

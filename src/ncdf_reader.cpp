@@ -143,7 +143,12 @@ void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 
 		// GRIB pattern: FillGrid after building SST grid
 		FillGrid(gui->gridSST, dataMessage.noPointsParallel, dataMessage.noPointsMeridian);
-		ncdfLog("[ncdf] readncdfFile: gridSST FillGrid done\n");
+		// Diagnostic: count valid vs missing cells
+		int sst_valid = 0, sst_missing = 0;
+		for (wxUint32 i = 0; i < dataMessage.noPointsMeridian; i++)
+			for (wxUint32 j = 0; j < dataMessage.noPointsParallel; j++)
+				if (gui->gridSST[i][j] != ncdf_NOTDEF) sst_valid++; else sst_missing++;
+		ncdfLog("[ncdf] readncdfFile: gridSST FillGrid done, valid=%d missing=%d\n", sst_valid, sst_missing);
 	}
 
 	// Build new salinity grid
@@ -166,6 +171,12 @@ void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 
 		// GRIB pattern: FillGrid after building salinity grid
 		FillGrid(gui->gridSalinity, dataMessage.noPointsParallel, dataMessage.noPointsMeridian);
+		// Diagnostic: count valid vs missing cells
+		int sal_valid = 0, sal_missing = 0;
+		for (wxUint32 i = 0; i < dataMessage.noPointsMeridian; i++)
+			for (wxUint32 j = 0; j < dataMessage.noPointsParallel; j++)
+				if (gui->gridSalinity[i][j] != ncdf_NOTDEF) sal_valid++; else sal_missing++;
+		ncdfLog("[ncdf] readncdfFile: gridSalinity FillGrid done, valid=%d missing=%d\n", sal_valid, sal_missing);
 		ncdfLog("[ncdf] readncdfFile: gridSalinity FillGrid done\n");
 	}
 
