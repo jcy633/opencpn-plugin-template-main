@@ -300,7 +300,10 @@ double ncdfData::getInterpolatedValue(double** grid, double px, double py, bool 
 
 	// Handle longitude wrapping for global data (GRIB pattern)
 	int i1 = i0 + 1;
-	if (i1 >= ni) i1 = i0;  // Wrap around for global data
+	double lonRange = fabs(message->lastGridPointLong - message->firstGridPointLong);
+	if (i1 >= ni) {
+		i1 = (lonRange + fabs(message->iDirectionIncr) >= 360) ? 0 : i0;
+	}
 
 	if ((h00 = hasValue(grid, nj, ni, i0, j0)))
 		nbval++;
@@ -520,7 +523,10 @@ double ncdfDataMessage::getInterpolatedValue(const ncdfDataMessage& g2message, d
 
 	// Handle longitude wrapping for global data (GRIB pattern)
 	int i1 = i0 + 1;
-	if (i1 >= ni) i1 = i0;  // Wrap around for global data
+	double lonRange = fabs(g2message.lastGridPointLong - g2message.firstGridPointLong);
+	if (i1 >= ni) {
+		i1 = (lonRange + fabs(g2message.iDirectionIncr) >= 360) ? 0 : i0;
+	}
 
 	if ((h00 = hasValue(grid, nj, ni, i0, j0)))
 		nbval++;
