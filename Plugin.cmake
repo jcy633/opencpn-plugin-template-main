@@ -44,6 +44,9 @@ set(SRC
     src/IsoLine2.cpp
     src/icons2.cpp
     src/helper.cpp
+    src/ncdfarrow.cpp
+    src/ncdftexture.cpp
+    src/ncdfparticle.cpp
 )
 
 set(HEADERS
