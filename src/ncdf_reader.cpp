@@ -75,11 +75,13 @@ void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 	// Save OLD grid pointers BEFORE overwriting (atomic swap pattern)
 	double **oldGridu = gui->gridu;
 	double **oldGridv = gui->gridv;
+	double **oldGridMag = gui->gridMag;
 	double **oldGridSST = gui->gridSST;
 	double **oldGridSalinity = gui->gridSalinity;
 	wxUint32 oldMeridian = gui->myMessage.noPointsMeridian;
 	gui->gridu = NULL;
 	gui->gridv = NULL;
+	gui->gridMag = NULL;
 	gui->gridSST = NULL;
 	gui->gridSalinity = NULL;
 
@@ -123,6 +125,17 @@ void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 		FillGrid(gui->gridu, dataMessage.noPointsParallel, dataMessage.noPointsMeridian);
 		FillGrid(gui->gridv, dataMessage.noPointsParallel, dataMessage.noPointsMeridian);
 		ncdfLog("[ncdf] readncdfFile: gridu/gridv FillGrid done\n");
+
+		// Build magnitude grid: sqrt(u² + v²)
+		gui->gridMag = new double*[dataMessage.noPointsMeridian];
+		for (wxUint32 i = 0; i < dataMessage.noPointsMeridian; ++i) {
+			gui->gridMag[i] = new double[dataMessage.noPointsParallel];
+			for (wxUint32 j = 0; j < dataMessage.noPointsParallel; ++j) {
+				double u = gui->gridu[i][j], v = gui->gridv[i][j];
+				gui->gridMag[i][j] = (u != ncdf_NOTDEF && v != ncdf_NOTDEF) ? sqrt(u*u + v*v) : ncdf_NOTDEF;
+			}
+		}
+		ncdfLog("[ncdf] readncdfFile: gridMag built\n");
 	}
 
 	// Build new SST grid
@@ -188,6 +201,10 @@ void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 	if (oldGridv) {
 		for (wxUint32 i = 0; i < oldMeridian; ++i) delete[] oldGridv[i];
 		delete[] oldGridv;
+	}
+	if (oldGridMag) {
+		for (wxUint32 i = 0; i < oldMeridian; ++i) delete[] oldGridMag[i];
+		delete[] oldGridMag;
 	}
 	if (oldGridSST) {
 		for (wxUint32 i = 0; i < oldMeridian; ++i) delete[] oldGridSST[i];

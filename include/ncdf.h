@@ -88,6 +88,7 @@ public:
 
 	double** gridu;
 	double** gridv;
+	double** gridMag;     // Pre-computed magnitude: sqrt(gridu² + gridv²)
 	double** gridSST;
 	bool hasSeaTemp;
 	double** gridSalinity;

@@ -71,8 +71,7 @@ ncdfOverlayFactory::ncdfOverlayFactory()
       m_bNeedsColorTexRebuild = false;
       m_texDataDim[0] = m_texDataDim[1] = 0;
       m_texGLDim[0] = m_texGLDim[1] = 0;
-      m_lvaSize = 0;
-      m_lva = nullptr;
+      // ...existing code...
       m_glSeaTempTexture = 0;
       m_bHasSeaTempTexture = false;
       m_bNeedsSeaTempTexRebuild = false;
@@ -106,7 +105,7 @@ ncdfOverlayFactory::~ncdfOverlayFactory()
     if (m_tParticleTimer.IsRunning()) m_tParticleTimer.Stop();
     DeleteColorTexture();
     DeleteSeaTempTexture();
-    delete[] m_lva; m_lva = nullptr;
+    DeleteSalinityTexture();
     ClearParticles();
 }
 
@@ -238,209 +237,17 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
       // Reset GL state to avoid inheriting GRIB's texture bindings
       glDisable(GL_TEXTURE_2D);
       glBindTexture(GL_TEXTURE_2D, 0);
-      // Check if color texture needs rebuild (flagged by setData)
-      if (m_bNeedsColorTexRebuild) {
-          if (m_glColorTexture) { glDeleteTextures(1, &m_glColorTexture); m_glColorTexture = 0; }
-          m_bHasColorTexture = false;
-          m_bNeedsColorTexRebuild = false;
-      }
-      // Build texture only if not already created
-      if (!m_bHasColorTexture) {
-          // Delete old texture if exists (safe here — GL context is active)
-          if (m_glColorTexture) {
-              glDeleteTextures(1, &m_glColorTexture);
-              m_glColorTexture = 0;
-          }
-          // Create and cache the texture (once per data change)
+
+      // Current color map: use pre-computed gridMag from MainDialog
+      if (gui && gui->gridMag) {
           int ni = gui->myMessage.lonLength;
           int nj = gui->myMessage.latLength;
           if (ni > 1 && nj > 1) {
-              // Check if data covers full 360° longitude (GRIB pattern)
-              double west = this->tlon, east = this->blon;
-              double gridSpacingLon = (east - west) / (ni - 1);
-              bool repeat = (east - west + gridSpacingLon >= 360);
-
-              // For repeat mode: no horizontal border, but add 1 extra column for seamless wrapping
-              int borderH = repeat ? 0 : 1;
-              int extraCol = repeat ? 1 : 0;
-              int tw = ni + 2 * borderH + extraCol, th = nj + 2;
-              unsigned char *texData = new unsigned char[tw * th * 4];
-              memset(texData, 0, tw * th * 4);
-
-              unsigned char globalAlpha = 255;  // Fully opaque
-
-              for (int j = 0; j < nj; j++) {
-                  if (!gui->gridu[j] || !gui->gridv[j]) break;
-                  int texRow = (gui->myMessage.jDirectionIncr >= 0) ? j : (nj - 1 - j);
-                  for (int i = 0; i < ni; i++) {
-                      int x = i + borderH, y = texRow + 1;
-                      if (x >= tw - 1 || y >= th - 1) continue;
-                      double vx = gui->gridu[j][i];
-                      double vy = gui->gridv[j][i];
-                      int off = 4 * (y * tw + x);
-                      if (vx != ncdf_NOTDEF && vy != ncdf_NOTDEF && isfinite(vx) && isfinite(vy)) {
-                          double mag = sqrt(vx * vx + vy * vy);
-                          wxColour c = GetSeaCurrentGraphicColor(mag);
-                          texData[off] = c.Red();
-                          texData[off+1] = c.Green();
-                          texData[off+2] = c.Blue();
-                          texData[off+3] = globalAlpha;
-                      }
-                  }
-              }
-
-              // For repeat mode: duplicate first column at end for seamless wrapping
-              if (repeat) {
-                  for (int j = 0; j < nj; j++) {
-                      int texRow = (gui->myMessage.jDirectionIncr >= 0) ? j : (nj - 1 - j);
-                      int y = texRow + 1;
-                      if (y >= th - 1) continue;
-                      int srcOff = 4 * (y * tw + 0);
-                      int dstOff = 4 * (y * tw + ni);
-                      memcpy(texData + dstOff, texData + srcOff, 4);
-                  }
-              }
-
-              // GRIB-style border: copy adjacent row/col, then set border alpha=0
-              // Vertical borders (always present)
-              memcpy(texData, texData + 4 * tw, 4 * tw);
-              memcpy(texData + 4 * tw * (th - 1), texData + 4 * tw * (th - 2), 4 * tw);
-              for (int x = 0; x < tw; x++) {
-                  texData[4 * x + 3] = 0;
-                  texData[4 * ((th - 1) * tw + x) + 3] = 0;
-              }
-              // Horizontal borders (only for non-repeat mode)
-              if (!repeat) {
-                  for (int y = 0; y < th; y++) {
-                      memcpy(texData + 4 * y * tw, texData + 4 * (y * tw + 1), 4);
-                      memcpy(texData + 4 * (y * tw + tw - 1), texData + 4 * (y * tw + tw - 2), 4);
-                  }
-                  for (int y = 0; y < th; y++) {
-                      texData[4 * y * tw + 3] = 0;
-                      texData[4 * (y * tw + tw - 1) + 3] = 0;
-                  }
-              }
-
-              glGenTextures(1, &m_glColorTexture);
-              glBindTexture(GL_TEXTURE_2D, m_glColorTexture);
-              glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, repeat ? GL_REPEAT : GL_CLAMP_TO_EDGE);
-              glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-              glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-              glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-              glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, tw, th, 0, GL_RGBA, GL_UNSIGNED_BYTE, texData);
-              m_bHasColorTexture = true;
-              m_texDataDim[0] = ni;
-              m_texDataDim[1] = nj;
-              m_texGLDim[0] = tw;
-              m_texGLDim[1] = th;
-              delete[] texData;
+              RenderGridOverlay(vp, gui->gridMag,
+                                &ncdfOverlayFactory::GetSeaCurrentGraphicColor,
+                                m_glColorTexture, m_bHasColorTexture, m_bNeedsColorTexRebuild,
+                                m_texDataDim, m_texGLDim);
           }
-      }
-
-      // Color map: GRIB-style tiled texture rendering
-      if (m_bHasColorTexture && m_glColorTexture != 0) {
-          int ni = m_texDataDim[0], nj = m_texDataDim[1];
-          int tw = m_texGLDim[0], th = m_texGLDim[1];
-          double north = this->tlat, south = this->blat;
-          double west = this->tlon, east = this->blon;
-          double gridSpacingLon = (east - west) / (ni - 1);
-
-          // Check if data covers full 360° longitude (GRIB pattern)
-          // Handles both 0-360 and -180 to 180 formats
-          bool repeat = (east - west + gridSpacingLon >= 360);
-          double gridSpacingLat = (north - south) / (nj - 1);
-          double clon = (west + east) / 2.0;
-
-          double pw = vp->view_scale_ppm * 1e6 / (pow(2, fabs(vp->clat) / 25));
-          if (pw < 20) pw = 20;
-          int xsquares = wxMax(2, (int)ceil(vp->pix_width / pw));
-          int ysquares = wxMax(2, (int)ceil(vp->pix_height / pw));
-          if (vp->rotation == 0 && vp->m_projection_type == PI_PROJECTION_MERCATOR)
-              xsquares = 1;
-          xsquares = wxMax(xsquares, 2);
-
-          double xs = vp->pix_width / (double)xsquares;
-          double ys = vp->pix_height / (double)ysquares;
-
-          int neededLva = xsquares + 1;
-          if (m_lvaSize < neededLva) {
-              delete[] m_lva;
-              m_lvaSize = neededLva;
-              m_lva = new double[m_lvaSize][2][2];
-          }
-
-          int j = 0;
-          glEnable(GL_TEXTURE_2D);
-          glBindTexture(GL_TEXTURE_2D, m_glColorTexture);
-          glEnable(GL_BLEND);
-          glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-          glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
-
-          for (double y = 0; y < vp->pix_height + ys / 2; y += ys) {
-              int i = 0;
-              for (double x = 0; x < vp->pix_width + xs / 2; x += xs) {
-                  double lat, lon;
-                  wxPoint p(x, y);
-                  GetCanvasLLPix(vp, p, &lat, &lon);
-
-                  // GRIB pattern: only wrap longitude for non-repeat mode
-                  if (!repeat) {
-                      if (clon - lon > 180) lon += 360;
-                      else if (lon - clon > 180) lon -= 360;
-                  }
-                  // For repeat mode: use raw lon, let GL_REPEAT handle wrapping
-
-                  double potNormX = (double)ni / tw;
-                  double potNormY = (double)nj / th;
-                  m_lva[i][j][0] = ((lon - west) / gridSpacingLon - repeat + 1.5) / tw * potNormX;
-                  m_lva[i][j][1] = ((lat - south) / gridSpacingLat + 1.5) / th * potNormY;
-
-                  // Handle south-to-north data ordering (GRIB pattern)
-                  if (gui->myMessage.jDirectionIncr < 0)
-                      m_lva[i][j][1] = 1.0 - m_lva[i][j][1];
-
-                  if (i > 0 && y > 0) {
-                      double u0 = m_lva[i-1][!j][0], v0 = m_lva[i-1][!j][1];
-                      double u1 = m_lva[i  ][!j][0], v1 = m_lva[i  ][!j][1];
-                      double u2 = m_lva[i  ][ j][0], v2 = m_lva[i  ][ j][1];
-                      double u3 = m_lva[i-1][ j][0], v3 = m_lva[i-1][ j][1];
-
-                      // Phase matching for repeat textures (GRIB pattern)
-                      if (repeat) {
-                          if (u1 - u0 > .5) u1--;
-                          else if (u0 - u1 > .5) u1++;
-                          if (u2 - u0 > .5) u2--;
-                          else if (u0 - u2 > .5) u2++;
-                          if (u3 - u0 > .5) u3--;
-                          else if (u0 - u3 > .5) u3++;
-                      }
-
-                      // Bounds check: at least one corner must be in [0,1] range
-                      if ((repeat ||
-                           ((u0 >= 0 || u1 >= 0 || u2 >= 0 || u3 >= 0) &&
-                            (u0 <= 1 || u1 <= 1 || u2 <= 1 || u3 <= 1))) &&
-                          (v0 >= 0 || v1 >= 0 || v2 >= 0 || v3 >= 0) &&
-                          (v0 <= 1 || v1 <= 1 || v2 <= 1 || v3 <= 1)) {
-                          // Winding check: skip reversed tiles (not for repeat mode)
-                          if (!repeat && u1 <= u0) continue;
-                          float sx = (float)(x - xs), sy = (float)(y - ys);
-                          float sw = (float)xs, sh = (float)ys;
-                          glBegin(GL_QUADS);
-                          glTexCoord2f(u0, v0); glVertex2f(sx, sy);
-                          glTexCoord2f(u1, v1); glVertex2f(sx + sw, sy);
-                          glTexCoord2f(u2, v2); glVertex2f(sx + sw, sy + sh);
-                          glTexCoord2f(u3, v3); glVertex2f(sx, sy + sh);
-                          glEnd();
-                      }
-                  }
-                  i++;
-              }
-              j = !j;
-          }
-
-          glDisable(GL_BLEND);
-          glDisable(GL_TEXTURE_2D);
-          glBindTexture(GL_TEXTURE_2D, 0);
       }
 #endif
 	}

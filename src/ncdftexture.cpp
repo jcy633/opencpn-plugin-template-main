@@ -14,7 +14,7 @@
 #include "IsoLine2.h"
 
 //===================================================================
-// Color texture (GRIB-style GL texture for color map)
+// Color texture (shared via RenderGridOverlay)
 //===================================================================
 void ncdfOverlayFactory::DeleteColorTexture()
 {
@@ -23,103 +23,6 @@ void ncdfOverlayFactory::DeleteColorTexture()
         m_glColorTexture = 0;
         m_bHasColorTexture = false;
     }
-}
-
-void ncdfOverlayFactory::CreateColorTexture(PlugIn_ViewPort *vp)
-{
-    if (!gui || !gui->gridu || !gui->gridv) return;
-    int ni = gui->myMessage.lonLength;
-    int nj = gui->myMessage.latLength;
-    if (ni < 2 || nj < 2) return;
-
-    int tw = ni + 2, th = nj + 2;
-    if (tw > 1024 || th > 1024) {
-        double scale = 1024.0 / wxMax(ni, nj);
-        tw = (int)(ni * scale) + 2;
-        th = (int)(nj * scale) + 2;
-    }
-    m_texDataDim[0] = ni; m_texDataDim[1] = nj;
-    m_texGLDim[0] = tw; m_texGLDim[1] = th;
-
-    unsigned char *data = new unsigned char[tw * th * 4];
-    memset(data, 0, tw * th * 4);
-
-    int transparency = 50;
-    if (plugin) transparency = plugin->m_iOverlayTransparency;
-    unsigned char alpha = (unsigned char)(255 * (100 - transparency) / 100);
-
-    // Fill texture with velocity magnitude data
-    for (int j = 0; j < nj; j++) {
-        for (int i = 0; i < ni; i++) {
-            int x = i + 1, y = j + 1;
-            if (x >= tw - 1 || y >= th - 1) continue;
-            double vx = gui->gridu[j][i];
-            double vy = gui->gridv[j][i];
-            int off = 4 * (y * tw + x);
-            if (vx != ncdf_NOTDEF && vy != ncdf_NOTDEF && isfinite(vx) && isfinite(vy)) {
-                double mag = sqrt(vx * vx + vy * vy);
-                wxColour c = GetSeaCurrentGraphicColor(mag);
-                data[off] = c.Red(); data[off+1] = c.Green(); data[off+2] = c.Blue();
-                data[off+3] = (mag < 0.01) ? 0 : alpha;
-            } else { data[off+3] = 0; }
-        }
-    }
-
-    for (int x = 0; x < tw; x++) { data[4*x+3] = 0; data[4*((th-1)*tw+x)+3] = 0; }
-    for (int y = 0; y < th; y++) { data[4*y*tw+3] = 0; data[4*(y*tw+tw-1)+3] = 0; }
-
-    DeleteColorTexture();
-    glGenTextures(1, &m_glColorTexture);
-    glBindTexture(GL_TEXTURE_2D, m_glColorTexture);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, tw, th, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
-    m_bHasColorTexture = true;
-    delete[] data;
-}
-
-void ncdfOverlayFactory::DrawColorTexture(PlugIn_ViewPort *vp)
-{
-    if (!m_bHasColorTexture || !m_glColorTexture || !gui) return;
-    double lat1 = gui->myMessage.firstGridPointLat;
-    double lon1 = gui->myMessage.firstGridPointLong;
-    double lat2 = gui->myMessage.lastGridPointLat;
-    double lon2 = gui->myMessage.lastGridPointLong;
-    // Ensure correct ordering: north > south, east > west
-    double tlat = wxMax(lat1, lat2);
-    double blat = wxMin(lat1, lat2);
-    double tlon = wxMin(lon1, lon2);
-    double blon = wxMax(lon1, lon2);
-    int ni = gui->myMessage.lonLength;
-    int nj = gui->myMessage.latLength;
-    int tw = m_texGLDim[0], th = m_texGLDim[1];
-    double potNormX = (double)m_texDataDim[0] / tw;
-    double potNormY = (double)m_texDataDim[1] / th;
-
-    wxPoint pTL, pBR;
-    GetCanvasPixLL(vp, &pTL, tlat, tlon);
-    GetCanvasPixLL(vp, &pBR, blat, blon);
-
-    float u0 = (float)(1.0 / tw) * potNormX;
-    float u1 = (float)((ni + 1.0) / tw) * potNormX;
-    float v0 = (float)(1.0 / th) * potNormY;
-    float v1 = (float)((nj + 1.0) / th) * potNormY;
-
-    glEnable(GL_TEXTURE_2D);
-    glBindTexture(GL_TEXTURE_2D, m_glColorTexture);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
-    glBegin(GL_QUADS);
-    glTexCoord2f(u0, v0); glVertex2f(pTL.x, pTL.y);
-    glTexCoord2f(u1, v0); glVertex2f(pBR.x, pTL.y);
-    glTexCoord2f(u1, v1); glVertex2f(pBR.x, pBR.y);
-    glTexCoord2f(u0, v1); glVertex2f(pTL.x, pBR.y);
-    glEnd();
-    glDisable(GL_BLEND);
-    glDisable(GL_TEXTURE_2D);
 }
 
 //===================================================================

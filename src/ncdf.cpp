@@ -75,6 +75,7 @@ MainDialog::MainDialog(wxWindow *parent) : ncdfDialog( parent ), m_isTreeUpdatin
 	m_lastSelectedTimeIndex = -1;
 	gridu = NULL;
 	gridv = NULL;
+	gridMag = NULL;
 	gridSST = NULL;
 	gridSalinity = NULL;
 	hasSeaTemp = false;
@@ -141,6 +142,12 @@ MainDialog::~MainDialog()
 			delete[] gridv[i];
 		}
 		delete[] gridv;
+	}
+	if (gridMag) {
+		for (wxUint32 i = 0; i < myMessage.noPointsMeridian; ++i) {
+			delete[] gridMag[i];
+		}
+		delete[] gridMag;
 	}
 	if (gridSST) {
 		for (wxUint32 i = 0; i < myMessage.noPointsMeridian; ++i) {
@@ -1652,6 +1659,7 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 	    wxUint32 oldMeridian = myMessage.noPointsMeridian;
 	    double **oldGridu = gridu; gridu = NULL;
 	    double **oldGridv = gridv; gridv = NULL;
+	    double **oldGridMag = gridMag; gridMag = NULL;
 	    double **oldGridSST = gridSST; gridSST = NULL;
 	    double **oldGridSalinity = gridSalinity; gridSalinity = NULL;
 	    hasSeaTemp = false;
@@ -1664,6 +1672,10 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 	    if (oldGridv) {
 	        for (wxUint32 i = 0; i < oldMeridian; ++i) delete[] oldGridv[i];
 	        delete[] oldGridv;
+	    }
+	    if (oldGridMag) {
+	        for (wxUint32 i = 0; i < oldMeridian; ++i) delete[] oldGridMag[i];
+	        delete[] oldGridMag;
 	    }
 	    if (oldGridSST) {
 	        for (wxUint32 i = 0; i < oldMeridian; ++i) delete[] oldGridSST[i];
@@ -1756,6 +1768,10 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 				if (gridv) {
 					for (wxUint32 i = 0; i < myMessage.noPointsMeridian; ++i) delete[] gridv[i];
 					delete[] gridv; gridv = NULL;
+				}
+				if (gridMag) {
+					for (wxUint32 i = 0; i < myMessage.noPointsMeridian; ++i) delete[] gridMag[i];
+					delete[] gridMag; gridMag = NULL;
 				}
 				if (gridSST) {
 					for (wxUint32 i = 0; i < myMessage.noPointsMeridian; ++i) delete[] gridSST[i];

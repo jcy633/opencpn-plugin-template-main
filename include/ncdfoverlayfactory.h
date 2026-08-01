@@ -117,7 +117,7 @@ public:
      void RenderSalinityOverlay(PlugIn_ViewPort *vp);
      void DeleteSalinityTexture();
 
-     // Shared grid overlay renderer for SST / Salinity (parameterized)
+     // Shared grid overlay renderer for SST / Salinity / Current (parameterized)
      typedef wxColour (ncdfOverlayFactory::*ColorFunc)(double);
      void RenderGridOverlay(PlugIn_ViewPort *vp,
                             double **grid,
@@ -176,16 +176,12 @@ private:
 	 void ClearParticles();
 	 void RenderParticles(PlugIn_ViewPort *vp);
 
-	 // GL texture cache for color map
+	 // GL texture cache for current color map (now using shared RenderGridOverlay)
 	 GLuint m_glColorTexture;
 	 bool m_bHasColorTexture;
 	 bool m_bNeedsColorTexRebuild;
 	 int m_texDataDim[2];
 	 int m_texGLDim[2];
-	 int m_lvaSize;
-	 double (*m_lva)[2][2];
-	 void CreateColorTexture(PlugIn_ViewPort *vp);
-	 void DrawColorTexture(PlugIn_ViewPort *vp);
 	 void DeleteColorTexture();
 
 	 // Sea temperature texture cache
