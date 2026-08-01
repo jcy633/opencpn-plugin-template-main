@@ -220,12 +220,16 @@ void ncdfOverlayFactory::DeleteSeaTempTexture()
     }
 }
 
-void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
+//===================================================================
+// Shared grid overlay renderer (SST & Salinity)
+//===================================================================
+void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
+                                           double **grid,
+                                           ColorFunc colorFunc,
+                                           GLuint &texID, bool &hasTex, bool &needsRebuild,
+                                           int dataDim[2], int glDim[2])
 {
-    if (!gui || !vp) return;
-    // Snapshot grid pointer — if it becomes invalid mid-render, bail safely
-    double **sstGrid = gui->gridSST;
-    if (!sstGrid) return;
+    if (!gui || !vp || !grid) return;
     int ni = gui->myMessage.lonLength;
     int nj = gui->myMessage.latLength;
     if (ni < 2 || nj < 2) return;
@@ -233,20 +237,18 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
     if (!m_pdc) {
 #ifdef ocpnUSE_GL
         // Lazy texture rebuild (flagged by setData, safe in GL context)
-        if (m_bNeedsSeaTempTexRebuild) {
-            if (m_glSeaTempTexture) { glDeleteTextures(1, &m_glSeaTempTexture); m_glSeaTempTexture = 0; }
-            m_bHasSeaTempTexture = false;
-            m_bNeedsSeaTempTexRebuild = false;
+        if (needsRebuild) {
+            if (texID) { glDeleteTextures(1, &texID); texID = 0; }
+            hasTex = false;
+            needsRebuild = false;
         }
 
         // Create texture once per data change (GRIB pattern)
-        if (!m_bHasSeaTempTexture) {
-            // Check if data covers full 0-360 longitude (GRIB pattern)
+        if (!hasTex) {
             double lonMin = tlon, lonMax = blon;
             double gridSpacingLon = (lonMax - lonMin) / (ni - 1);
             bool repeat = (lonMax - lonMin + gridSpacingLon >= 360);
 
-            // For repeat mode: no horizontal border, but add 1 extra column for seamless wrapping
             int borderH = repeat ? 0 : 1;
             int extraCol = repeat ? 1 : 0;
             int tw = ni + 2 * borderH + extraCol, th = nj + 2;
@@ -254,19 +256,17 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
             if (!texData) return;
             memset(texData, 0, tw * th * 4);
 
-            unsigned char alpha = 255;  // Fully opaque
+            unsigned char alpha = 255;
 
-            // Fill texture: write RGBA directly (GRIB pattern, no wxColour overhead)
             for (int j = 0; j < nj; j++) {
-                if (!sstGrid[j]) break;
+                if (!grid[j]) break;
                 int texRow = (gui->myMessage.jDirectionIncr >= 0) ? j : (nj - 1 - j);
                 for (int i = 0; i < ni; i++) {
-                    double val = sstGrid[j][i];
+                    double val = grid[j][i];
                     if (val == ncdf_NOTDEF || isnan(val) || !isfinite(val)) continue;
                     int x = i + borderH, y = texRow + 1;
                     if (x >= tw - 1 || y >= th - 1) continue;
-                    // Write RGBA directly (avoid wxColour intermediate)
-                    wxColour c = GetSeaTempGraphicColor(val);
+                    wxColour c = (this->*colorFunc)(val);
                     int off = 4 * (y * tw + x);
                     texData[off]     = c.Red();
                     texData[off + 1] = c.Green();
@@ -275,27 +275,23 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
                 }
             }
 
-            // For repeat mode: duplicate first column at end for seamless wrapping
+            // Repeat mode: duplicate first column at end for seamless wrapping
             if (repeat) {
                 for (int j = 0; j < nj; j++) {
                     int texRow = (gui->myMessage.jDirectionIncr >= 0) ? j : (nj - 1 - j);
                     int y = texRow + 1;
                     if (y >= th - 1) continue;
-                    int srcOff = 4 * (y * tw + 0);
-                    int dstOff = 4 * (y * tw + ni);
-                    memcpy(texData + dstOff, texData + srcOff, 4);
+                    memcpy(texData + 4 * (y * tw + ni), texData + 4 * (y * tw + 0), 4);
                 }
             }
 
             // GRIB-style border: copy adjacent row/col, then set border alpha=0
-            // Vertical borders (always present)
             memcpy(texData, texData + 4 * tw, 4 * tw);
             memcpy(texData + 4 * tw * (th - 1), texData + 4 * tw * (th - 2), 4 * tw);
             for (int x = 0; x < tw; x++) {
                 texData[4 * x + 3] = 0;
                 texData[4 * ((th - 1) * tw + x) + 3] = 0;
             }
-            // Horizontal borders (only for non-repeat mode)
             if (!repeat) {
                 for (int y = 0; y < th; y++) {
                     memcpy(texData + 4 * y * tw, texData + 4 * (y * tw + 1), 4);
@@ -307,9 +303,8 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
                 }
             }
 
-            glGenTextures(1, &m_glSeaTempTexture);
-            glBindTexture(GL_TEXTURE_2D, m_glSeaTempTexture);
-
+            glGenTextures(1, &texID);
+            glBindTexture(GL_TEXTURE_2D, texID);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, repeat ? GL_REPEAT : GL_CLAMP_TO_EDGE);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -317,18 +312,16 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, tw, th, 0, GL_RGBA, GL_UNSIGNED_BYTE, texData);
             delete[] texData;
 
-            m_bHasSeaTempTexture = true;
-            m_sstTexDataDim[0] = tw;
-            m_sstTexDataDim[1] = th;
-            m_sstTexGLDim[0] = tw;
-            m_sstTexGLDim[1] = th;
+            hasTex = true;
+            dataDim[0] = tw; dataDim[1] = th;
+            glDim[0] = tw;   glDim[1] = th;
         }
 
         // Draw tiled texture (GRIB pattern)
-        if (m_bHasSeaTempTexture && m_glSeaTempTexture) {
-            int tw = m_sstTexGLDim[0], th = m_sstTexGLDim[1];
-            double potNormX = (double)m_sstTexDataDim[0] / tw;
-            double potNormY = (double)m_sstTexDataDim[1] / th;
+        if (hasTex && texID) {
+            int tw = glDim[0], th = glDim[1];
+            double potNormX = (double)dataDim[0] / tw;
+            double potNormY = (double)dataDim[1] / th;
             double lat_min = blat, lon_min = tlon;
             double lat_max = tlat, lon_max = blon;
             double latstep = fabs(lat_max - lat_min) / (nj - 1);
@@ -336,7 +329,6 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
             if (latstep < 1e-10 || lonstep < 1e-10) return;
             double clon = (lon_min + lon_max) / 2;
 
-            // Check if data covers full 360° longitude (GRIB pattern)
             bool repeat = (lon_max - lon_min + lonstep >= 360);
 
             // Tile grid for non-linear projection handling
@@ -359,12 +351,10 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
                     double lat, lon;
                     wxPoint pt((int)px, (int)py);
                     GetCanvasLLPix(vp, pt, &lat, &lon);
-                    // GRIB pattern: only wrap longitude for non-repeat mode
                     if (!repeat) {
                         if (clon - lon > 180) lon += 360;
                         else if (lon - clon > 180) lon -= 360;
                     }
-                    // For repeat mode: use raw lon, let GL_REPEAT handle wrapping
                     int idx = (i * gridH + j) * 2;
                     lva[idx]     = ((lon - lon_min) / lonstep - repeat + 1.5) / tw * potNormX;
                     lva[idx + 1] = ((lat - lat_min) / latstep + 1.5) / th * potNormY;
@@ -372,7 +362,7 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
             }
 
             glEnable(GL_TEXTURE_2D);
-            glBindTexture(GL_TEXTURE_2D, m_glSeaTempTexture);
+            glBindTexture(GL_TEXTURE_2D, texID);
             glEnable(GL_BLEND);
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
@@ -389,7 +379,6 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
                     double u0=lva[i00], u1=lva[i10], u2=lva[i11], u3=lva[i01];
                     double v0=lva[i00+1], v1=lva[i10+1], v2=lva[i11+1], v3=lva[i01+1];
 
-                    // Phase matching for repeat textures (GRIB pattern)
                     if (repeat) {
                         if (u1 - u0 > .5) u1--;
                         else if (u0 - u1 > .5) u1++;
@@ -422,204 +411,20 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
     }
 }
 
+void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
+{
+    RenderGridOverlay(vp, gui ? gui->gridSST : NULL,
+                      &ncdfOverlayFactory::GetSeaTempGraphicColor,
+                      m_glSeaTempTexture, m_bHasSeaTempTexture, m_bNeedsSeaTempTexRebuild,
+                      m_sstTexDataDim, m_sstTexGLDim);
+}
+
 void ncdfOverlayFactory::RenderSalinityOverlay(PlugIn_ViewPort *vp)
 {
-    if (!gui || !vp) return;
-    double **salGrid = gui->gridSalinity;
-    if (!salGrid) return;
-    int ni = gui->myMessage.lonLength;
-    int nj = gui->myMessage.latLength;
-    if (ni < 2 || nj < 2) return;
-
-    if (!m_pdc) {
-#ifdef ocpnUSE_GL
-        // Lazy texture rebuild (flagged by setData, safe in GL context)
-        if (m_bNeedsSalinityTexRebuild) {
-            if (m_glSalinityTexture) { glDeleteTextures(1, &m_glSalinityTexture); m_glSalinityTexture = 0; }
-            m_bHasSalinityTexture = false;
-            m_bNeedsSalinityTexRebuild = false;
-        }
-
-        // Create texture once per data change (GRIB pattern)
-        if (!m_bHasSalinityTexture) {
-            // Check if data covers full 0-360 longitude (GRIB pattern)
-            double lonMin = tlon, lonMax = blon;
-            double gridSpacingLon = (lonMax - lonMin) / (ni - 1);
-            bool repeat = (lonMax - lonMin + gridSpacingLon >= 360);
-
-            // For repeat mode: no horizontal border, but add 1 extra column for seamless wrapping
-            int borderH = repeat ? 0 : 1;
-            int extraCol = repeat ? 1 : 0;
-            int tw = ni + 2 * borderH + extraCol, th = nj + 2;
-            unsigned char *texData = new(std::nothrow) unsigned char[tw * th * 4];
-            if (!texData) return;
-            memset(texData, 0, tw * th * 4);
-
-            unsigned char alpha = 255;  // Fully opaque
-
-            // Fill texture: write RGBA directly
-            for (int j = 0; j < nj; j++) {
-                if (!salGrid[j]) break;
-                int texRow = (gui->myMessage.jDirectionIncr >= 0) ? j : (nj - 1 - j);
-                for (int i = 0; i < ni; i++) {
-                    double val = salGrid[j][i];
-                    if (val == ncdf_NOTDEF || isnan(val) || !isfinite(val)) continue;
-                    int x = i + borderH, y = texRow + 1;
-                    if (x >= tw - 1 || y >= th - 1) continue;
-                    wxColour c = GetSalinityGraphicColor(val);
-                    int off = 4 * (y * tw + x);
-                    texData[off]     = c.Red();
-                    texData[off + 1] = c.Green();
-                    texData[off + 2] = c.Blue();
-                    texData[off + 3] = alpha;
-                }
-            }
-
-            // For repeat mode: duplicate first column at end for seamless wrapping
-            if (repeat) {
-                for (int j = 0; j < nj; j++) {
-                    int texRow = (gui->myMessage.jDirectionIncr >= 0) ? j : (nj - 1 - j);
-                    int y = texRow + 1;
-                    if (y >= th - 1) continue;
-                    int srcOff = 4 * (y * tw + 0);
-                    int dstOff = 4 * (y * tw + ni);
-                    memcpy(texData + dstOff, texData + srcOff, 4);
-                }
-            }
-
-            // GRIB-style border: copy adjacent row/col, then set border alpha=0
-            // Vertical borders (always present)
-            memcpy(texData, texData + 4 * tw, 4 * tw);
-            memcpy(texData + 4 * tw * (th - 1), texData + 4 * tw * (th - 2), 4 * tw);
-            for (int x = 0; x < tw; x++) {
-                texData[4 * x + 3] = 0;
-                texData[4 * ((th - 1) * tw + x) + 3] = 0;
-            }
-            // Horizontal borders (only for non-repeat mode)
-            if (!repeat) {
-                for (int y = 0; y < th; y++) {
-                    memcpy(texData + 4 * y * tw, texData + 4 * (y * tw + 1), 4);
-                    memcpy(texData + 4 * (y * tw + tw - 1), texData + 4 * (y * tw + tw - 2), 4);
-                }
-                for (int y = 0; y < th; y++) {
-                    texData[4 * y * tw + 3] = 0;
-                    texData[4 * (y * tw + tw - 1) + 3] = 0;
-                }
-            }
-
-            glGenTextures(1, &m_glSalinityTexture);
-            glBindTexture(GL_TEXTURE_2D, m_glSalinityTexture);
-
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, repeat ? GL_REPEAT : GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, tw, th, 0, GL_RGBA, GL_UNSIGNED_BYTE, texData);
-            delete[] texData;
-
-            m_bHasSalinityTexture = true;
-            m_salTexDataDim[0] = tw;
-            m_salTexDataDim[1] = th;
-            m_salTexGLDim[0] = tw;
-            m_salTexGLDim[1] = th;
-        }
-
-        // Draw tiled texture (GRIB pattern)
-        if (m_bHasSalinityTexture && m_glSalinityTexture) {
-            int tw = m_salTexGLDim[0], th = m_salTexGLDim[1];
-            double potNormX = (double)m_salTexDataDim[0] / tw;
-            double potNormY = (double)m_salTexDataDim[1] / th;
-            double lat_min = blat, lon_min = tlon;
-            double lat_max = tlat, lon_max = blon;
-            double latstep = fabs(lat_max - lat_min) / (nj - 1);
-            double lonstep = (lon_max - lon_min) / (ni - 1);
-            if (latstep < 1e-10 || lonstep < 1e-10) return;
-            double clon = (lon_min + lon_max) / 2;
-
-            // Check if data covers full 360° longitude (GRIB pattern)
-            bool repeat = (lon_max - lon_min + lonstep >= 360);
-
-            // Tile grid for non-linear projection handling
-            double pw = vp->view_scale_ppm * 1e6 / pow(2, fabs(vp->clat) / 25);
-            if (pw < 20) pw = 20;
-            int xs = (int)ceil(vp->pix_width / pw);
-            int ys = (int)ceil(vp->pix_height / pw);
-            if (vp->rotation == 0) xs = 1;
-            if (xs < 2) xs = 2; if (ys < 2) ys = 2;
-            if (xs > 16) xs = 16; if (ys > 16) ys = 16;
-            int gridW = xs + 1, gridH = ys + 1;
-
-            double *lva = new(std::nothrow) double[gridW * gridH * 2];
-            if (!lva) return;
-
-            for (int i = 0; i < gridW; i++) {
-                double px = vp->pix_width / (double)xs * i;
-                for (int j = 0; j < gridH; j++) {
-                    double py = vp->pix_height / (double)ys * j;
-                    double lat, lon;
-                    wxPoint pt((int)px, (int)py);
-                    GetCanvasLLPix(vp, pt, &lat, &lon);
-                    // GRIB pattern: only wrap longitude for non-repeat mode
-                    if (!repeat) {
-                        if (clon - lon > 180) lon += 360;
-                        else if (lon - clon > 180) lon -= 360;
-                    }
-                    // For repeat mode: use raw lon, let GL_REPEAT handle wrapping
-                    int idx = (i * gridH + j) * 2;
-                    lva[idx]     = ((lon - lon_min) / lonstep - repeat + 1.5) / tw * potNormX;
-                    lva[idx + 1] = ((lat - lat_min) / latstep + 1.5) / th * potNormY;
-                }
-            }
-
-            glEnable(GL_TEXTURE_2D);
-            glBindTexture(GL_TEXTURE_2D, m_glSalinityTexture);
-            glEnable(GL_BLEND);
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-            glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
-            glColor4f(1, 1, 1, 1);
-
-            double xS = vp->pix_width / (double)xs;
-            double yS = vp->pix_height / (double)ys;
-            for (int i = 0; i < xs; i++) {
-                for (int j = 0; j < ys; j++) {
-                    int i00 = (i * gridH + j) * 2;
-                    int i10 = ((i+1) * gridH + j) * 2;
-                    int i11 = ((i+1) * gridH + j+1) * 2;
-                    int i01 = (i * gridH + j+1) * 2;
-                    double u0=lva[i00], u1=lva[i10], u2=lva[i11], u3=lva[i01];
-                    double v0=lva[i00+1], v1=lva[i10+1], v2=lva[i11+1], v3=lva[i01+1];
-
-                    // Phase matching for repeat textures (GRIB pattern)
-                    if (repeat) {
-                        if (u1 - u0 > .5) u1--;
-                        else if (u0 - u1 > .5) u1++;
-                        if (u2 - u0 > .5) u2--;
-                        else if (u0 - u2 > .5) u2++;
-                        if (u3 - u0 > .5) u3--;
-                        else if (u0 - u3 > .5) u3++;
-                    }
-
-                    if (!((repeat ||
-                           ((u0>=0||u1>=0||u2>=0||u3>=0)&&(u0<=1||u1<=1||u2<=1||u3<=1))) &&
-                          (v0>=0||v1>=0||v2>=0||v3>=0)&&(v0<=1||v1<=1||v2<=1||v3<=1))) continue;
-                    if (u1 <= u0) continue;
-                    double x = xS * i, y = yS * j;
-                    glBegin(GL_QUADS);
-                    glTexCoord2d(u0,v0); glVertex2f((float)x,(float)y);
-                    glTexCoord2d(u1,v1); glVertex2f((float)(x+xS),(float)y);
-                    glTexCoord2d(u2,v2); glVertex2f((float)(x+xS),(float)(y+yS));
-                    glTexCoord2d(u3,v3); glVertex2f((float)x,(float)(y+yS));
-                    glEnd();
-                }
-            }
-            delete[] lva;
-
-            glDisable(GL_BLEND);
-            glDisable(GL_TEXTURE_2D);
-            glBindTexture(GL_TEXTURE_2D, 0);
-        }
-#endif
-    }
+    RenderGridOverlay(vp, gui ? gui->gridSalinity : NULL,
+                      &ncdfOverlayFactory::GetSalinityGraphicColor,
+                      m_glSalinityTexture, m_bHasSalinityTexture, m_bNeedsSalinityTexRebuild,
+                      m_salTexDataDim, m_salTexGLDim);
 }
 
 void ncdfOverlayFactory::RenderSeaTempIsoLines(PlugIn_ViewPort *vp)

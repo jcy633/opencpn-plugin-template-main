@@ -117,6 +117,14 @@ public:
      void RenderSalinityOverlay(PlugIn_ViewPort *vp);
      void DeleteSalinityTexture();
 
+     // Shared grid overlay renderer for SST / Salinity (parameterized)
+     typedef wxColour (ncdfOverlayFactory::*ColorFunc)(double);
+     void RenderGridOverlay(PlugIn_ViewPort *vp,
+                            double **grid,
+                            ColorFunc colorFunc,
+                            GLuint &texID, bool &hasTex, bool &needsRebuild,
+                            int dataDim[2], int glDim[2]);
+
      PlugIn_ViewPort 	*vp;
 	 bool 		m_bReadyToRender;
 	 bool		renderSelectionRectangle;
