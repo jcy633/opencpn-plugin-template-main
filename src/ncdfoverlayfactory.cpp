@@ -200,10 +200,13 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
         !plugin->m_bShowParticles && !plugin->m_bShowSeaTemp &&
         !plugin->m_bShowSeaTempIso && !plugin->m_bShowSalinity) return false;
 
-    // Lazy shader init (first render call, GL context is available)
-    if (!m_useShader && !ncdf_shader_initialized()) {
-        m_useShader = ncdf_shader_init();
-    }
+    // Shader init DISABLED — wglGetProcAddress returns stubs that crash on this system
+    // TODO: integrate GLEW or use a safer GL extension loading mechanism
+    // static bool s_shaderInitAttempted = false;
+    // if (!m_useShader && !s_shaderInitAttempted) {
+    //     s_shaderInitAttempted = true;
+    //     m_useShader = ncdf_shader_init();
+    // }
 
     static int s_frameDbg = 0;
     if (s_frameDbg < 5) {

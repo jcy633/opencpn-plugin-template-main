@@ -32,13 +32,15 @@
 #endif
 
 // Load GL extension function at runtime
+// On Windows, OpenGL 2.0+ core functions must be loaded from opengl32.dll
+// via GetProcAddress (not wglGetProcAddress which only works for extensions)
 static void* load_gl(const char* name) {
 #ifdef _WIN32
-    void* p = (void*)wglGetProcAddress(name);
-    if (!p) {
-        static HMODULE hGL = LoadLibraryA("opengl32.dll");
-        if (hGL) p = (void*)GetProcAddress(hGL, name);
-    }
+    static HMODULE hGL = NULL;
+    if (!hGL) hGL = LoadLibraryA("opengl32.dll");
+    void* p = NULL;
+    if (hGL) p = (void*)GetProcAddress(hGL, name);
+    if (!p) p = (void*)wglGetProcAddress(name);
     return p;
 #else
     return NULL;
@@ -113,7 +115,11 @@ static bool load_gl_extensions() {
     fpEnableVertexAttribArray = (fp_enable_va_t)load_gl("glEnableVertexAttribArray");
     fpDisableVertexAttribArray = (fp_disable_va_t)load_gl("glDisableVertexAttribArray");
     fpVertexAttribPointer = (fp_va_pointer_t)load_gl("glVertexAttribPointer");
-    return (fpCreateProgram && fpCreateShader && fpCompileShader && fpShaderSource && fpLinkProgram && fpUseProgram);
+    // All critical functions must be loaded
+    return (fpCreateProgram && fpCreateShader && fpCompileShader && fpShaderSource &&
+            fpLinkProgram && fpUseProgram && fpGetShaderiv && fpGetProgramiv &&
+            fpGetUniformLocation && fpUniform1i && fpEnableVertexAttribArray &&
+            fpDisableVertexAttribArray && fpVertexAttribPointer);
 }
 
 // GLSL 1.20 vertex shader
@@ -223,9 +229,15 @@ bool ncdf_shader_initialized() { return s_initialized; }
 
 bool ncdf_shader_init() {
     if (s_initialized) return true;
+    static bool s_initAttempted = false;
+    if (s_initAttempted) return false;  // Don't retry after failure
+    s_initAttempted = true;
+
     s_supported = ncdf_shader_supported();
     if (!s_supported) { fprintf(stderr, "[shader] GL < 2.0, fallback\n"); return false; }
+    fprintf(stderr, "[shader] loading GL extensions...\n");
     if (!load_gl_extensions()) { fprintf(stderr, "[shader] ext load failed\n"); s_supported = false; return false; }
+    fprintf(stderr, "[shader] compiling vertex shader...\n");
 
     s_vs = compile_shader_gl(0x8B31 /*GL_VERTEX_SHADER*/, s_vert);
     if (!s_vs) { s_supported = false; return false; }
