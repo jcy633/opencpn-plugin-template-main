@@ -28,9 +28,10 @@ include(PluginCompiler)
 
 add_library(${CMAKE_PROJECT_NAME} SHARED EXCLUDE_FROM_ALL ${SRC} ${HEADERS})
 include_directories(
-		BEFORE 
+		BEFORE
 		${CMAKE_SOURCE_DIR}/include
 		${CMAKE_SOURCE_DIR}/include/utils
+		${CMAKE_SOURCE_DIR}/opencpn-libs/WindowsHeaders/include
 )
 
 if(WIN32)

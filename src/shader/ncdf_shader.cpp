@@ -1,7 +1,6 @@
 //===================================================================
-// ncdf_shader.cpp — Shader framework with runtime GL extension loading
-// High cohesion: all shader logic self-contained
-// Low coupling: exposes only init/cleanup/use/uniform API
+// ncdf_shader.cpp — Shader framework with GLEW-style GL loading
+// Uses glext.h typedefs for correct function pointer types
 //===================================================================
 
 #include "shader/ncdf_shader.h"
@@ -14,6 +13,14 @@
 #endif
 #include <GL/gl.h>
 
+// GL types not in gl.h (defined in glext.h)
+#ifndef GLchar
+typedef char GLchar;
+#endif
+#ifndef GLvoid
+typedef void GLvoid;
+#endif
+
 // GL shader constants (not in basic GL/gl.h)
 #ifndef GL_VERTEX_SHADER
 #define GL_VERTEX_SHADER 0x8B31
@@ -21,100 +28,103 @@
 #ifndef GL_FRAGMENT_SHADER
 #define GL_FRAGMENT_SHADER 0x8B30
 #endif
-#ifndef GL_COMPILE_STATUS
-#define GL_COMPILE_STATUS 0x8B81
+#ifndef GL_CLAMP_TO_EDGE
+#define GL_CLAMP_TO_EDGE 0x812F
 #endif
 #ifndef GL_LINK_STATUS
 #define GL_LINK_STATUS 0x8B82
 #endif
-#ifndef GL_CLAMP_TO_EDGE
-#define GL_CLAMP_TO_EDGE 0x812F
+#ifndef GL_COMPILE_STATUS
+#define GL_COMPILE_STATUS 0x8B81
 #endif
 
-// Load GL extension function at runtime
-// On Windows, OpenGL 2.0+ core functions must be loaded from opengl32.dll
-// via GetProcAddress (not wglGetProcAddress which only works for extensions)
+// Load GL function at runtime
 static void* load_gl(const char* name) {
 #ifdef _WIN32
-    static HMODULE hGL = NULL;
-    if (!hGL) hGL = LoadLibraryA("opengl32.dll");
-    void* p = NULL;
-    if (hGL) p = (void*)GetProcAddress(hGL, name);
-    if (!p) p = (void*)wglGetProcAddress(name);
+    void* p = (void*)wglGetProcAddress(name);
+    if (!p) {
+        static HMODULE hGL = LoadLibraryA("opengl32.dll");
+        if (hGL) p = (void*)GetProcAddress(hGL, name);
+    }
     return p;
 #else
     return NULL;
 #endif
 }
 
-// Function pointer types using basic C types to avoid GL header conflicts
-typedef unsigned int (*fp_create_t)(void);
-typedef unsigned int (*fp_create_shader_t)(unsigned int);
-typedef void (*fp_delete_t)(unsigned int);
-typedef void (*fp_attach_t)(unsigned int, unsigned int);
-typedef void (*fp_link_t)(unsigned int);
-typedef void (*fp_use_t)(unsigned int);
-typedef void (*fp_compile_t)(unsigned int);
-typedef int  (*fp_uniform_loc_t)(unsigned int, const char*);
-typedef void (*fp_uniform_1i_t)(int, int);
-typedef void (*fp_uniform_1f_t)(int, float);
-typedef void (*fp_uniform_2f_t)(int, float, float);
-typedef void (*fp_bind_attr_t)(unsigned int, unsigned int, const char*);
-typedef void (*fp_active_tex_t)(unsigned int);
-typedef void (*fp_enable_va_t)(unsigned int);
-typedef void (*fp_disable_va_t)(unsigned int);
-typedef void (*fp_va_pointer_t)(unsigned int, int, unsigned int, unsigned char, int, const void*);
+// Function pointer types matching OpenGL 2.0 signatures exactly
+// Using GLuint/GLint/GLenum/GLsizei/GLfloat/GLchar from GL/gl.h
+typedef GLuint (APIENTRY *PFN_CREATEPROGRAM)(void);
+typedef GLuint (APIENTRY *PFN_CREATESHADER)(GLenum);
+typedef void (APIENTRY *PFN_DELETESHADER)(GLuint);
+typedef void (APIENTRY *PFN_DELETEPROGRAM)(GLuint);
+typedef void (APIENTRY *PFN_ATTACHSHADER)(GLuint, GLuint);
+typedef void (APIENTRY *PFN_LINKPROGRAM)(GLuint);
+typedef void (APIENTRY *PFN_USEPROGRAM)(GLuint);
+typedef void (APIENTRY *PFN_COMPILESHADER)(GLuint);
+typedef void (APIENTRY *PFN_SHADERSOURCE)(GLuint, GLsizei, const GLchar**, const GLint*);
+typedef void (APIENTRY *PFN_GETSHADERIV)(GLuint, GLenum, GLint*);
+typedef void (APIENTRY *PFN_GETSHADERINFOLOG)(GLuint, GLsizei, GLsizei*, GLchar*);
+typedef void (APIENTRY *PFN_GETPROGRAMIV)(GLuint, GLenum, GLint*);
+typedef void (APIENTRY *PFN_GETPROGRAMINFOLOG)(GLuint, GLsizei, GLsizei*, GLchar*);
+typedef GLint (APIENTRY *PFN_GETUNIFORMLOCATION)(GLuint, const GLchar*);
+typedef void (APIENTRY *PFN_UNIFORM1I)(GLint, GLint);
+typedef void (APIENTRY *PFN_UNIFORM1F)(GLint, GLfloat);
+typedef void (APIENTRY *PFN_UNIFORM2F)(GLint, GLfloat, GLfloat);
+typedef void (APIENTRY *PFN_BINDATTRIBLOCATION)(GLuint, GLuint, const GLchar*);
+typedef void (APIENTRY *PFN_ACTIVETEXTURE)(GLenum);
+typedef void (APIENTRY *PFN_ENABLEVERTEXATTRIBARRAY)(GLuint);
+typedef void (APIENTRY *PFN_DISABLEVERTEXATTRIBARRAY)(GLuint);
+typedef void (APIENTRY *PFN_VERTEXATTRIBPOINTER)(GLuint, GLint, GLenum, GLboolean, GLsizei, const GLvoid*);
 
-// Loaded function pointers
-static fp_create_t fpCreateProgram = NULL;
-static fp_create_shader_t fpCreateShader = NULL;
-static fp_delete_t fpDeleteShader = NULL;
-static fp_delete_t fpDeleteProgram = NULL;
-static fp_attach_t fpAttachShader = NULL;
-static fp_link_t fpLinkProgram = NULL;
-static fp_use_t fpUseProgram = NULL;
-static fp_compile_t fpCompileShader = NULL;
-static fp_uniform_loc_t fpGetUniformLocation = NULL;
-static fp_uniform_1i_t fpUniform1i = NULL;
-static fp_uniform_1f_t fpUniform1f = NULL;
-static fp_uniform_2f_t fpUniform2f = NULL;
-static fp_bind_attr_t fpBindAttribLocation = NULL;
-static fp_active_tex_t fpActiveTexture = NULL;
-static fp_enable_va_t fpEnableVertexAttribArray = NULL;
-static fp_disable_va_t fpDisableVertexAttribArray = NULL;
-static fp_va_pointer_t fpVertexAttribPointer = NULL;
-
-// glShaderSource/glGetShaderiv/glGetShaderInfoLog have complex signatures
-// Load as void* and cast when calling
-static void* fpShaderSource = NULL;
-static void* fpGetShaderiv = NULL;
-static void* fpGetShaderInfoLog = NULL;
-static void* fpGetProgramiv = NULL;
-static void* fpGetProgramInfoLog = NULL;
+// Function pointer variables
+static PFN_CREATEPROGRAM fpCreateProgram = NULL;
+static PFN_CREATESHADER fpCreateShader = NULL;
+static PFN_DELETESHADER fpDeleteShader = NULL;
+static PFN_DELETEPROGRAM fpDeleteProgram = NULL;
+static PFN_ATTACHSHADER fpAttachShader = NULL;
+static PFN_LINKPROGRAM fpLinkProgram = NULL;
+static PFN_USEPROGRAM fpUseProgram = NULL;
+static PFN_COMPILESHADER fpCompileShader = NULL;
+static PFN_SHADERSOURCE fpShaderSource = NULL;
+static PFN_GETSHADERIV fpGetShaderiv = NULL;
+static PFN_GETSHADERINFOLOG fpGetShaderInfoLog = NULL;
+static PFN_GETPROGRAMIV fpGetProgramiv = NULL;
+static PFN_GETPROGRAMINFOLOG fpGetProgramInfoLog = NULL;
+static PFN_GETUNIFORMLOCATION fpGetUniformLocation = NULL;
+static PFN_UNIFORM1I fpUniform1i = NULL;
+static PFN_UNIFORM1F fpUniform1f = NULL;
+static PFN_UNIFORM2F fpUniform2f = NULL;
+static PFN_BINDATTRIBLOCATION fpBindAttribLocation = NULL;
+static PFN_ACTIVETEXTURE fpActiveTexture = NULL;
+static PFN_ENABLEVERTEXATTRIBARRAY fpEnableVertexAttribArray = NULL;
+static PFN_DISABLEVERTEXATTRIBARRAY fpDisableVertexAttribArray = NULL;
+static PFN_VERTEXATTRIBPOINTER fpVertexAttribPointer = NULL;
 
 static bool load_gl_extensions() {
-    fpCreateProgram = (fp_create_t)load_gl("glCreateProgram");
-    fpCreateShader = (fp_create_shader_t)load_gl("glCreateShader");
-    fpDeleteShader = (fp_delete_t)load_gl("glDeleteShader");
-    fpDeleteProgram = (fp_delete_t)load_gl("glDeleteProgram");
-    fpAttachShader = (fp_attach_t)load_gl("glAttachShader");
-    fpLinkProgram = (fp_link_t)load_gl("glLinkProgram");
-    fpUseProgram = (fp_use_t)load_gl("glUseProgram");
-    fpCompileShader = (fp_compile_t)load_gl("glCompileShader");
-    fpShaderSource = load_gl("glShaderSource");
-    fpGetShaderiv = load_gl("glGetShaderiv");
-    fpGetShaderInfoLog = load_gl("glGetShaderInfoLog");
-    fpGetProgramiv = load_gl("glGetProgramiv");
-    fpGetProgramInfoLog = load_gl("glGetProgramInfoLog");
-    fpGetUniformLocation = (fp_uniform_loc_t)load_gl("glGetUniformLocation");
-    fpUniform1i = (fp_uniform_1i_t)load_gl("glUniform1i");
-    fpUniform1f = (fp_uniform_1f_t)load_gl("glUniform1f");
-    fpUniform2f = (fp_uniform_2f_t)load_gl("glUniform2f");
-    fpBindAttribLocation = (fp_bind_attr_t)load_gl("glBindAttribLocation");
-    fpActiveTexture = (fp_active_tex_t)load_gl("glActiveTexture");
-    fpEnableVertexAttribArray = (fp_enable_va_t)load_gl("glEnableVertexAttribArray");
-    fpDisableVertexAttribArray = (fp_disable_va_t)load_gl("glDisableVertexAttribArray");
-    fpVertexAttribPointer = (fp_va_pointer_t)load_gl("glVertexAttribPointer");
+    fpCreateProgram = (PFN_CREATEPROGRAM)load_gl("glCreateProgram");
+    fpCreateShader = (PFN_CREATESHADER)load_gl("glCreateShader");
+    fpDeleteShader = (PFN_DELETESHADER)load_gl("glDeleteShader");
+    fpDeleteProgram = (PFN_DELETEPROGRAM)load_gl("glDeleteProgram");
+    fpAttachShader = (PFN_ATTACHSHADER)load_gl("glAttachShader");
+    fpLinkProgram = (PFN_LINKPROGRAM)load_gl("glLinkProgram");
+    fpUseProgram = (PFN_USEPROGRAM)load_gl("glUseProgram");
+    fpCompileShader = (PFN_COMPILESHADER)load_gl("glCompileShader");
+    fpShaderSource = (PFN_SHADERSOURCE)load_gl("glShaderSource");
+    fpGetShaderiv = (PFN_GETSHADERIV)load_gl("glGetShaderiv");
+    fpGetShaderInfoLog = (PFN_GETSHADERINFOLOG)load_gl("glGetShaderInfoLog");
+    fpGetProgramiv = (PFN_GETPROGRAMIV)load_gl("glGetProgramiv");
+    fpGetProgramInfoLog = (PFN_GETPROGRAMINFOLOG)load_gl("glGetProgramInfoLog");
+    fpGetUniformLocation = (PFN_GETUNIFORMLOCATION)load_gl("glGetUniformLocation");
+    fpUniform1i = (PFN_UNIFORM1I)load_gl("glUniform1i");
+    fpUniform1f = (PFN_UNIFORM1F)load_gl("glUniform1f");
+    fpUniform2f = (PFN_UNIFORM2F)load_gl("glUniform2f");
+    fpBindAttribLocation = (PFN_BINDATTRIBLOCATION)load_gl("glBindAttribLocation");
+    fpActiveTexture = (PFN_ACTIVETEXTURE)load_gl("glActiveTexture");
+    fpEnableVertexAttribArray = (PFN_ENABLEVERTEXATTRIBARRAY)load_gl("glEnableVertexAttribArray");
+    fpDisableVertexAttribArray = (PFN_DISABLEVERTEXATTRIBARRAY)load_gl("glDisableVertexAttribArray");
+    fpVertexAttribPointer = (PFN_VERTEXATTRIBPOINTER)load_gl("glVertexAttribPointer");
+
     // All critical functions must be loaded
     return (fpCreateProgram && fpCreateShader && fpCompileShader && fpShaderSource &&
             fpLinkProgram && fpUseProgram && fpGetShaderiv && fpGetProgramiv &&
@@ -134,7 +144,6 @@ static const char* s_vert =
     "}\n";
 
 // GLSL 1.20 fragment shader: sharpening + missing value discard
-// Avoids GLSL 1.20 `continue` (incompatible with some old drivers)
 static const char* s_frag =
     "#version 120\n"
     "uniform sampler2D dataTex;\n"
@@ -162,47 +171,38 @@ static const char* s_frag =
     "    gl_FragColor = vec4(clamp(sharpened, 0.0, 1.0), center.a);\n"
     "}\n";
 
-// Compile a shader using raw function pointers
-static unsigned int compile_shader_gl(unsigned int type, const char* src) {
-    unsigned int s = fpCreateShader(type);
+// Compile a shader
+static GLuint compile_shader_gl(GLenum type, const char* src) {
+    GLuint s = fpCreateShader(type);
     if (!s) return 0;
-    // glShaderSource(shader, 1, &source, NULL)
-    typedef void (*ss_fn)(unsigned int, int, const char**, const int*);
-    ((ss_fn)fpShaderSource)(s, 1, &src, NULL);
+    fpShaderSource(s, 1, &src, NULL);
     fpCompileShader(s);
-    // glGetShaderiv(shader, GL_COMPILE_STATUS, &status)
-    typedef void (*gsi_fn)(unsigned int, unsigned int, int*);
-    int st;
-    ((gsi_fn)fpGetShaderiv)(s, 0x8B81 /*GL_COMPILE_STATUS*/, &st);
+    GLint st;
+    fpGetShaderiv(s, GL_COMPILE_STATUS, &st);
     if (!st) {
-        typedef void (*gil_fn)(unsigned int, int, int*, char*);
         char log[512];
-        ((gil_fn)fpGetShaderInfoLog)(s, 512, NULL, log);
-        fprintf(stderr, "[shader] compile: %s\n", log);
+        fpGetShaderInfoLog(s, sizeof(log), NULL, log);
+        fprintf(stderr, "[shader] compile error: %s\n", log);
         fpDeleteShader(s);
         return 0;
     }
     return s;
 }
 
-static unsigned int link_program_gl(unsigned int vs, unsigned int fs) {
-    unsigned int p = fpCreateProgram();
+static GLuint link_program_gl(GLuint vs, GLuint fs) {
+    GLuint p = fpCreateProgram();
     if (!p) return 0;
     fpAttachShader(p, vs);
     fpAttachShader(p, fs);
-    if (fpBindAttribLocation) {
-        fpBindAttribLocation(p, 0, "aPos");
-        fpBindAttribLocation(p, 1, "aUV");
-    }
+    fpBindAttribLocation(p, 0, "aPos");
+    fpBindAttribLocation(p, 1, "aUV");
     fpLinkProgram(p);
-    typedef void (*gpi_fn)(unsigned int, unsigned int, int*);
-    int st;
-    ((gpi_fn)fpGetProgramiv)(p, 0x8B82 /*GL_LINK_STATUS*/, &st);
+    GLint st;
+    fpGetProgramiv(p, GL_LINK_STATUS, &st);
     if (!st) {
-        typedef void (*gpil_fn)(unsigned int, int, int*, char*);
         char log[512];
-        ((gpil_fn)fpGetProgramInfoLog)(p, 512, NULL, log);
-        fprintf(stderr, "[shader] link: %s\n", log);
+        fpGetProgramInfoLog(p, sizeof(log), NULL, log);
+        fprintf(stderr, "[shader] link error: %s\n", log);
         fpDeleteProgram(p);
         return 0;
     }
@@ -212,9 +212,7 @@ static unsigned int link_program_gl(unsigned int vs, unsigned int fs) {
 // Module state
 static bool s_supported = false;
 static bool s_initialized = false;
-static unsigned int s_program = 0;
-static unsigned int s_vs = 0;
-static unsigned int s_fs = 0;
+static GLuint s_program = 0, s_vs = 0, s_fs = 0;
 static NcdfShaderUniforms s_uniforms;
 
 bool ncdf_shader_supported() {
@@ -229,20 +227,23 @@ bool ncdf_shader_initialized() { return s_initialized; }
 
 bool ncdf_shader_init() {
     if (s_initialized) return true;
-    static bool s_initAttempted = false;
-    if (s_initAttempted) return false;  // Don't retry after failure
-    s_initAttempted = true;
+    static bool s_attempted = false;
+    if (s_attempted) return false;
+    s_attempted = true;
 
     s_supported = ncdf_shader_supported();
     if (!s_supported) { fprintf(stderr, "[shader] GL < 2.0, fallback\n"); return false; }
+
     fprintf(stderr, "[shader] loading GL extensions...\n");
     if (!load_gl_extensions()) { fprintf(stderr, "[shader] ext load failed\n"); s_supported = false; return false; }
-    fprintf(stderr, "[shader] compiling vertex shader...\n");
 
-    s_vs = compile_shader_gl(0x8B31 /*GL_VERTEX_SHADER*/, s_vert);
+    fprintf(stderr, "[shader] compiling shaders...\n");
+    s_vs = compile_shader_gl(GL_VERTEX_SHADER, s_vert);
     if (!s_vs) { s_supported = false; return false; }
-    s_fs = compile_shader_gl(0x8B30 /*GL_FRAGMENT_SHADER*/, s_frag);
+    s_fs = compile_shader_gl(GL_FRAGMENT_SHADER, s_frag);
     if (!s_fs) { fpDeleteShader(s_vs); s_vs = 0; s_supported = false; return false; }
+
+    fprintf(stderr, "[shader] linking program...\n");
     s_program = link_program_gl(s_vs, s_fs);
     if (!s_program) { fpDeleteShader(s_vs); s_vs = 0; fpDeleteShader(s_fs); s_fs = 0; s_supported = false; return false; }
 
@@ -274,7 +275,7 @@ void ncdf_shader_cleanup() {
 unsigned int ncdf_shader_get_grid_program() { return s_program; }
 NcdfShaderUniforms ncdf_shader_get_uniforms() { return s_uniforms; }
 
-// Runtime GL function wrappers for external use
+// Runtime GL function wrappers
 void ncdf_shader_use_program(unsigned int p) { if (fpUseProgram) fpUseProgram(p); }
 void ncdf_shader_uniform_1i(int loc, int v) { if (fpUniform1i && loc >= 0) fpUniform1i(loc, v); }
 void ncdf_shader_uniform_1f(int loc, float v) { if (fpUniform1f && loc >= 0) fpUniform1f(loc, v); }
@@ -283,7 +284,7 @@ void ncdf_shader_active_texture(unsigned int t) { if (fpActiveTexture) fpActiveT
 void ncdf_shader_enable_attrib(unsigned int i) { if (fpEnableVertexAttribArray) fpEnableVertexAttribArray(i); }
 void ncdf_shader_disable_attrib(unsigned int i) { if (fpDisableVertexAttribArray) fpDisableVertexAttribArray(i); }
 void ncdf_shader_attrib_pointer(unsigned int i, int sz, int stride, const void* p) {
-    if (fpVertexAttribPointer) fpVertexAttribPointer(i, sz, 0x1406 /*GL_FLOAT*/, 0, stride, p);
+    if (fpVertexAttribPointer) fpVertexAttribPointer(i, sz, GL_FLOAT, GL_FALSE, stride, p);
 }
 
 //===================================================================
@@ -301,8 +302,8 @@ unsigned int ncdf_shader_create_data_texture(const float* data, int w, int h) {
             px[i*4] = packed; px[i*4+1] = packed; px[i*4+2] = packed; px[i*4+3] = 255;
         }
     }
-    unsigned int t;
-    glGenTextures(1, (GLuint*)&t);
+    GLuint t;
+    glGenTextures(1, &t);
     glBindTexture(GL_TEXTURE_2D, t);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
@@ -314,7 +315,7 @@ unsigned int ncdf_shader_create_data_texture(const float* data, int w, int h) {
 }
 
 void ncdf_shader_delete_data_texture(unsigned int t) {
-    if (t) glDeleteTextures(1, (GLuint*)&t);
+    if (t) glDeleteTextures(1, &t);
 }
 
 //===================================================================
