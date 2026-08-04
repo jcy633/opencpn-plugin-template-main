@@ -20,12 +20,15 @@ unsigned int ncdf_shader_get_grid_program();
 
 // Uniform locations (cached at init time)
 struct NcdfShaderUniforms {
-    int dataTex;        // sampler2D: RGBA color-mapped texture
+    int dataTex;        // sampler2D: luminance data texture
+    int colorLUT;       // sampler1D: color lookup texture
     int texSize;        // vec2: texture dimensions
     int numStops;       // int: color stop count
     int colorStops[16]; // vec4[16]: [value, R, G, B] per stop
     int sharpness;      // float: sharpening strength
     int enableAA;       // bool: color band anti-aliasing
+    int dataMin;        // float: min data value for denormalization
+    int dataMax;        // float: max data value for denormalization
 };
 NcdfShaderUniforms ncdf_shader_get_uniforms();
 

@@ -204,11 +204,17 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
     static bool s_shaderInitAttempted = false;
     if (!m_useShader && !s_shaderInitAttempted) {
         s_shaderInitAttempted = true;
-        m_useShader = ncdf_shader_init();
+        // Only try init if GL version is sufficient
+        const char* glVer = (const char*)glGetString(GL_VERSION);
+        int glMaj = 0;
+        if (glVer) sscanf(glVer, "%d", &glMaj);
+        if (glMaj >= 2) {
+            m_useShader = ncdf_shader_init();
+        }
         if (!m_useShader) {
-            wxLogMessage(_T("[shader] init failed, using fixed pipeline"));
+            wxLogMessage(_T("[shader] disabled (GL=%s)"), wxString(glVer ? glVer : "unknown"));
         } else {
-            wxLogMessage(_T("[shader] init OK, shader path enabled"));
+            wxLogMessage(_T("[shader] enabled"));
         }
     }
 

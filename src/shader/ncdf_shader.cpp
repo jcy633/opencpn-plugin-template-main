@@ -143,32 +143,51 @@ static const char* s_vert =
     "    gl_Position = gl_ModelViewProjectionMatrix * vec4(aPos, 0.0, 1.0);\n"
     "}\n";
 
-// GLSL 1.20 fragment shader: sharpening + missing value discard
+// GLSL 1.20 fragment shader: bicubic LA texture + color lookup
 static const char* s_frag =
     "#version 120\n"
     "uniform sampler2D dataTex;\n"
+    "uniform sampler1D colorLUT;\n"
     "uniform vec2 texSize;\n"
-    "uniform float sharpness;\n"
     "varying vec2 vUV;\n"
+    "\n"
+    "vec4 cubic(float t) {\n"
+    "    float t2=t*t, t3=t2*t;\n"
+    "    vec4 w;\n"
+    "    w.x = -t3+3.0*t2-3.0*t+1.0;\n"
+    "    w.y = 3.0*t3-6.0*t2+4.0;\n"
+    "    w.z = -3.0*t3+3.0*t2+3.0*t+1.0;\n"
+    "    w.w = t3;\n"
+    "    return w / 6.0;\n"
+    "}\n"
+    "\n"
+    "float bicubicLum(sampler2D tex, vec2 uv, vec2 sz) {\n"
+    "    vec2 ts = 1.0 / sz;\n"
+    "    vec2 tc = uv * sz - 0.5;\n"
+    "    vec2 f = fract(tc);\n"
+    "    vec4 wx = cubic(f.x); vec4 wy = cubic(f.y);\n"
+    "    wx /= dot(wx, vec4(1.0)); wy /= dot(wy, vec4(1.0));\n"
+    "    float val = 0.0, wSum = 0.0;\n"
+    "    for (int j = -1; j <= 2; j++) {\n"
+    "        for (int i = -1; i <= 2; i++) {\n"
+    "            vec2 suv = (tc + vec2(float(i), float(j)) + 0.5) * ts;\n"
+    "            vec4 s = texture2D(tex, suv);\n"
+    "            if (s.a > 0.01) {\n"
+    "                float w = wx[i+1] * wy[j+1];\n"
+    "                val += s.r * w; wSum += w;\n"
+    "            }\n"
+    "        }\n"
+    "    }\n"
+    "    return (wSum > 0.0) ? val / wSum : -1.0;\n"
+    "}\n"
+    "\n"
     "void main() {\n"
     "    vec4 center = texture2D(dataTex, vUV);\n"
-    "    if (center.a < 0.01) discard;\n"
-    "    vec2 ts = 1.0 / texSize;\n"
-    "    vec4 left  = texture2D(dataTex, vUV - vec2(ts.x, 0.0));\n"
-    "    vec4 right = texture2D(dataTex, vUV + vec2(ts.x, 0.0));\n"
-    "    vec4 up    = texture2D(dataTex, vUV - vec2(0.0, ts.y));\n"
-    "    vec4 down  = texture2D(dataTex, vUV + vec2(0.0, ts.y));\n"
-    "    float wL = step(0.01, left.a);\n"
-    "    float wR = step(0.01, right.a);\n"
-    "    float wU = step(0.01, up.a);\n"
-    "    float wD = step(0.01, down.a);\n"
-    "    float wSum = wL + wR + wU + wD;\n"
-    "    vec3 blur = vec3(0.0);\n"
-    "    if (wSum > 0.0) {\n"
-    "        blur = (left.rgb * wL + right.rgb * wR + up.rgb * wU + down.rgb * wD) / wSum;\n"
-    "    }\n"
-    "    vec3 sharpened = center.rgb + sharpness * (center.rgb - blur);\n"
-    "    gl_FragColor = vec4(clamp(sharpened, 0.0, 1.0), center.a);\n"
+    "    if (center.a < 0.01) discard;  // Land/missing data\n"
+    "    float sampled = bicubicLum(dataTex, vUV, texSize);\n"
+    "    if (sampled < 0.0) discard;  // All neighbors missing\n"
+    "    vec3 color = texture1D(colorLUT, sampled).rgb;\n"
+    "    gl_FragColor = vec4(color, 1.0);\n"
     "}\n";
 
 // Compile a shader
@@ -250,8 +269,13 @@ bool ncdf_shader_init() {
     // Cache uniform locations
     memset(&s_uniforms, 0xFF, sizeof(s_uniforms));
     s_uniforms.dataTex = fpGetUniformLocation(s_program, "dataTex");
+    s_uniforms.colorLUT = fpGetUniformLocation(s_program, "colorLUT");
     s_uniforms.texSize = fpGetUniformLocation(s_program, "texSize");
     s_uniforms.numStops = fpGetUniformLocation(s_program, "numStops");
+    s_uniforms.sharpness = fpGetUniformLocation(s_program, "sharpness");
+    s_uniforms.enableAA = fpGetUniformLocation(s_program, "enableAA");
+    s_uniforms.dataMin = fpGetUniformLocation(s_program, "dataMin");
+    s_uniforms.dataMax = fpGetUniformLocation(s_program, "dataMax");
     s_uniforms.sharpness = fpGetUniformLocation(s_program, "sharpness");
     s_uniforms.enableAA = fpGetUniformLocation(s_program, "enableAA");
     for (int i = 0; i < 16; i++) {

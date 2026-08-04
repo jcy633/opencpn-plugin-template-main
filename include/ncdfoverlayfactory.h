@@ -187,6 +187,10 @@ private:
 	 // Shader rendering (optional, auto-fallback to fixed pipeline)
 	 bool m_useShader;
 
+	 // Color lookup texture for shader (shared, regenerated per data change)
+	 GLuint m_glColorLUT;
+	 bool m_bHasColorLUT;
+
 	 // Sea temperature texture cache
 	 GLuint m_glSeaTempTexture;
 	 bool m_bHasSeaTempTexture;

@@ -138,6 +138,9 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
     int nj = gui->myMessage.latLength;
     if (ni < 2 || nj < 2) return;
 
+    // Data range for shader denormalization
+    static double s_dMin = 0, s_dMax = 1;
+
     if (!m_pdc) {
 #ifdef ocpnUSE_GL
         // Lazy texture rebuild (flagged by setData, safe in GL context)
@@ -149,6 +152,12 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
 
         // Create texture once per data change (GRIB pattern)
         if (!hasTex) {
+            // Invalidate color LUT when data changes
+            if (m_bHasColorLUT && m_glColorLUT) {
+                glDeleteTextures(1, &m_glColorLUT);
+                m_glColorLUT = 0;
+                m_bHasColorLUT = false;
+            }
             double lonMin = tlon, lonMax = blon;
             double gridSpacingLon = (lonMax - lonMin) / (ni - 1);
             bool repeat = (lonMax - lonMin + gridSpacingLon >= 360);
@@ -156,30 +165,50 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
             int borderH = repeat ? 0 : 1;
             int extraCol = repeat ? 1 : 0;
             int tw = ni + 2 * borderH + extraCol, th = nj + 2;
+
+            // Find data range for normalization
+            double dMin = 1e30, dMax = -1e30;
+            for (int j = 0; j < nj; j++) {
+                if (!grid[j]) continue;
+                for (int i = 0; i < ni; i++) {
+                    double v = grid[j][i];
+                    if (v != ncdf_NOTDEF && !isnan(v) && isfinite(v)) {
+                        if (v < dMin) dMin = v;
+                        if (v > dMax) dMax = v;
+                    }
+                }
+            }
+            if (dMax <= dMin) { dMin = 0; dMax = 1; }
+            double dRange = dMax - dMin;
+            if (dRange < 1e-10) dRange = 1.0;
+            s_dMin = dMin; s_dMax = dMax;
+
+            // Create RGBA texture: R=normalized data, A=validity flag
+            // Using RGBA (not LA) because GL_LINEAR works reliably on RGBA
             unsigned char *texData = new(std::nothrow) unsigned char[tw * th * 4];
             if (!texData) return;
             memset(texData, 0, tw * th * 4);
-
-            unsigned char alpha = 255;
 
             for (int j = 0; j < nj; j++) {
                 if (!grid[j]) break;
                 int texRow = (gui->myMessage.jDirectionIncr >= 0) ? j : (nj - 1 - j);
                 for (int i = 0; i < ni; i++) {
                     double val = grid[j][i];
-                    if (val == ncdf_NOTDEF || isnan(val) || !isfinite(val)) continue;
                     int x = i + borderH, y = texRow + 1;
                     if (x >= tw - 1 || y >= th - 1) continue;
-                    wxColour c = (this->*colorFunc)(val);
                     int off = 4 * (y * tw + x);
-                    texData[off]     = c.Red();
-                    texData[off + 1] = c.Green();
-                    texData[off + 2] = c.Blue();
-                    texData[off + 3] = alpha;
+                    if (val == ncdf_NOTDEF || isnan(val) || !isfinite(val)) {
+                        texData[off] = 0; texData[off+3] = 0;  // missing
+                    } else {
+                        double normalized = (val - dMin) / dRange;
+                        texData[off] = (unsigned char)(fmin(fmax(normalized, 0.0), 1.0) * 255.0);
+                        texData[off+1] = 0; texData[off+2] = 0;
+                        texData[off+3] = 255;  // valid
+                    }
                 }
             }
 
-            // Repeat mode: duplicate first column at end for seamless wrapping
+            // Repeat mode
             if (repeat) {
                 for (int j = 0; j < nj; j++) {
                     int texRow = (gui->myMessage.jDirectionIncr >= 0) ? j : (nj - 1 - j);
@@ -189,7 +218,7 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
                 }
             }
 
-            // GRIB-style border: copy adjacent row/col, then set border alpha=0
+            // Border handling
             memcpy(texData, texData + 4 * tw, 4 * tw);
             memcpy(texData + 4 * tw * (th - 1), texData + 4 * tw * (th - 2), 4 * tw);
             for (int x = 0; x < tw; x++) {
@@ -215,6 +244,25 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, tw, th, 0, GL_RGBA, GL_UNSIGNED_BYTE, texData);
             delete[] texData;
+
+            // Create 1D color lookup texture (256 pixels, maps normalized 0-1 → color)
+            // This avoids glUniform4f crashes by baking color stops into a texture
+            unsigned char colorLUT[256 * 4];
+            for (int k = 0; k < 256; k++) {
+                double val = dMin + (k / 255.0) * dRange;
+                wxColour c = (this->*colorFunc)(val);
+                colorLUT[k * 4] = c.Red();
+                colorLUT[k * 4 + 1] = c.Green();
+                colorLUT[k * 4 + 2] = c.Blue();
+                colorLUT[k * 4 + 3] = 255;
+            }
+            glGenTextures(1, &m_glColorLUT);
+            glBindTexture(GL_TEXTURE_1D, m_glColorLUT);
+            glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexImage1D(GL_TEXTURE_1D, 0, GL_RGBA, 256, 0, GL_RGBA, GL_UNSIGNED_BYTE, colorLUT);
+            m_bHasColorLUT = true;
 
             hasTex = true;
             dataDim[0] = tw; dataDim[1] = th;
@@ -271,10 +319,18 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
                 NcdfShaderUniforms u = ncdf_shader_get_uniforms();
                 if (u.texSize >= 0) ncdf_shader_uniform_2f(u.texSize, (float)tw, (float)th);
                 if (u.sharpness >= 0) ncdf_shader_uniform_1f(u.sharpness, 0.3f);
+                if (u.dataMin >= 0) ncdf_shader_uniform_1f(u.dataMin, (float)s_dMin);
+                if (u.dataMax >= 0) ncdf_shader_uniform_1f(u.dataMax, (float)s_dMax);
                 if (u.dataTex >= 0) {
                     ncdf_shader_active_texture(0x84C0);
                     glBindTexture(GL_TEXTURE_2D, texID);
                     ncdf_shader_uniform_1i(u.dataTex, 0);
+                }
+                // Bind color lookup texture to unit 1
+                if (u.colorLUT >= 0 && m_bHasColorLUT) {
+                    ncdf_shader_active_texture(0x84C1);
+                    glBindTexture(GL_TEXTURE_1D, m_glColorLUT);
+                    ncdf_shader_uniform_1i(u.colorLUT, 1);
                 }
 
                 glEnable(GL_BLEND);
@@ -311,6 +367,8 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
                 }
                 ncdf_shader_use_program(0);
                 glDisable(GL_BLEND);
+                // Restore texture unit to 0
+                ncdf_shader_active_texture(0x84C0);
                 delete[] lva;
                 return;
             }
