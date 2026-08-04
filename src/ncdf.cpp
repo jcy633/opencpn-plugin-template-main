@@ -235,8 +235,8 @@ void MainDialog::printCurrentData()
 
 			if ((cDir != ncdf_NOTDEF) && (cForce != ncdf_NOTDEF))
 			{
-				double force = sqrt(cDir*cDir + cForce*cForce)*3.6 / 1.852;
-				t.Printf(_T("%3.1f kts"), force);
+				double force = sqrt(cDir*cDir + cForce*cForce);
+				t.Printf(_T("%4.2f m/s"), force);
 				this->m_textCtrlCurrentForce->SetValue(t);
 				double dir = 90. + (atan2(cForce, -cDir)  * 180. / PI) - 180;
 				if (dir < 0) dir = 360 + dir;
@@ -258,7 +258,7 @@ CurrentData MainDialog::getCurrentData(double lat, double lon)
 
 	if ((cDir != ncdf_NOTDEF) && (cForce != ncdf_NOTDEF))
 	{
-		result.force = sqrt(cDir*cDir + cForce*cForce)*3.6 / 1.852;
+		result.force = sqrt(cDir*cDir + cForce*cForce);
 		result.dir = 90. + (atan2(cForce, -cDir)  * 180. / PI) - 180;
 		if (result.dir < 0) result.dir = 360 + result.dir;
 	}

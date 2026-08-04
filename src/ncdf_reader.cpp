@@ -42,6 +42,52 @@ static void FillGrid(double **grid, int ni, int nj)
     }
 }
 
+// FillAllGrids: unified pass over all grids (avoids 4 separate FillGrid calls)
+// Single iteration over ni×nj is more cache-friendly than 4 separate passes
+static void FillAllGrids(double **gridu, double **gridv,
+                         double **gridSST, double **gridSalinity,
+                         int ni, int nj)
+{
+    if (ni < 3 || nj < 3) return;
+
+    // Pass 1: vertical neighbors (all grids in one pass)
+    for (int i = 0; i < ni; i++) {
+        for (int j = 1; j < nj - 1; j++) {
+            // Helper lambda-like macro: fill one cell if it's ncdf_NOTDEF
+            #define FILL_V(g) \
+                if (g && g[j][i] == ncdf_NOTDEF) { \
+                    double acc = 0; int cnt = 0; \
+                    if (g[j-1][i] != ncdf_NOTDEF) { acc += g[j-1][i]; cnt++; } \
+                    if (g[j+1][i] != ncdf_NOTDEF) { acc += g[j+1][i]; cnt++; } \
+                    if (cnt >= 2) g[j][i] = acc / cnt; \
+                }
+            FILL_V(gridu)
+            FILL_V(gridv)
+            FILL_V(gridSST)
+            FILL_V(gridSalinity)
+            #undef FILL_V
+        }
+    }
+
+    // Pass 2: horizontal neighbors (all grids in one pass)
+    for (int j = 0; j < nj; j++) {
+        for (int i = 1; i < ni - 1; i++) {
+            #define FILL_H(g) \
+                if (g && g[j][i] == ncdf_NOTDEF) { \
+                    double acc = 0; int cnt = 0; \
+                    if (g[j][i-1] != ncdf_NOTDEF) { acc += g[j][i-1]; cnt++; } \
+                    if (g[j][i+1] != ncdf_NOTDEF) { acc += g[j][i+1]; cnt++; } \
+                    if (cnt >= 2) g[j][i] = acc / cnt; \
+                }
+            FILL_H(gridu)
+            FILL_H(gridv)
+            FILL_H(gridSST)
+            FILL_H(gridSalinity)
+            #undef FILL_H
+        }
+    }
+}
+
 ncdfReader::ncdfReader(MainDialog *md)
 {
 	gui = md;
@@ -121,21 +167,14 @@ void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 		}
 		ncdfLog("[ncdf] readncdfFile: gridv built\n");
 
-		// GRIB pattern: FillGrid after building grids
-		FillGrid(gui->gridu, dataMessage.noPointsParallel, dataMessage.noPointsMeridian);
-		FillGrid(gui->gridv, dataMessage.noPointsParallel, dataMessage.noPointsMeridian);
-		ncdfLog("[ncdf] readncdfFile: gridu/gridv FillGrid done\n");
-
 		// Build magnitude grid: sqrt(u² + v²)
 		gui->gridMag = new double*[dataMessage.noPointsMeridian];
 		for (wxUint32 i = 0; i < dataMessage.noPointsMeridian; ++i) {
 			gui->gridMag[i] = new double[dataMessage.noPointsParallel];
-			for (wxUint32 j = 0; j < dataMessage.noPointsParallel; ++j) {
-				double u = gui->gridu[i][j], v = gui->gridv[i][j];
-				gui->gridMag[i][j] = (u != ncdf_NOTDEF && v != ncdf_NOTDEF) ? sqrt(u*u + v*v) : ncdf_NOTDEF;
-			}
 		}
-		ncdfLog("[ncdf] readncdfFile: gridMag built\n");
+		ncdfLog("[ncdf] readncdfFile: gridMag allocated\n");
+
+		// FillGrid is deferred: called once after ALL grids are built (see below)
 	}
 
 	// Build new SST grid
@@ -153,15 +192,6 @@ void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 			}
 		}
 		ncdfLog("[ncdf] readncdfFile: gridSST built\n");
-
-		// GRIB pattern: FillGrid after building SST grid
-		FillGrid(gui->gridSST, dataMessage.noPointsParallel, dataMessage.noPointsMeridian);
-		// Diagnostic: count valid vs missing cells
-		int sst_valid = 0, sst_missing = 0;
-		for (wxUint32 i = 0; i < dataMessage.noPointsMeridian; i++)
-			for (wxUint32 j = 0; j < dataMessage.noPointsParallel; j++)
-				if (gui->gridSST[i][j] != ncdf_NOTDEF) sst_valid++; else sst_missing++;
-		ncdfLog("[ncdf] readncdfFile: gridSST FillGrid done, valid=%d missing=%d\n", sst_valid, sst_missing);
 	}
 
 	// Build new salinity grid
@@ -181,16 +211,22 @@ void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 			}
 		}
 		ncdfLog("[ncdf] readncdfFile: gridSalinity built\n");
+	}
 
-		// GRIB pattern: FillGrid after building salinity grid
-		FillGrid(gui->gridSalinity, dataMessage.noPointsParallel, dataMessage.noPointsMeridian);
-		// Diagnostic: count valid vs missing cells
-		int sal_valid = 0, sal_missing = 0;
-		for (wxUint32 i = 0; i < dataMessage.noPointsMeridian; i++)
-			for (wxUint32 j = 0; j < dataMessage.noPointsParallel; j++)
-				if (gui->gridSalinity[i][j] != ncdf_NOTDEF) sal_valid++; else sal_missing++;
-		ncdfLog("[ncdf] readncdfFile: gridSalinity FillGrid done, valid=%d missing=%d\n", sal_valid, sal_missing);
-		ncdfLog("[ncdf] readncdfFile: gridSalinity FillGrid done\n");
+	// Unified FillGrid: single pass over all grids (cache-friendly)
+	FillAllGrids(gui->gridu, gui->gridv, gui->gridSST, gui->gridSalinity,
+	             dataMessage.noPointsParallel, dataMessage.noPointsMeridian);
+	ncdfLog("[ncdf] readncdfFile: FillAllGrids done\n");
+
+	// Build magnitude grid: sqrt(u² + v²) — AFTER FillGrid so u/v are smoothed
+	if (hasCurrent && gui->gridMag) {
+		for (wxUint32 i = 0; i < dataMessage.noPointsMeridian; ++i) {
+			for (wxUint32 j = 0; j < dataMessage.noPointsParallel; ++j) {
+				double u = gui->gridu[i][j], v = gui->gridv[i][j];
+				gui->gridMag[i][j] = (u != ncdf_NOTDEF && v != ncdf_NOTDEF) ? sqrt(u*u + v*v) : ncdf_NOTDEF;
+			}
+		}
+		ncdfLog("[ncdf] readncdfFile: gridMag built\n");
 	}
 
 	// Free OLD grids AFTER new ones are built (atomic swap complete)

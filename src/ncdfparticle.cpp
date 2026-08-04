@@ -112,9 +112,8 @@ void ncdfOverlayFactory::RenderParticles(PlugIn_ViewPort *vp)
             vkn = mag;
         } else { vkn = 0; ang = 0; }
         if (it.m_Duration < max_duration - history_size && vkn > 0.3 && vkn < 100) {
-    // GRIB optimization: convert m/s to knots (1 m/s = 1.94 knots)
-    // This makes particles move at the same speed as GRIB
-    double d = vkn * run_count * 1.94;  // Match GRIB's knot-based speed
+    // Convert m/s to nautical miles per frame for spherical geometry
+    double d = vkn * run_count * 1.94;  // 1 m/s ≈ 1.94 knots (NM/h)
             float angr = (float)(ang / 180.0 * PI);
             float latr = pp[1] * (float)PI / 180.0f;
             float D = (float)(d / 3443.0);

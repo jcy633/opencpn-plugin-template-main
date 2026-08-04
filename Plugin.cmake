@@ -47,6 +47,7 @@ set(SRC
     src/ncdfarrow.cpp
     src/ncdftexture.cpp
     src/ncdfparticle.cpp
+    src/shader/ncdf_shader.cpp
 )
 
 set(HEADERS

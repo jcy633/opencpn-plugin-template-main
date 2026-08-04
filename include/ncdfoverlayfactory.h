@@ -184,6 +184,9 @@ private:
 	 int m_texGLDim[2];
 	 void DeleteColorTexture();
 
+	 // Shader rendering (optional, auto-fallback to fixed pipeline)
+	 bool m_useShader;
+
 	 // Sea temperature texture cache
 	 GLuint m_glSeaTempTexture;
 	 bool m_bHasSeaTempTexture;

@@ -30,6 +30,7 @@
 #include "ncdf.h"
 #include "ncdf_pi.h"
 #include "IsoLine2.h"
+#include "shader/ncdf_shader.h"
 #include <wx/colour.h>
 #include <wx/dynarray.h>
 
@@ -59,6 +60,7 @@ ncdfOverlayFactory::ncdfOverlayFactory()
       m_space = 0;
       m_ParticleMap = nullptr;
       m_glColorTexture = 0;
+      m_useShader = false;
 
       // Pre-compute arrow shape (GRIB LineBuffer pattern)
       // Shaft: from -10 to +10
@@ -107,6 +109,7 @@ ncdfOverlayFactory::~ncdfOverlayFactory()
     DeleteSeaTempTexture();
     DeleteSalinityTexture();
     ClearParticles();
+    ncdf_shader_cleanup();
 }
 
 void ncdfOverlayFactory::setData(MainDialog *gui, ncdf_pi *plugin, const ncdfDataMessage& g2data, int numberOfPoints, wxDouble tlat, wxDouble tlon, wxDouble blat, wxDouble blon)
@@ -197,6 +200,11 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
         !plugin->m_bShowParticles && !plugin->m_bShowSeaTemp &&
         !plugin->m_bShowSeaTempIso && !plugin->m_bShowSalinity) return false;
 
+    // Lazy shader init (first render call, GL context is available)
+    if (!m_useShader && !ncdf_shader_initialized()) {
+        m_useShader = ncdf_shader_init();
+    }
+
     static int s_frameDbg = 0;
     if (s_frameDbg < 5) {
         wxLogMessage(_T("[render] frame %d gridu=%p gridv=%p gridSST=%p gridSal=%p"), s_frameDbg, (void*)gui->gridu, (void*)gui->gridv, (void*)gui->gridSST, (void*)gui->gridSalinity);
@@ -277,6 +285,23 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 	// Salinity overlay
 	if (plugin->m_bShowSalinity && gui && gui->gridSalinity && gui->hasSalinity) {
 		RenderSalinityOverlay(vp);
+	}
+
+	// Color legend (fixed pipeline, no shader dependency)
+	if (plugin->m_bShowSeaTemp && gui && gui->hasSeaTemp) {
+		static const float tempStops[][4] = {
+			{-2, 0.50f, 0.00f, 0.75f}, {2, 0.25f, 0.19f, 1.00f}, {7, 0.00f, 0.56f, 0.98f},
+			{12, 0.00f, 0.85f, 0.69f}, {17, 0.06f, 0.73f, 0.13f}, {22, 0.56f, 0.82f, 0.00f},
+			{26, 0.94f, 0.82f, 0.00f}, {30, 0.94f, 0.44f, 0.00f}, {32, 1.00f, 0.00f, 0.00f}
+		};
+		ncdf_shader_draw_legend((int)vp->pix_width, (int)vp->pix_height, tempStops, 9, "C", true);
+	} else if (plugin->m_bShowSalinity && gui && gui->hasSalinity) {
+		static const float salStops[][4] = {
+			{30, 0.53f, 0.81f, 0.92f}, {32, 0.25f, 0.56f, 0.82f}, {34, 0.06f, 0.31f, 0.63f},
+			{35, 0.00f, 0.50f, 0.50f}, {36, 0.25f, 0.75f, 0.38f}, {37, 0.75f, 0.69f, 0.13f},
+			{38, 0.88f, 0.44f, 0.13f}, {39, 0.75f, 0.13f, 0.13f}
+		};
+		ncdf_shader_draw_legend((int)vp->pix_width, (int)vp->pix_height, salStops, 8, "PSU", false);
 	}
 
     m_last_vp_scale = vp->view_scale_ppm;
@@ -414,8 +439,8 @@ void ncdfOverlayFactory::DrawAllCurrentsInViewPort(double dlat, double dlon, dou
 
 	double m_pix_per_mm = ((double)sx) / ((double)mmx);
 
-	int mm_per_knot = 10;
-	float current_draw_scaler = mm_per_knot * m_pix_per_mm * 100 / 100.0;
+	int mm_per_unit = 10;
+	float current_draw_scaler = mm_per_unit * m_pix_per_mm * 100 / 100.0;
 
 	// End setting up scaler
 
@@ -439,7 +464,7 @@ void ncdfOverlayFactory::DrawAllCurrentsInViewPort(double dlat, double dlon, dou
 
 	//    Adjust drawing size using logarithmic scale
 	double a1 = fabs(tcvalue) * 10;
-	a1 = wxMax(1.0, a1);      // Current values less than 0.1 knot
+	a1 = wxMax(1.0, a1);      // Current values less than 0.1 m/s
 	// will be displayed as 0
 	double a2 = log10(a1);
 	double scale = current_draw_scaler * a2;
@@ -511,8 +536,8 @@ void ncdfOverlayFactory::DrawAllGLCurrentsInViewPort(double dlat, double dlon, d
 
 	double m_pix_per_mm = ((double)sx) / ((double)mmx);
 
-	int mm_per_knot = 10;
-	float current_draw_scaler = mm_per_knot * m_pix_per_mm * 100 / 100.0;
+	int mm_per_unit = 10;
+	float current_draw_scaler = mm_per_unit * m_pix_per_mm * 100 / 100.0;
 
 	// End setting up scaler
 
@@ -536,7 +561,7 @@ void ncdfOverlayFactory::DrawAllGLCurrentsInViewPort(double dlat, double dlon, d
 
 	//    Adjust drawing size using logarithmic scale
 	double a1 = fabs(tcvalue) * 10;
-	a1 = wxMax(1.0, a1);      // Current values less than 0.1 knot
+	a1 = wxMax(1.0, a1);      // Current values less than 0.1 m/s
 	// will be displayed as 0
 	double a2 = log10(a1);
 	double scale = current_draw_scaler * a2;
@@ -1074,20 +1099,20 @@ void ncdfOverlayFactory::drawTriangle(wxDC *pmdc, wxPen pen, bool south,
 
 wxColour ncdfOverlayFactory::GetSeaCurrentGraphicColor(double val_in)
 {
-    // Custom color map with 5 flow speed ranges
-    // <0.2: micro (deep blue), 0.2-0.5: low (blue-cyan), 0.5-1.0: medium (cyan-green),
-    // 1.0-1.5: high (green-yellow), >1.5: very high (orange-red)
+    // Custom color map with 5 flow speed ranges (unit: m/s)
+    // <0.10: micro (deep blue), 0.10-0.25: low (blue-cyan), 0.25-0.50: medium (cyan-green),
+    // 0.50-0.75: high (green-yellow), >0.75: very high (orange-red)
     double val = wxMax(val_in, 0.0);
 
-    // Color stops: {speed, R, G, B}
+    // Color stops: {speed_m_s, R, G, B}
     static const double stops[][4] = {
-        {0.0,  20,  20, 180},  // deep blue (micro)
-        {0.2,  30,  80, 220},  // blue (micro/low boundary)
-        {0.5,  0,  180, 220},  // cyan (low/medium boundary)
-        {1.0,  0,  200,  80},  // green (medium/high boundary)
-        {1.5, 220, 220,  20},  // yellow (high/very high boundary)
-        {2.0, 240, 100,  20},  // orange
-        {3.0, 220,  20,  20},  // red (very high)
+        {0.00,  20,  20, 180},  // deep blue (micro)
+        {0.10,  30,  80, 220},  // blue (micro/low boundary)
+        {0.25,   0, 180, 220},  // cyan (low/medium boundary)
+        {0.50,   0, 200,  80},  // green (medium/high boundary)
+        {0.75, 220, 220,  20},  // yellow (high/very high boundary)
+        {1.00, 240, 100,  20},  // orange
+        {1.50, 220,  20,  20},  // red (very high)
     };
     const int nStops = sizeof(stops) / sizeof(stops[0]);
 
