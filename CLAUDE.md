@@ -101,3 +101,14 @@
 - 非线性密度公式：density = 4.0 * exp(slider - 7)
 - GRIB粒子流动感关键：lip/sip双缓冲插值，整条轨迹随m_Run平滑移动
 - koa-connect wrapper caused ctx leaks, so native rewrite is required
+- 海温数据单位可能是开尔文(K)或摄氏度(°C)，过滤时必须根据`isKelvin`标志选择正确的范围
+- 插值函数中全球数据经度边界必须用环绕(i1=0)而非clamp(i1=i0)，否则日期变更线处插值退化
+- OpenCPN视口经度使用扩展范围(如-284.9°到-68.8°)，不能假设在[-180,180]内
+- `wglGetProcAddress`在部分Windows环境返回无效指针导致崩溃，需先尝试`GetProcAddress(opengl32.dll)`
+- `GL/gl.h`中未定义`GLchar`类型，必须手动`typedef char GLchar`
+- `GL_TEXTURE_1D`在某些GPU上不支持`GL_LINEAR`插值，改用`GL_TEXTURE_2D`更可靠
+- `glUniform4f`运行时加载可能失败，用1D/2D颜色查找纹理替代
+- 海岸线掩膜SHP文件含多环多边形，必须分别处理外环(陆地)和内环(水体)
+- cmake编译的DLL在部分环境被OpenCPN判定为不兼容，MSBuild编译的DLL更可靠
+- cmake生成的vcxproj可能覆盖原始MSBuild项目文件，需注意保护
+- UTF-8编码的PowerShell脚本需要BOM头才能正确解析中文字符

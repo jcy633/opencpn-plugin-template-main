@@ -90,3 +90,4 @@ scripts/
 # ============ Claude AI ============
 .claude/
 *.md
+掩膜图/
