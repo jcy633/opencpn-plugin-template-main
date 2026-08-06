@@ -118,6 +118,7 @@ int ncdf_pi::Init(void)
 	  m_bShowSeaTemp = false;
 	  m_bShowSeaTempIso = false;
 	  m_bShowSalinity = false;
+	  m_bUseBicubic = false;
 	  m_iParticleDensity = 5;
 
       //    Get a pointer to the opencpn configuration object
@@ -383,6 +384,7 @@ bool ncdf_pi::LoadConfig(void)
             pConf->Read ( _T( "ShowSeaTemp" ), &m_bShowSeaTemp, 0 );
             pConf->Read ( _T( "ShowSeaTempIso" ), &m_bShowSeaTempIso, 0 );
             pConf->Read ( _T( "ShowSalinity" ), &m_bShowSalinity, 0 );
+            pConf->Read ( _T( "UseBicubic" ), &m_bUseBicubic, 0 );
             pConf->Read ( _T( "ParticleDensity" ), &m_iParticleDensity, 5 );
 
 
@@ -424,6 +426,7 @@ bool ncdf_pi::SaveConfig(void)
             pConf->Write ( _T ( "ShowSeaTemp" ), m_bShowSeaTemp );
             pConf->Write ( _T ( "ShowSeaTempIso" ), m_bShowSeaTempIso );
             pConf->Write ( _T ( "ShowSalinity" ), m_bShowSalinity );
+            pConf->Write ( _T ( "UseBicubic" ), m_bUseBicubic );
             pConf->Write ( _T ( "ParticleDensity" ), m_iParticleDensity );
 
             pConf->Write ( _T ( "ncdfDialogSizeX" ),  m_ncdf_dialog_sx );

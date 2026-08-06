@@ -66,6 +66,7 @@ public:
 	 bool RenderGLncdfOverlay(wxGLContext *pcontext, PlugIn_ViewPort *vp);
 	 bool RenderncdfOverlay(wxDC &dc, PlugIn_ViewPort *vp);
 	 bool DoRenderncdfOverlay(PlugIn_ViewPort *vp);
+	 void SetBicubicMode(bool enable);
      void RenderSelectionRectangle();
 	 void RenderMyArrows(PlugIn_ViewPort *vp);  
      void RenderncdfCurrent();     
@@ -183,6 +184,9 @@ private:
 	 int m_texDataDim[2];
 	 int m_texGLDim[2];
 	 void DeleteColorTexture();
+
+	 // Shader bicubic interpolation (optional, auto-fallback to fixed pipeline)
+	 bool m_useShader;
 
 	 // Sea temperature texture cache
 	 GLuint m_glSeaTempTexture;

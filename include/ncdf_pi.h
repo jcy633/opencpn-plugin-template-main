@@ -102,6 +102,7 @@ public:
       bool              m_bShowSeaTemp;
       bool              m_bShowSeaTempIso;
       bool              m_bShowSalinity;
+      bool              m_bUseBicubic;
       int               m_iOverlayTransparency;
       int               m_iArrowSpacing;
       int               m_iNumberSpacing;

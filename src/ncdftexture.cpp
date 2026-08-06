@@ -6,6 +6,7 @@
 #include "ncdf.h"
 #include "ncdf_pi.h"
 #include "ncdfdata.h"
+#include "shader/ncdf_shader.h"
 
 #ifndef PI
 #define PI 3.14159265
@@ -137,6 +138,8 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
     int nj = gui->myMessage.latLength;
     if (ni < 2 || nj < 2) return;
 
+    int tw = 0, th = 0;
+
     if (!m_pdc) {
 #ifdef ocpnUSE_GL
         // Lazy texture rebuild (flagged by setData, safe in GL context)
@@ -154,7 +157,7 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
 
             int borderH = repeat ? 0 : 1;
             int extraCol = repeat ? 1 : 0;
-            int tw = ni + 2 * borderH + extraCol, th = nj + 2;
+            tw = ni + 2 * borderH + extraCol; th = nj + 2;
             unsigned char *texData = new(std::nothrow) unsigned char[tw * th * 4];
             if (!texData) return;
             memset(texData, 0, tw * th * 4);
@@ -210,8 +213,10 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
             glBindTexture(GL_TEXTURE_2D, texID);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, repeat ? GL_REPEAT : GL_CLAMP_TO_EDGE);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            // Shader does bicubic sampling, so use NEAREST to avoid hardware bilinear mixing
+            GLenum filter = m_useShader ? GL_NEAREST : GL_LINEAR;
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, tw, th, 0, GL_RGBA, GL_UNSIGNED_BYTE, texData);
             delete[] texData;
 
@@ -222,7 +227,7 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
 
         // Draw tiled texture (GRIB pattern)
         if (hasTex && texID) {
-            int tw = glDim[0], th = glDim[1];
+            tw = glDim[0]; th = glDim[1];
             double potNormX = (double)dataDim[0] / tw;
             double potNormY = (double)dataDim[1] / th;
             double lat_min = blat, lon_min = tlon;
@@ -264,6 +269,69 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
                 }
             }
 
+            // === Shader bicubic path ===
+            if (m_useShader && ncdf_shader_initialized() &&
+                ncdf_shader_get_grid_program() > 0) {
+                ncdf_shader_use_program(ncdf_shader_get_grid_program());
+                NcdfShaderUniforms u = ncdf_shader_get_uniforms();
+                if (u.texSize >= 0) ncdf_shader_uniform_2f(u.texSize, (float)tw, (float)th);
+                if (u.dataTex >= 0) {
+                    ncdf_shader_active_texture(0x84C0);
+                    glBindTexture(GL_TEXTURE_2D, texID);
+                    ncdf_shader_uniform_1i(u.dataTex, 0);
+                }
+
+                glEnable(GL_BLEND);
+                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+                double xS = vp->pix_width / (double)xs;
+                double yS = vp->pix_height / (double)ys;
+                for (int i = 0; i < xs; i++) {
+                    for (int j = 0; j < ys; j++) {
+                        int i00 = (i * gridH + j) * 2;
+                        int i10 = ((i+1) * gridH + j) * 2;
+                        int i11 = ((i+1) * gridH + j+1) * 2;
+                        int i01 = (i * gridH + j+1) * 2;
+                        double u0=lva[i00], u1=lva[i10], u2=lva[i11], u3=lva[i01];
+                        double v0=lva[i00+1], v1=lva[i10+1], v2=lva[i11+1], v3=lva[i01+1];
+
+                        if (repeat) {
+                            if (u1 - u0 > .5) u1--;
+                            else if (u0 - u1 > .5) u1++;
+                            if (u2 - u0 > .5) u2--;
+                            else if (u0 - u2 > .5) u2++;
+                            if (u3 - u0 > .5) u3--;
+                            else if (u0 - u3 > .5) u3++;
+                        }
+
+                        if (!((repeat ||
+                               ((u0>=0||u1>=0||u2>=0||u3>=0)&&(u0<=1||u1<=1||u2<=1||u3<=1))) &&
+                              (v0>=0||v1>=0||v2>=0||v3>=0)&&(v0<=1||v1<=1||v2<=1||v3<=1))) continue;
+                        if (u1 <= u0) continue;
+                        double x = xS * i, y = yS * j;
+                        GLfloat verts[8] = {(float)x,(float)y, (float)(x+xS),(float)y,
+                                            (float)(x+xS),(float)(y+yS), (float)x,(float)(y+yS)};
+                        GLfloat uvs[8] = {(float)u0,(float)v0, (float)u1,(float)v1,
+                                          (float)u2,(float)v2, (float)u3,(float)v3};
+                        ncdf_shader_enable_attrib(0);
+                        ncdf_shader_enable_attrib(1);
+                        ncdf_shader_attrib_pointer(0, 2, 0, verts);
+                        ncdf_shader_attrib_pointer(1, 2, 0, uvs);
+                        glDrawArrays(GL_QUADS, 0, 4);
+                        ncdf_shader_disable_attrib(0);
+                        ncdf_shader_disable_attrib(1);
+                    }
+                }
+
+                // Restore fixed-function state
+                ncdf_shader_use_program(0);
+                ncdf_shader_active_texture(0x84C0);
+                glDisable(GL_BLEND);
+                delete[] lva;
+                return;
+            }
+
+            // === Fixed-function fallback path ===
             glEnable(GL_TEXTURE_2D);
             glBindTexture(GL_TEXTURE_2D, texID);
             glEnable(GL_BLEND);

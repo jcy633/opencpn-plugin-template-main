@@ -219,6 +219,16 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	bSizerSalinity->Add( m_textCtrlSalinity, 0, wxALL|wxALIGN_CENTER_VERTICAL, 0 );
 	fgSizer2->Add( bSizerSalinity, 0, 0, 5 );
 
+	// Bicubic interpolation toggle
+	wxFlexGridSizer* bSizerBicubic;
+	bSizerBicubic = new wxFlexGridSizer( 1, 2, 0, 0 );
+	bSizerBicubic->SetFlexibleDirection( wxBOTH );
+	bSizerBicubic->SetNonFlexibleGrowMode( wxFLEX_GROWMODE_SPECIFIED );
+	bSizerBicubic->Add( 24, 0, 0, wxEXPAND, 0 );
+	m_checkBoxBicubic = new wxCheckBox( m_panel1, wxID_ANY, _("Bicubic interpolation"), wxDefaultPosition, wxDefaultSize, 0 );
+	bSizerBicubic->Add( m_checkBoxBicubic, 0, wxALL|wxALIGN_CENTER_VERTICAL, 0 );
+	fgSizer2->Add( bSizerBicubic, 0, 0, 5 );
+
 
 	fgSizer1->Add( fgSizer2, 0, wxEXPAND, 0 );
 
@@ -265,6 +275,7 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	m_checkBoxSeaTemp->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSeaTempClick ), NULL, this );
 	m_checkBoxSeaTempIso->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSeaTempIsoClick ), NULL, this );
 	m_checkBoxSalinity->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSalinityClick ), NULL, this );
+	m_checkBoxBicubic->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onBicubicClick ), NULL, this );
 	m_choiceTime->Connect( wxEVT_COMMAND_CHOICE_SELECTED, wxCommandEventHandler( ncdfDialog::onTimeChange ), NULL, this );
 	m_sTimeline->Connect( wxEVT_SCROLL_THUMBTRACK, wxScrollEventHandler( ncdfDialog::OnTimeline ), NULL, this );
 	m_sTimeline->Connect( wxEVT_SCROLL_CHANGED, wxScrollEventHandler( ncdfDialog::OnTimeline ), NULL, this );
@@ -286,6 +297,7 @@ ncdfDialog::~ncdfDialog()
 	m_checkBoxSeaTemp->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSeaTempClick ), NULL, this );
 	m_checkBoxSeaTempIso->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSeaTempIsoClick ), NULL, this );
 	m_checkBoxSalinity->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSalinityClick ), NULL, this );
+	m_checkBoxBicubic->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onBicubicClick ), NULL, this );
 	m_choiceTime->Disconnect( wxEVT_COMMAND_CHOICE_SELECTED, wxCommandEventHandler( ncdfDialog::onTimeChange ), NULL, this );
 	m_sTimeline->Disconnect( wxEVT_SCROLL_THUMBTRACK, wxScrollEventHandler( ncdfDialog::OnTimeline ), NULL, this );
 	m_sTimeline->Disconnect( wxEVT_SCROLL_CHANGED, wxScrollEventHandler( ncdfDialog::OnTimeline ), NULL, this );

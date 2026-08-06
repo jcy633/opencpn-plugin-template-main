@@ -182,6 +182,7 @@ void MainDialog::setPlugIn(ncdf_pi *p)
   m_checkBoxDCurrent->SetValue(pPlugIn->m_bShowCurrentDir);
   m_checkBoxBmpCurrentForce->SetValue(pPlugIn->m_bShowCurrentForce);
   m_checkBoxParticles->SetValue(pPlugIn->m_bShowParticles);
+  m_checkBoxBicubic->SetValue(pPlugIn->m_bUseBicubic);
 }
 
 void MainDialog::SetCursorLatLon(double lat, double lon)
@@ -2075,6 +2076,16 @@ void MainDialog::onSeaTempIsoClick(wxCommandEvent& event)
 void MainDialog::onSalinityClick(wxCommandEvent& event)
 {
 	pPlugIn->m_bShowSalinity = m_checkBoxSalinity->GetValue();
+	RequestRefresh(m_parent);
+}
+
+void MainDialog::onBicubicClick(wxCommandEvent& event)
+{
+	pPlugIn->m_bUseBicubic = m_checkBoxBicubic->GetValue();
+	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
+	if (pof) {
+		pof->SetBicubicMode(pPlugIn->m_bUseBicubic);
+	}
 	RequestRefresh(m_parent);
 }
 

@@ -30,6 +30,7 @@
 #include "ncdf.h"
 #include "ncdf_pi.h"
 #include "IsoLine2.h"
+#include "shader/ncdf_shader.h"
 #include <wx/colour.h>
 #include <wx/dynarray.h>
 
@@ -59,6 +60,7 @@ ncdfOverlayFactory::ncdfOverlayFactory()
       m_space = 0;
       m_ParticleMap = nullptr;
       m_glColorTexture = 0;
+      m_useShader = false;
 
       // Pre-compute arrow shape (GRIB LineBuffer pattern)
       // Shaft: from -10 to +10
@@ -107,6 +109,16 @@ ncdfOverlayFactory::~ncdfOverlayFactory()
     DeleteSeaTempTexture();
     DeleteSalinityTexture();
     ClearParticles();
+    ncdf_shader_cleanup();
+}
+
+void ncdfOverlayFactory::SetBicubicMode(bool enable)
+{
+    // m_useShader is synced from plugin->m_bUseBicubic each frame in DoRenderncdfOverlay
+    // Just force texture rebuild to switch between GL_NEAREST and GL_LINEAR
+    m_bNeedsColorTexRebuild = true;
+    m_bNeedsSeaTempTexRebuild = true;
+    m_bNeedsSalinityTexRebuild = true;
 }
 
 void ncdfOverlayFactory::setData(MainDialog *gui, ncdf_pi *plugin, const ncdfDataMessage& g2data, int numberOfPoints, wxDouble tlat, wxDouble tlon, wxDouble blat, wxDouble blon)
@@ -196,6 +208,16 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
     if (!plugin->m_bShowCurrentForce && !plugin->m_bShowCurrentDir &&
         !plugin->m_bShowParticles && !plugin->m_bShowSeaTemp &&
         !plugin->m_bShowSeaTempIso && !plugin->m_bShowSalinity) return false;
+
+    // Lazy shader compile (first render call, GL context is available)
+    // Shader is compiled once; m_useShader toggles via checkbox
+    static bool s_shaderCompiled = false;
+    static bool s_shaderOk = false;
+    if (!s_shaderCompiled) {
+        s_shaderCompiled = true;
+        s_shaderOk = ncdf_shader_init();
+    }
+    m_useShader = s_shaderOk && plugin->m_bUseBicubic;
 
     static int s_frameDbg = 0;
     if (s_frameDbg < 5) {
