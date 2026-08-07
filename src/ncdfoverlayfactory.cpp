@@ -321,6 +321,37 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 		RenderSalinityOverlay(vp);
 	}
 
+	// Color legend
+	{
+		static const ColorStop tempStops[] = {
+			{-2, 0x80, 0x00, 0xc0}, {2, 0x40, 0x30, 0xff}, {7, 0x00, 0x90, 0xfa},
+			{12, 0x00, 0xd8, 0xb0}, {17, 0x10, 0xbb, 0x20}, {22, 0x90, 0xd0, 0x00},
+			{26, 0xf0, 0xd0, 0x00}, {30, 0xf0, 0x70, 0x00}, {32, 0xff, 0x00, 0x00}
+		};
+		static const ColorStop salStops[] = {
+			{30, 0x87, 0xce, 0xeb}, {31, 0x60, 0xb0, 0xe0}, {32, 0x40, 0x90, 0xd0},
+			{33, 0x20, 0x70, 0xc0}, {34, 0x10, 0x50, 0xa0}, {35, 0x00, 0x80, 0x80},
+			{35.5, 0x20, 0xa0, 0x70}, {36, 0x40, 0xc0, 0x60}, {36.5, 0x80, 0xc0, 0x40},
+			{37, 0xc0, 0xb0, 0x20}, {37.5, 0xe0, 0xa0, 0x10}, {38, 0xe0, 0x70, 0x20},
+			{38.5, 0xd0, 0x40, 0x20}, {39, 0xc0, 0x20, 0x20}
+		};
+		static const ColorStop currStops[] = {
+			{0.00, 20, 20, 180}, {0.10, 30, 80, 220}, {0.25, 0, 180, 220},
+			{0.50, 0, 200, 80}, {0.75, 220, 220, 20}, {1.00, 240, 100, 20},
+			{1.50, 220, 20, 20}
+		};
+		if (plugin->m_bShowSeaTemp && gui && gui->hasSeaTemp) {
+			m_legend.SetData(tempStops, 9, "\xC2\xB0" "C", "Sea Temperature");
+			m_legend.Draw((int)vp->pix_width, (int)vp->pix_height);
+		} else if (plugin->m_bShowSalinity && gui && gui->hasSalinity) {
+			m_legend.SetData(salStops, 14, "PSU", "Salinity");
+			m_legend.Draw((int)vp->pix_width, (int)vp->pix_height);
+		} else if (plugin->m_bShowCurrentForce && gui && gui->gridMag) {
+			m_legend.SetData(currStops, 7, "m/s", "Current Speed");
+			m_legend.Draw((int)vp->pix_width, (int)vp->pix_height);
+		}
+	}
+
     m_last_vp_scale = vp->view_scale_ppm;
     m_last_vp_latMax = vp->lat_max;
 

@@ -43,6 +43,7 @@
 #include <vector>
 #include "ncdf.h"
 #include <map>
+#include "ncdf_legend.h"
 
 using namespace std;
 
@@ -189,6 +190,9 @@ private:
 	 bool m_useShader;
 	 GLuint m_glColorLUT;
 	 bool m_bHasColorLUT;
+
+	 // Color legend
+	 ncdfLegend m_legend;
 
 	 // Sea temperature texture cache
 	 GLuint m_glSeaTempTexture;
