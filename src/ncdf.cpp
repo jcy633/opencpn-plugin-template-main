@@ -182,7 +182,7 @@ void MainDialog::setPlugIn(ncdf_pi *p)
   m_checkBoxDCurrent->SetValue(pPlugIn->m_bShowCurrentDir);
   m_checkBoxBmpCurrentForce->SetValue(pPlugIn->m_bShowCurrentForce);
   m_checkBoxParticles->SetValue(pPlugIn->m_bShowParticles);
-  m_checkBoxBicubic->SetValue(pPlugIn->m_bUseBicubic);
+  m_choiceInterpMode->SetSelection(pPlugIn->m_interpMode);
 }
 
 void MainDialog::SetCursorLatLon(double lat, double lon)
@@ -2079,12 +2079,30 @@ void MainDialog::onSalinityClick(wxCommandEvent& event)
 	RequestRefresh(m_parent);
 }
 
-void MainDialog::onBicubicClick(wxCommandEvent& event)
+void MainDialog::onInterpModeChange(wxCommandEvent& event)
 {
-	pPlugIn->m_bUseBicubic = m_checkBoxBicubic->GetValue();
+	int sel = m_choiceInterpMode->GetSelection();
+	if (sel < 0 || sel > 3) sel = 0;
+	pPlugIn->m_interpMode = sel;
 	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
 	if (pof) {
-		pof->SetBicubicMode(pPlugIn->m_bUseBicubic);
+		pof->SetBicubicMode(sel >= 1);  // modes 1,2,3 need texture rebuild
+	}
+	// Auto-enable first available data display for non-default modes
+	if (sel >= 1) {
+		if (!pPlugIn->m_bShowCurrentForce && !pPlugIn->m_bShowSeaTemp &&
+		    !pPlugIn->m_bShowSalinity) {
+			if (gridMag) {
+				pPlugIn->m_bShowCurrentForce = true;
+				m_checkBoxBmpCurrentForce->SetValue(true);
+			} else if (gridSST && hasSeaTemp) {
+				pPlugIn->m_bShowSeaTemp = true;
+				m_checkBoxSeaTemp->SetValue(true);
+			} else if (gridSalinity && hasSalinity) {
+				pPlugIn->m_bShowSalinity = true;
+				m_checkBoxSalinity->SetValue(true);
+			}
+		}
 	}
 	RequestRefresh(m_parent);
 }

@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cmath>
+#include <wx/log.h>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -147,57 +148,125 @@ static const char* s_vert =
     "    gl_Position = gl_ModelViewProjectionMatrix * vec4(aPos, 0.0, 1.0);\n"
     "}\n";
 
-// Fragment shader: bicubic (Catmull-Rom) interpolation on colored RGBA texture
-// Land/missing data has alpha=0, valid data has alpha=1
+// Fragment shader: configurable interpolation on scalar data
+// mode=0: bilinear (2x2, land-aware)
+// mode=1: bicubic (Catmull-Rom 4x4 + clamp)
+// mode=2: monotone bicubic (PCHIP 4x4 + clamp)
 static const char* s_frag =
     "#version 120\n"
     "uniform sampler2D dataTex;\n"
+    "uniform sampler2D colorLUT;\n"
     "uniform vec2 texSize;\n"
+    "uniform int mode;\n"
     "varying vec2 vUV;\n"
     "\n"
-    "// Catmull-Rom cubic weights\n"
     "vec4 cubic(float t) {\n"
-    "    float t2 = t * t, t3 = t2 * t;\n"
+    "    float t2=t*t, t3=t2*t;\n"
     "    vec4 w;\n"
-    "    w.x = -t3 + 3.0*t2 - 3.0*t + 1.0;\n"
-    "    w.y =  3.0*t3 - 6.0*t2 + 4.0;\n"
-    "    w.z = -3.0*t3 + 3.0*t2 + 3.0*t + 1.0;\n"
-    "    w.w = t3;\n"
-    "    return w / 6.0;\n"
+    "    w.x = -0.5*t3+t2-0.5*t;\n"
+    "    w.y =  1.5*t3-2.5*t2+1.0;\n"
+    "    w.z = -1.5*t3+2.0*t2+0.5*t;\n"
+    "    w.w =  0.5*t3-0.5*t2;\n"
+    "    return w;\n"
     "}\n"
     "\n"
-    "// Bicubic sampling with land-aware weighting\n"
-    "vec4 bicubicSample(sampler2D tex, vec2 uv, vec2 sz) {\n"
-    "    vec2 ts = 1.0 / sz;\n"
-    "    vec2 tc = uv * sz - 0.5;\n"
-    "    vec2 f = fract(tc);\n"
-    "    vec4 wx = cubic(f.x);\n"
-    "    vec4 wy = cubic(f.y);\n"
-    "    wx /= dot(wx, vec4(1.0));\n"
-    "    wy /= dot(wy, vec4(1.0));\n"
-    "    vec3 color = vec3(0.0);\n"
-    "    float wSum = 0.0;\n"
-    "    for (int j = -1; j <= 2; j++) {\n"
-    "        for (int i = -1; i <= 2; i++) {\n"
-    "            vec2 suv = (tc + vec2(float(i), float(j)) + 0.5) * ts;\n"
-    "            vec4 s = texture2D(tex, suv);\n"
-    "            if (s.a > 0.01) {\n"
-    "                float w = wx[i+1] * wy[j+1];\n"
-    "                color += s.rgb * w;\n"
-    "                wSum += w;\n"
-    "            }\n"
-    "        }\n"
+    "float pchipSlope(bool hp, float dp, bool hn, float dn) {\n"
+    "    if (hp && hn) {\n"
+    "        if (dp*dn <= 0.0) return 0.0;\n"
+    "        return (dp+dn)/2.0;\n"
     "    }\n"
-    "    if (wSum > 0.0) return vec4(color / wSum, 1.0);\n"
-    "    return vec4(0.0);\n"
+    "    if (hp) return 2.0*dp/3.0;\n"
+    "    if (hn) return dn/3.0;\n"
+    "    return 0.0;\n"
+    "}\n"
+    "\n"
+    "float pchipRow(float v0,bool h0,float v1,bool h1,\n"
+    "               float v2,bool h2,float v3,bool h3,\n"
+    "               float t, out float slope) {\n"
+    "    if (h1 && h2) {\n"
+    "        float m1=pchipSlope(h0,v1-v0,h2,v2-v1);\n"
+    "        float m2=pchipSlope(h1,v2-v1,h3,v3-v2);\n"
+    "        float t2=t*t,t3=t2*t;\n"
+    "        slope=m2;\n"
+    "        return (2.0*t3-3.0*t2+1.0)*v1+(t3-2.0*t2+t)*m1\n"
+    "             +(-2.0*t3+3.0*t2)*v2+(t3-t2)*m2;\n"
+    "    }\n"
+    "    if (h1){slope=0.0;return v1;}\n"
+    "    if (h2){slope=0.0;return v2;}\n"
+    "    slope=0.0;return 0.0;\n"
     "}\n"
     "\n"
     "void main() {\n"
     "    vec4 center = texture2D(dataTex, vUV);\n"
     "    if (center.a < 0.01) discard;\n"
-    "    vec4 result = bicubicSample(dataTex, vUV, texSize);\n"
-    "    if (result.a < 0.01) discard;\n"
-    "    gl_FragColor = result;\n"
+    "    vec2 ts = 1.0 / texSize;\n"
+    "    vec2 tc = vUV * texSize - 0.5;\n"
+    "    vec2 f = fract(tc);\n"
+    "    float result;\n"
+    "\n"
+    "    if (mode == 0) {\n"
+    "        // Bilinear scalar: 2x2 center\n"
+    "        float v00=center.r;\n"
+    "        vec4 s10=texture2D(dataTex,vUV+vec2(ts.x,0.0));\n"
+    "        vec4 s01=texture2D(dataTex,vUV+vec2(0.0,ts.y));\n"
+    "        vec4 s11=texture2D(dataTex,vUV+vec2(ts.x,ts.y));\n"
+    "        float wSum=1.0,val=v00;\n"
+    "        if(s10.a>0.01){val+=f.x*s10.r;wSum+=f.x;}\n"
+    "        if(s01.a>0.01){val+=f.y*s01.r;wSum+=f.y;}\n"
+    "        if(s11.a>0.01){val+=f.x*f.y*s11.r;wSum+=f.x*f.y;}\n"
+    "        result=val/wSum;\n"
+    "    } else {\n"
+    "        if (mode == 1) {\n"
+    "            // Bicubic: Catmull-Rom 4x4\n"
+    "            vec4 wx=cubic(f.x),wy=cubic(f.y);\n"
+    "            float val=0.0,wSum=0.0;\n"
+    "            for(int j=-1;j<=2;j++){\n"
+    "                for(int i=-1;i<=2;i++){\n"
+    "                    vec2 suv=(tc+vec2(float(i),float(j))+0.5)*ts;\n"
+    "                    vec4 s=texture2D(dataTex,suv);\n"
+    "                    if(s.a>0.01){float w=wx[i+1]*wy[j+1];val+=s.r*w;wSum+=w;}\n"
+    "                }\n"
+    "            }\n"
+    "            if(wSum<=0.0)discard;\n"
+    "            result=val/wSum;\n"
+    "        } else {\n"
+    "            // Monotone bicubic: PCHIP\n"
+    "            float sv[16];bool hv[16];\n"
+    "            for(int j=-1;j<=2;j++){\n"
+    "                for(int i=-1;i<=2;i++){\n"
+    "                    int idx=(j+1)*4+(i+1);\n"
+    "                    vec2 suv=(tc+vec2(float(i),float(j))+0.5)*ts;\n"
+    "                    vec4 s=texture2D(dataTex,suv);\n"
+    "                    sv[idx]=s.r;hv[idx]=(s.a>0.01);\n"
+    "                }\n"
+    "            }\n"
+    "            float rowVal[4];bool rowHas[4];float rowSl[4];\n"
+    "            for(int j=0;j<4;j++){\n"
+    "                rowVal[j]=pchipRow(sv[j*4],hv[j*4],sv[j*4+1],hv[j*4+1],\n"
+    "                    sv[j*4+2],hv[j*4+2],sv[j*4+3],hv[j*4+3],f.x,rowSl[j]);\n"
+    "                rowHas[j]=hv[j*4+1]||hv[j*4+2];\n"
+    "            }\n"
+    "            float val=0.0,wSum=0.0;\n"
+    "            for(int j=0;j<4;j++){\n"
+    "                if(!rowHas[j])continue;\n"
+    "                float dP=(j>0&&rowHas[j-1])?rowVal[j]-rowVal[j-1]:0.0;\n"
+    "                float dN=(j<3&&rowHas[j+1])?rowVal[j+1]-rowVal[j]:0.0;\n"
+    "                float m=pchipSlope(j>0&&rowHas[j-1],dP,j<3&&rowHas[j+1],dN);\n"
+    "                float w;\n"
+    "                if(f.y==0.0){w=(j==1)?1.0:0.0;}\n"
+    "                else if(j==0){w=-m*f.y*(1.0-f.y)*(1.0-f.y);}\n"
+    "                else if(j==1){float t2=f.y*f.y,t3=t2*f.y;\n"
+    "                    w=2.0*t3-3.0*t2+1.0+(t3-2.0*t2+f.y);}\n"
+    "                else if(j==2){float t2=f.y*f.y,t3=t2*f.y;\n"
+    "                    w=-2.0*t3+3.0*t2+(t3-t2);}\n"
+    "                else{w=m*f.y*f.y*(f.y-1.0);}\n"
+    "                val+=rowVal[j]*w;wSum+=w;\n"
+    "            }\n"
+    "            if(wSum<=0.0)discard;\n"
+    "            result=val/wSum;\n"
+    "        }\n"
+    "    }\n"
+    "    gl_FragColor=vec4(texture2D(colorLUT,vec2(result,0.5)).rgb,1.0);\n"
     "}\n";
 
 //===================================================================
@@ -214,6 +283,7 @@ static GLuint compile_shader_gl(GLenum type, const char* src) {
         char log[512];
         fpGetShaderInfoLog(s, sizeof(log), NULL, log);
         fprintf(stderr, "[shader] compile error: %s\n", log);
+        wxLogMessage(_T("[shader] compile error: %s"), wxString(log, wxConvUTF8));
         fpDeleteShader(s);
         return 0;
     }
@@ -234,6 +304,7 @@ static GLuint link_program_gl(GLuint vs, GLuint fs) {
         char log[512];
         fpGetProgramInfoLog(p, sizeof(log), NULL, log);
         fprintf(stderr, "[shader] link error: %s\n", log);
+        wxLogMessage(_T("[shader] link error: %s"), wxString(log, wxConvUTF8));
         fpDeleteProgram(p);
         return 0;
     }
@@ -266,26 +337,27 @@ bool ncdf_shader_init() {
 
     s_supported = ncdf_shader_supported();
     if (!s_supported) {
-        fprintf(stderr, "[shader] GL < 2.0, fallback to fixed pipeline\n");
+        wxLogMessage(_T("[shader] GL < 2.0, fallback to fixed pipeline"));
         return false;
     }
 
-    fprintf(stderr, "[shader] loading GL extensions...\n");
+    wxLogMessage(_T("[shader] loading GL extensions..."));
     if (!load_gl_extensions()) {
-        fprintf(stderr, "[shader] ext load failed\n");
+        wxLogMessage(_T("[shader] ext load failed"));
         s_supported = false;
         return false;
     }
 
-    fprintf(stderr, "[shader] compiling shaders...\n");
+    wxLogMessage(_T("[shader] compiling shaders..."));
     s_vs = compile_shader_gl(GL_VERTEX_SHADER, s_vert);
-    if (!s_vs) { s_supported = false; return false; }
+    if (!s_vs) { wxLogMessage(_T("[shader] vertex shader failed")); s_supported = false; return false; }
     s_fs = compile_shader_gl(GL_FRAGMENT_SHADER, s_frag);
-    if (!s_fs) { fpDeleteShader(s_vs); s_vs = 0; s_supported = false; return false; }
+    if (!s_fs) { wxLogMessage(_T("[shader] fragment shader failed")); fpDeleteShader(s_vs); s_vs = 0; s_supported = false; return false; }
 
-    fprintf(stderr, "[shader] linking program...\n");
+    wxLogMessage(_T("[shader] linking program..."));
     s_program = link_program_gl(s_vs, s_fs);
     if (!s_program) {
+        wxLogMessage(_T("[shader] link failed"));
         fpDeleteShader(s_vs); s_vs = 0;
         fpDeleteShader(s_fs); s_fs = 0;
         s_supported = false;
@@ -295,10 +367,12 @@ bool ncdf_shader_init() {
     // Cache uniform locations
     memset(&s_uniforms, 0xFF, sizeof(s_uniforms));
     s_uniforms.dataTex = fpGetUniformLocation(s_program, "dataTex");
+    s_uniforms.colorLUT = fpGetUniformLocation(s_program, "colorLUT");
     s_uniforms.texSize = fpGetUniformLocation(s_program, "texSize");
+    s_uniforms.mode = fpGetUniformLocation(s_program, "mode");
 
     s_initialized = true;
-    fprintf(stderr, "[shader] init OK program=%u\n", s_program);
+    wxLogMessage(_T("[shader] init OK program=%u"), s_program);
     return true;
 }
 

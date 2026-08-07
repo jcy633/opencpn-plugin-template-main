@@ -154,7 +154,7 @@ protected:
 	virtual void onSeaTempClick( wxCommandEvent& event );
 	virtual void onSeaTempIsoClick( wxCommandEvent& event );
 	virtual void onSalinityClick( wxCommandEvent& event );
-	virtual void onBicubicClick( wxCommandEvent& event );
+	virtual void onInterpModeChange( wxCommandEvent& event );
 	void fillDirTree(wxString dir, bool start, wxTreeItemId id);
 	void addChildren(wxTreeItemId id, wxString s);
 	void readData(wxTreeItemId itemId);

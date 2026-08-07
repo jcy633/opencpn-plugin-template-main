@@ -61,6 +61,8 @@ ncdfOverlayFactory::ncdfOverlayFactory()
       m_ParticleMap = nullptr;
       m_glColorTexture = 0;
       m_useShader = false;
+      m_glColorLUT = 0;
+      m_bHasColorLUT = false;
 
       // Pre-compute arrow shape (GRIB LineBuffer pattern)
       // Shaft: from -10 to +10
@@ -109,16 +111,26 @@ ncdfOverlayFactory::~ncdfOverlayFactory()
     DeleteSeaTempTexture();
     DeleteSalinityTexture();
     ClearParticles();
+    if (m_bHasColorLUT && m_glColorLUT) {
+        glDeleteTextures(1, &m_glColorLUT);
+        m_glColorLUT = 0;
+        m_bHasColorLUT = false;
+    }
     ncdf_shader_cleanup();
 }
 
 void ncdfOverlayFactory::SetBicubicMode(bool enable)
 {
     // m_useShader is synced from plugin->m_bUseBicubic each frame in DoRenderncdfOverlay
-    // Just force texture rebuild to switch between GL_NEAREST and GL_LINEAR
+    // Force texture rebuild to switch between GL_NEAREST and GL_LINEAR
     m_bNeedsColorTexRebuild = true;
     m_bNeedsSeaTempTexRebuild = true;
     m_bNeedsSalinityTexRebuild = true;
+    if (m_bHasColorLUT && m_glColorLUT) {
+        glDeleteTextures(1, &m_glColorLUT);
+        m_glColorLUT = 0;
+        m_bHasColorLUT = false;
+    }
 }
 
 void ncdfOverlayFactory::setData(MainDialog *gui, ncdf_pi *plugin, const ncdfDataMessage& g2data, int numberOfPoints, wxDouble tlat, wxDouble tlon, wxDouble blat, wxDouble blon)
@@ -217,7 +229,15 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
         s_shaderCompiled = true;
         s_shaderOk = ncdf_shader_init();
     }
-    m_useShader = s_shaderOk && plugin->m_bUseBicubic;
+    m_useShader = s_shaderOk && (plugin->m_interpMode >= 1);
+
+    static bool s_shaderDbg = false;
+    if (!s_shaderDbg) {
+        s_shaderDbg = true;
+        wxLogMessage(_T("[shader] compiled=%d ok=%d interpMode=%d m_useShader=%d"),
+                     (int)s_shaderCompiled, (int)s_shaderOk,
+                     (int)plugin->m_interpMode, (int)m_useShader);
+    }
 
     static int s_frameDbg = 0;
     if (s_frameDbg < 5) {
@@ -1127,8 +1147,7 @@ wxColour ncdfOverlayFactory::GetSeaCurrentGraphicColor(double val_in)
             double range = stops[i][0] - stops[i-1][0];
             double t = (range > 0) ? (val - stops[i-1][0]) / range : 0;
 
-            // Smooth interpolation (ease-in-out)
-            t = t * t * (3.0 - 2.0 * t);
+            // t = t * t * (3.0 - 2.0 * t);  // smoothstep disabled
 
             unsigned char r = (unsigned char)(stops[i-1][1] + t * (stops[i][1] - stops[i-1][1]));
             unsigned char g = (unsigned char)(stops[i-1][2] + t * (stops[i][2] - stops[i-1][2]));

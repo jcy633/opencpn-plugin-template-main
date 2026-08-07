@@ -187,6 +187,8 @@ private:
 
 	 // Shader bicubic interpolation (optional, auto-fallback to fixed pipeline)
 	 bool m_useShader;
+	 GLuint m_glColorLUT;
+	 bool m_bHasColorLUT;
 
 	 // Sea temperature texture cache
 	 GLuint m_glSeaTempTexture;

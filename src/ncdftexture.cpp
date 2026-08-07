@@ -55,7 +55,7 @@ wxColour ncdfOverlayFactory::GetSeaTempGraphicColor(double temp_c)
         if (temp_c <= stops[i][0]) {
             double range = stops[i][0] - stops[i-1][0];
             double t = (range > 0) ? (temp_c - stops[i-1][0]) / range : 0;
-            t = t * t * (3.0 - 2.0 * t);
+            // t = t * t * (3.0 - 2.0 * t);  // smoothstep disabled
             unsigned char r = (unsigned char)(stops[i-1][1] + t * (stops[i][1] - stops[i-1][1]));
             unsigned char g = (unsigned char)(stops[i-1][2] + t * (stops[i][2] - stops[i-1][2]));
             unsigned char b = (unsigned char)(stops[i-1][3] + t * (stops[i][3] - stops[i-1][3]));
@@ -96,7 +96,7 @@ wxColour ncdfOverlayFactory::GetSalinityGraphicColor(double sal_psu)
         if (sal_psu <= stops[i][0]) {
             double range = stops[i][0] - stops[i-1][0];
             double t = (range > 0) ? (sal_psu - stops[i-1][0]) / range : 0;
-            t = t * t * (3.0 - 2.0 * t);  // smoothstep
+            // t = t * t * (3.0 - 2.0 * t);  // smoothstep disabled
             unsigned char r = (unsigned char)(stops[i-1][1] + t * (stops[i][1] - stops[i-1][1]));
             unsigned char g = (unsigned char)(stops[i-1][2] + t * (stops[i][2] - stops[i-1][2]));
             unsigned char b = (unsigned char)(stops[i-1][3] + t * (stops[i][3] - stops[i-1][3]));
@@ -162,22 +162,81 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
             if (!texData) return;
             memset(texData, 0, tw * th * 4);
 
-            unsigned char alpha = 255;
+            if (m_useShader) {
+                // --- Shader path: normalized data in R channel, alpha=validity ---
+                double dMin = 1e30, dMax = -1e30;
+                for (int j = 0; j < nj; j++) {
+                    if (!grid[j]) continue;
+                    for (int i = 0; i < ni; i++) {
+                        double v = grid[j][i];
+                        if (v != ncdf_NOTDEF && !isnan(v) && isfinite(v)) {
+                            if (v < dMin) dMin = v;
+                            if (v > dMax) dMax = v;
+                        }
+                    }
+                }
+                if (dMax <= dMin) { dMin = 0; dMax = 1; }
+                double dRange = dMax - dMin;
+                if (dRange < 1e-10) dRange = 1.0;
 
-            for (int j = 0; j < nj; j++) {
-                if (!grid[j]) break;
-                int texRow = (gui->myMessage.jDirectionIncr >= 0) ? j : (nj - 1 - j);
-                for (int i = 0; i < ni; i++) {
-                    double val = grid[j][i];
-                    if (val == ncdf_NOTDEF || isnan(val) || !isfinite(val)) continue;
-                    int x = i + borderH, y = texRow + 1;
-                    if (x >= tw - 1 || y >= th - 1) continue;
+                for (int j = 0; j < nj; j++) {
+                    if (!grid[j]) break;
+                    int texRow = (gui->myMessage.jDirectionIncr >= 0) ? j : (nj - 1 - j);
+                    for (int i = 0; i < ni; i++) {
+                        double val = grid[j][i];
+                        int x = i + borderH, y = texRow + 1;
+                        if (x >= tw - 1 || y >= th - 1) continue;
+                        int off = 4 * (y * tw + x);
+                        if (val == ncdf_NOTDEF || isnan(val) || !isfinite(val)) {
+                            texData[off] = 0; texData[off+3] = 0;
+                        } else {
+                            double normalized = (val - dMin) / dRange;
+                            texData[off] = (unsigned char)(fmin(fmax(normalized, 0.0), 1.0) * 255.0);
+                            texData[off+1] = 0; texData[off+2] = 0;
+                            texData[off+3] = 255;
+                        }
+                    }
+                }
+
+                // Color LUT (256 entries)
+                if (m_bHasColorLUT && m_glColorLUT) {
+                    glDeleteTextures(1, &m_glColorLUT);
+                    m_glColorLUT = 0; m_bHasColorLUT = false;
+                }
+                unsigned char lutData[256 * 4];
+                for (int k = 0; k < 256; k++) {
+                    double val = dMin + (k / 255.0) * dRange;
                     wxColour c = (this->*colorFunc)(val);
-                    int off = 4 * (y * tw + x);
-                    texData[off]     = c.Red();
-                    texData[off + 1] = c.Green();
-                    texData[off + 2] = c.Blue();
-                    texData[off + 3] = alpha;
+                    lutData[k*4] = c.Red(); lutData[k*4+1] = c.Green();
+                    lutData[k*4+2] = c.Blue(); lutData[k*4+3] = 255;
+                }
+                glGenTextures(1, &m_glColorLUT);
+                glBindTexture(GL_TEXTURE_2D, m_glColorLUT);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 256, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, lutData);
+                m_bHasColorLUT = true;
+
+            } else {
+                // --- Fixed-function path: colored RGBA texture ---
+                unsigned char alpha = 255;
+                for (int j = 0; j < nj; j++) {
+                    if (!grid[j]) break;
+                    int texRow = (gui->myMessage.jDirectionIncr >= 0) ? j : (nj - 1 - j);
+                    for (int i = 0; i < ni; i++) {
+                        double val = grid[j][i];
+                        if (val == ncdf_NOTDEF || isnan(val) || !isfinite(val)) continue;
+                        int x = i + borderH, y = texRow + 1;
+                        if (x >= tw - 1 || y >= th - 1) continue;
+                        wxColour c = (this->*colorFunc)(val);
+                        int off = 4 * (y * tw + x);
+                        texData[off]     = c.Red();
+                        texData[off + 1] = c.Green();
+                        texData[off + 2] = c.Blue();
+                        texData[off + 3] = alpha;
+                    }
                 }
             }
 
@@ -213,7 +272,6 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
             glBindTexture(GL_TEXTURE_2D, texID);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, repeat ? GL_REPEAT : GL_CLAMP_TO_EDGE);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            // Shader does bicubic sampling, so use NEAREST to avoid hardware bilinear mixing
             GLenum filter = m_useShader ? GL_NEAREST : GL_LINEAR;
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
@@ -272,13 +330,24 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
             // === Shader bicubic path ===
             if (m_useShader && ncdf_shader_initialized() &&
                 ncdf_shader_get_grid_program() > 0) {
+                wxLogMessage(_T("[shader] drawing with Catmull-Rom bicubic, texID=%u LUT=%u"),
+                             texID, m_glColorLUT);
                 ncdf_shader_use_program(ncdf_shader_get_grid_program());
                 NcdfShaderUniforms u = ncdf_shader_get_uniforms();
                 if (u.texSize >= 0) ncdf_shader_uniform_2f(u.texSize, (float)tw, (float)th);
+                // mode: 0=linear scalar, 1=bicubic, 2=monotone bicubic
+                int shaderMode = 0;
+                if (plugin) shaderMode = (plugin->m_interpMode >= 2) ? plugin->m_interpMode - 1 : 0;
+                if (u.mode >= 0) ncdf_shader_uniform_1i(u.mode, shaderMode);
                 if (u.dataTex >= 0) {
                     ncdf_shader_active_texture(0x84C0);
                     glBindTexture(GL_TEXTURE_2D, texID);
                     ncdf_shader_uniform_1i(u.dataTex, 0);
+                }
+                if (u.colorLUT >= 0 && m_bHasColorLUT) {
+                    ncdf_shader_active_texture(0x84C1);
+                    glBindTexture(GL_TEXTURE_2D, m_glColorLUT);
+                    ncdf_shader_uniform_1i(u.colorLUT, 1);
                 }
 
                 glEnable(GL_BLEND);
