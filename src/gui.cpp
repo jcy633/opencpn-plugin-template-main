@@ -237,6 +237,16 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	bSizerInterp->Add( m_choiceInterpMode, 0, wxALL|wxALIGN_CENTER_VERTICAL, 0 );
 	fgSizer2->Add( bSizerInterp, 0, 0, 5 );
 
+	// Smooth colors toggle
+	wxFlexGridSizer* bSizerSmooth;
+	bSizerSmooth = new wxFlexGridSizer( 1, 2, 0, 0 );
+	bSizerSmooth->SetFlexibleDirection( wxBOTH );
+	bSizerSmooth->SetNonFlexibleGrowMode( wxFLEX_GROWMODE_SPECIFIED );
+	bSizerSmooth->Add( 24, 0, 0, wxEXPAND, 0 );
+	m_checkBoxSmoothColors = new wxCheckBox( m_panel1, wxID_ANY, _("Smooth color gradients"), wxDefaultPosition, wxDefaultSize, 0 );
+	bSizerSmooth->Add( m_checkBoxSmoothColors, 0, wxALL|wxALIGN_CENTER_VERTICAL, 0 );
+	fgSizer2->Add( bSizerSmooth, 0, 0, 5 );
+
 
 	fgSizer1->Add( fgSizer2, 0, wxEXPAND, 0 );
 
@@ -284,6 +294,7 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	m_checkBoxSeaTempIso->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSeaTempIsoClick ), NULL, this );
 	m_checkBoxSalinity->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSalinityClick ), NULL, this );
 	m_choiceInterpMode->Connect( wxEVT_COMMAND_CHOICE_SELECTED, wxCommandEventHandler( ncdfDialog::onInterpModeChange ), NULL, this );
+	m_checkBoxSmoothColors->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSmoothColorsClick ), NULL, this );
 	m_choiceTime->Connect( wxEVT_COMMAND_CHOICE_SELECTED, wxCommandEventHandler( ncdfDialog::onTimeChange ), NULL, this );
 	m_sTimeline->Connect( wxEVT_SCROLL_THUMBTRACK, wxScrollEventHandler( ncdfDialog::OnTimeline ), NULL, this );
 	m_sTimeline->Connect( wxEVT_SCROLL_CHANGED, wxScrollEventHandler( ncdfDialog::OnTimeline ), NULL, this );
@@ -306,6 +317,7 @@ ncdfDialog::~ncdfDialog()
 	m_checkBoxSeaTempIso->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSeaTempIsoClick ), NULL, this );
 	m_checkBoxSalinity->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSalinityClick ), NULL, this );
 	m_choiceInterpMode->Disconnect( wxEVT_COMMAND_CHOICE_SELECTED, wxCommandEventHandler( ncdfDialog::onInterpModeChange ), NULL, this );
+	m_checkBoxSmoothColors->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSmoothColorsClick ), NULL, this );
 	m_choiceTime->Disconnect( wxEVT_COMMAND_CHOICE_SELECTED, wxCommandEventHandler( ncdfDialog::onTimeChange ), NULL, this );
 	m_sTimeline->Disconnect( wxEVT_SCROLL_THUMBTRACK, wxScrollEventHandler( ncdfDialog::OnTimeline ), NULL, this );
 	m_sTimeline->Disconnect( wxEVT_SCROLL_CHANGED, wxScrollEventHandler( ncdfDialog::OnTimeline ), NULL, this );

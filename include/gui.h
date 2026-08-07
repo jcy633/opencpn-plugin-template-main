@@ -104,6 +104,8 @@ class ncdfDialog : public wxDialog
 		virtual void onSalinityClick( wxCommandEvent& event ) { event.Skip(); }
 		wxChoice* m_choiceInterpMode;
 		virtual void onInterpModeChange( wxCommandEvent& event ) { event.Skip(); }
+		wxCheckBox* m_checkBoxSmoothColors;
+		virtual void onSmoothColorsClick( wxCommandEvent& event ) { event.Skip(); }
 
 		ncdfDialog( wxWindow* parent, wxWindowID id = wxID_ANY, const wxString& title = _("ncdf Dialog"), const wxPoint& pos = wxDefaultPosition, const wxSize& size = wxSize( 280,460 ), long style = wxDEFAULT_DIALOG_STYLE|wxRESIZE_BORDER );
 

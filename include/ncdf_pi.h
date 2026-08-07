@@ -104,6 +104,7 @@ public:
       bool              m_bShowSalinity;
       // Interpolation mode: 0=linear color, 1=linear scalar, 2=bicubic, 3=monotone bicubic
       int               m_interpMode;
+      bool              m_bSmoothColors;
       int               m_iOverlayTransparency;
       int               m_iArrowSpacing;
       int               m_iNumberSpacing;

@@ -183,6 +183,7 @@ void MainDialog::setPlugIn(ncdf_pi *p)
   m_checkBoxBmpCurrentForce->SetValue(pPlugIn->m_bShowCurrentForce);
   m_checkBoxParticles->SetValue(pPlugIn->m_bShowParticles);
   m_choiceInterpMode->SetSelection(pPlugIn->m_interpMode);
+  m_checkBoxSmoothColors->SetValue(pPlugIn->m_bSmoothColors);
 }
 
 void MainDialog::SetCursorLatLon(double lat, double lon)
@@ -2103,6 +2104,16 @@ void MainDialog::onInterpModeChange(wxCommandEvent& event)
 				m_checkBoxSalinity->SetValue(true);
 			}
 		}
+	}
+	RequestRefresh(m_parent);
+}
+
+void MainDialog::onSmoothColorsClick(wxCommandEvent& event)
+{
+	pPlugIn->m_bSmoothColors = m_checkBoxSmoothColors->GetValue();
+	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
+	if (pof) {
+		pof->SetBicubicMode(true);  // triggers texture rebuild for all types
 	}
 	RequestRefresh(m_parent);
 }

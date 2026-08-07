@@ -31,79 +31,47 @@ void ncdfOverlayFactory::DeleteColorTexture()
 //===================================================================
 
 // Sea temperature color map (-2°C to 32°C, purple→red, smoothstep)
-wxColour ncdfOverlayFactory::GetSeaTempGraphicColor(double temp_c)
+wxColour ncdfOverlayFactory::InterpolateStops(const double stops[][4], int nStops, double val, bool smooth)
 {
-    static const double stops[][4] = {
-        {-2, 0x80, 0x00, 0xc0},  // purple
-        { 2, 0x40, 0x30, 0xff},  // blue
-        { 7, 0x00, 0x90, 0xfa},  // sky blue
-        {12, 0x00, 0xd8, 0xb0},  // cyan
-        {17, 0x10, 0xbb, 0x20},  // green
-        {22, 0x90, 0xd0, 0x00},  // yellow-green
-        {26, 0xf0, 0xd0, 0x00},  // yellow
-        {30, 0xf0, 0x70, 0x00},  // orange
-        {32, 0xff, 0x00, 0x00},  // red
-    };
-    const int nStops = sizeof(stops) / sizeof(stops[0]);
-
-    if (temp_c >= stops[nStops - 1][0])
-        return wxColour(0xff, 0x00, 0x00);
-    if (temp_c <= stops[0][0])
+    if (val >= stops[nStops - 1][0])
+        return wxColour((unsigned char)stops[nStops-1][1], (unsigned char)stops[nStops-1][2], (unsigned char)stops[nStops-1][3]);
+    if (val <= stops[0][0])
         return wxColour((unsigned char)stops[0][1], (unsigned char)stops[0][2], (unsigned char)stops[0][3]);
 
     for (int i = 1; i < nStops; i++) {
-        if (temp_c <= stops[i][0]) {
+        if (val <= stops[i][0]) {
             double range = stops[i][0] - stops[i-1][0];
-            double t = (range > 0) ? (temp_c - stops[i-1][0]) / range : 0;
-            // t = t * t * (3.0 - 2.0 * t);  // smoothstep disabled
+            double t = (range > 0) ? (val - stops[i-1][0]) / range : 0;
+            if (smooth) t = t * t * (3.0 - 2.0 * t);
             unsigned char r = (unsigned char)(stops[i-1][1] + t * (stops[i][1] - stops[i-1][1]));
             unsigned char g = (unsigned char)(stops[i-1][2] + t * (stops[i][2] - stops[i-1][2]));
             unsigned char b = (unsigned char)(stops[i-1][3] + t * (stops[i][3] - stops[i-1][3]));
             return wxColour(r, g, b);
         }
     }
-    return wxColour(0xff, 0x00, 0x00);
+    return wxColour((unsigned char)stops[nStops-1][1], (unsigned char)stops[nStops-1][2], (unsigned char)stops[nStops-1][3]);
+}
+
+wxColour ncdfOverlayFactory::GetSeaTempGraphicColor(double temp_c)
+{
+    static const double stops[][4] = {
+        {-2, 0x80, 0x00, 0xc0}, { 2, 0x40, 0x30, 0xff}, { 7, 0x00, 0x90, 0xfa},
+        {12, 0x00, 0xd8, 0xb0}, {17, 0x10, 0xbb, 0x20}, {22, 0x90, 0xd0, 0x00},
+        {26, 0xf0, 0xd0, 0x00}, {30, 0xf0, 0x70, 0x00}, {32, 0xff, 0x00, 0x00},
+    };
+    return InterpolateStops(stops, 9, temp_c, plugin && plugin->m_bSmoothColors);
 }
 
 wxColour ncdfOverlayFactory::GetSalinityGraphicColor(double sal_psu)
 {
-    // Salinity color map: 30-38‰ range
-    // sky blue → azure → deep sea blue → bright cyan-green → golden yellow → orange-red
     static const double stops[][4] = {
-        {30.0, 0x87, 0xCE, 0xEB},  // sky blue
-        {31.0, 0x60, 0xB0, 0xE0},  // light azure
-        {32.0, 0x40, 0x90, 0xD0},  // azure
-        {33.0, 0x20, 0x70, 0xC0},  // medium azure
-        {34.0, 0x10, 0x50, 0xA0},  // deep sea blue
-        {35.0, 0x00, 0x80, 0x80},  // teal (transition)
-        {35.5, 0x20, 0xA0, 0x70},  // cyan-green
-        {36.0, 0x40, 0xC0, 0x60},  // bright cyan-green
-        {36.5, 0x80, 0xC0, 0x40},  // yellow-green
-        {37.0, 0xC0, 0xB0, 0x20},  // golden
-        {37.5, 0xE0, 0xA0, 0x10},  // golden yellow
-        {38.0, 0xE0, 0x70, 0x20},  // orange
-        {38.5, 0xD0, 0x40, 0x20},  // orange-red
-        {39.0, 0xC0, 0x20, 0x20},  // red
+        {30.0, 0x87, 0xCE, 0xEB}, {31.0, 0x60, 0xB0, 0xE0}, {32.0, 0x40, 0x90, 0xD0},
+        {33.0, 0x20, 0x70, 0xC0}, {34.0, 0x10, 0x50, 0xA0}, {35.0, 0x00, 0x80, 0x80},
+        {35.5, 0x20, 0xA0, 0x70}, {36.0, 0x40, 0xC0, 0x60}, {36.5, 0x80, 0xC0, 0x40},
+        {37.0, 0xC0, 0xB0, 0x20}, {37.5, 0xE0, 0xA0, 0x10}, {38.0, 0xE0, 0x70, 0x20},
+        {38.5, 0xD0, 0x40, 0x20}, {39.0, 0xC0, 0x20, 0x20},
     };
-    const int nStops = sizeof(stops) / sizeof(stops[0]);
-
-    if (sal_psu >= stops[nStops - 1][0])
-        return wxColour(0xFF, 0x00, 0x00);
-    if (sal_psu <= stops[0][0])
-        return wxColour((unsigned char)stops[0][1], (unsigned char)stops[0][2], (unsigned char)stops[0][3]);
-
-    for (int i = 1; i < nStops; i++) {
-        if (sal_psu <= stops[i][0]) {
-            double range = stops[i][0] - stops[i-1][0];
-            double t = (range > 0) ? (sal_psu - stops[i-1][0]) / range : 0;
-            // t = t * t * (3.0 - 2.0 * t);  // smoothstep disabled
-            unsigned char r = (unsigned char)(stops[i-1][1] + t * (stops[i][1] - stops[i-1][1]));
-            unsigned char g = (unsigned char)(stops[i-1][2] + t * (stops[i][2] - stops[i-1][2]));
-            unsigned char b = (unsigned char)(stops[i-1][3] + t * (stops[i][3] - stops[i-1][3]));
-            return wxColour(r, g, b);
-        }
-    }
-    return wxColour(0xFF, 0x00, 0x00);
+    return InterpolateStops(stops, 14, sal_psu, plugin && plugin->m_bSmoothColors);
 }
 
 void ncdfOverlayFactory::DeleteSalinityTexture()

@@ -1147,47 +1147,12 @@ void ncdfOverlayFactory::drawTriangle(wxDC *pmdc, wxPen pen, bool south,
 
 wxColour ncdfOverlayFactory::GetSeaCurrentGraphicColor(double val_in)
 {
-    // Custom color map with 5 flow speed ranges
-    // <0.2: micro (deep blue), 0.2-0.5: low (blue-cyan), 0.5-1.0: medium (cyan-green),
-    // 1.0-1.5: high (green-yellow), >1.5: very high (orange-red)
-    double val = wxMax(val_in, 0.0);
-
-    // Color stops: {speed, R, G, B}
     static const double stops[][4] = {
-        {0.0,  20,  20, 180},  // deep blue (micro)
-        {0.2,  30,  80, 220},  // blue (micro/low boundary)
-        {0.5,  0,  180, 220},  // cyan (low/medium boundary)
-        {1.0,  0,  200,  80},  // green (medium/high boundary)
-        {1.5, 220, 220,  20},  // yellow (high/very high boundary)
-        {2.0, 240, 100,  20},  // orange
-        {3.0, 220,  20,  20},  // red (very high)
+        {0.00,  20,  20, 180}, {0.10,  30,  80, 220}, {0.25,   0, 180, 220},
+        {0.50,   0, 200,  80}, {0.75, 220, 220,  20}, {1.00, 240, 100,  20},
+        {1.50, 220,  20,  20},
     };
-    const int nStops = sizeof(stops) / sizeof(stops[0]);
-
-    // Clamp to range
-    if (val <= stops[0][0]) {
-        return wxColour((unsigned char)stops[0][1], (unsigned char)stops[0][2], (unsigned char)stops[0][3]);
-    }
-    if (val >= stops[nStops - 1][0]) {
-        return wxColour((unsigned char)stops[nStops-1][1], (unsigned char)stops[nStops-1][2], (unsigned char)stops[nStops-1][3]);
-    }
-
-    // Find the two stops to interpolate between
-    for (int i = 1; i < nStops; i++) {
-        if (val <= stops[i][0]) {
-            double range = stops[i][0] - stops[i-1][0];
-            double t = (range > 0) ? (val - stops[i-1][0]) / range : 0;
-
-            // t = t * t * (3.0 - 2.0 * t);  // smoothstep disabled
-
-            unsigned char r = (unsigned char)(stops[i-1][1] + t * (stops[i][1] - stops[i-1][1]));
-            unsigned char g = (unsigned char)(stops[i-1][2] + t * (stops[i][2] - stops[i-1][2]));
-            unsigned char b = (unsigned char)(stops[i-1][3] + t * (stops[i][3] - stops[i-1][3]));
-            return wxColour(r, g, b);
-        }
-    }
-
-    return wxColour(220, 20, 20);  // fallback red
+    return InterpolateStops(stops, 7, wxMax(val_in, 0.0), plugin && plugin->m_bSmoothColors);
 }
 
 

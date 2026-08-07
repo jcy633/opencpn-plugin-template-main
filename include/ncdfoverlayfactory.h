@@ -121,6 +121,9 @@ public:
 
      // Shared grid overlay renderer for SST / Salinity / Current (parameterized)
      typedef wxColour (ncdfOverlayFactory::*ColorFunc)(double);
+
+     // Shared color interpolation with optional smoothstep
+     static wxColour InterpolateStops(const double stops[][4], int nStops, double val, bool smooth);
      void RenderGridOverlay(PlugIn_ViewPort *vp,
                             double **grid,
                             ColorFunc colorFunc,
