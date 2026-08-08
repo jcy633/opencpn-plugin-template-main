@@ -107,7 +107,11 @@ public:
           int  interpMode;      // 0=linear color, 1=linear scalar, 2=bicubic, 3=monotone bicubic
           bool smoothColors;
           bool sharpen;
-          InterpSettings() : interpMode(0), smoothColors(false), sharpen(false) {}
+          bool anisoDiffusion;  // guided anisotropic diffusion (edge-preserving)
+          bool sCurve;          // S-curve color mapping
+          bool slopeShading;    // gradient-based slope shading
+          bool licFlow;         // line integral convolution (current only)
+          InterpSettings() : interpMode(0), smoothColors(false), sharpen(false), anisoDiffusion(false), sCurve(false), slopeShading(false), licFlow(false) {}
       };
       InterpSettings m_settingsCurrent;
       InterpSettings m_settingsSeaTemp;

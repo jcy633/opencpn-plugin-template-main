@@ -113,6 +113,14 @@ class ncdfDialog : public wxDialog
 		virtual void onSmoothCurrClick( wxCommandEvent& event ) { event.Skip(); }
 		wxCheckBox* m_checkBoxSharpenCurr;
 		virtual void onSharpenCurrClick( wxCommandEvent& event ) { event.Skip(); }
+		wxCheckBox* m_checkBoxAnisoDiffCurr;
+		virtual void onAnisoDiffCurrClick( wxCommandEvent& event ) { event.Skip(); }
+		wxCheckBox* m_checkBoxSCurveCurr;
+		virtual void onSCurveCurrClick( wxCommandEvent& event ) { event.Skip(); }
+		wxCheckBox* m_checkBoxSlopeCurr;
+		virtual void onSlopeCurrClick( wxCommandEvent& event ) { event.Skip(); }
+		wxCheckBox* m_checkBoxLICCurr;
+		virtual void onLICCurrClick( wxCommandEvent& event ) { event.Skip(); }
 		// Sea Temp settings tab
 		wxPanel* m_panelSSTSettings;
 		wxChoice* m_choiceInterpSST;
@@ -121,6 +129,12 @@ class ncdfDialog : public wxDialog
 		virtual void onSmoothSSTClick( wxCommandEvent& event ) { event.Skip(); }
 		wxCheckBox* m_checkBoxSharpenSST;
 		virtual void onSharpenSSTClick( wxCommandEvent& event ) { event.Skip(); }
+		wxCheckBox* m_checkBoxAnisoDiffSST;
+		virtual void onAnisoDiffSSTClick( wxCommandEvent& event ) { event.Skip(); }
+		wxCheckBox* m_checkBoxSCurveSST;
+		virtual void onSCurveSSTClick( wxCommandEvent& event ) { event.Skip(); }
+		wxCheckBox* m_checkBoxSlopeSST;
+		virtual void onSlopeSSTClick( wxCommandEvent& event ) { event.Skip(); }
 		// Salinity settings tab
 		wxPanel* m_panelSalSettings;
 		wxChoice* m_choiceInterpSal;
@@ -129,6 +143,12 @@ class ncdfDialog : public wxDialog
 		virtual void onSmoothSalClick( wxCommandEvent& event ) { event.Skip(); }
 		wxCheckBox* m_checkBoxSharpenSal;
 		virtual void onSharpenSalClick( wxCommandEvent& event ) { event.Skip(); }
+		wxCheckBox* m_checkBoxAnisoDiffSal;
+		virtual void onAnisoDiffSalClick( wxCommandEvent& event ) { event.Skip(); }
+		wxCheckBox* m_checkBoxSCurveSal;
+		virtual void onSCurveSalClick( wxCommandEvent& event ) { event.Skip(); }
+		wxCheckBox* m_checkBoxSlopeSal;
+		virtual void onSlopeSalClick( wxCommandEvent& event ) { event.Skip(); }
 
 		ncdfDialog( wxWindow* parent, wxWindowID id = wxID_ANY, const wxString& title = _("ncdf Dialog"), const wxPoint& pos = wxDefaultPosition, const wxSize& size = wxSize( 280,460 ), long style = wxDEFAULT_DIALOG_STYLE|wxRESIZE_BORDER );
 

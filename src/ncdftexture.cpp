@@ -200,9 +200,34 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
                         if (x >= tw - 1 || y >= th - 1) continue;
                         wxColour c = (this->*colorFunc)(val);
                         int off = 4 * (y * tw + x);
-                        texData[off]     = c.Red();
-                        texData[off + 1] = c.Green();
-                        texData[off + 2] = c.Blue();
+                        unsigned char r = c.Red(), g = c.Green(), b = c.Blue();
+
+                        // Slope shading: modulate brightness by gradient
+                        if (m_currentSlopeShading && j > 0 && j < nj-1 && i > 0 && i < ni-1) {
+                            double vn = grid[j-1][i], vs = grid[j+1][i];
+                            double vw = grid[j][i-1], ve = grid[j][i+1];
+                            if (vn != ncdf_NOTDEF && vs != ncdf_NOTDEF &&
+                                vw != ncdf_NOTDEF && ve != ncdf_NOTDEF) {
+                                double gx = (ve - vw) * 0.5;
+                                double gy = (vs - vn) * 0.5;
+                                double mag = sqrt(gx*gx + gy*gy);
+                                if (mag > 1e-10) {
+                                    // Light from upper-left, slope modulates brightness
+                                    double nx = -gx, ny = -gy;
+                                    double nz = 1.0;
+                                    double nm = sqrt(nx*nx + ny*ny + nz*nz);
+                                    double light = (nx*(-0.5) + ny*(-0.5) + nz*0.707) / nm;
+                                    light = 0.5 + light * 0.8;  // map to [0.3, 1.3]
+                                    light = fmax(0.3, fmin(1.5, light));
+                                    r = (unsigned char)fmin(255.0, r * light);
+                                    g = (unsigned char)fmin(255.0, g * light);
+                                    b = (unsigned char)fmin(255.0, b * light);
+                                }
+                            }
+                        }
+                        texData[off]     = r;
+                        texData[off + 1] = g;
+                        texData[off + 2] = b;
                         texData[off + 3] = alpha;
                     }
                 }
@@ -306,6 +331,7 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
                 // mode: 0=linear scalar, 1=bicubic, 2=monotone bicubic
                 int shaderMode = (m_currentInterpMode >= 2) ? m_currentInterpMode - 1 : 0;
                 if (u.mode >= 0) ncdf_shader_uniform_1i(u.mode, shaderMode);
+                if (u.sCurve >= 0) ncdf_shader_uniform_1i(u.sCurve, m_currentSCurve ? 1 : 0);
                 if (u.dataTex >= 0) {
                     ncdf_shader_active_texture(0x84C0);
                     glBindTexture(GL_TEXTURE_2D, texID);

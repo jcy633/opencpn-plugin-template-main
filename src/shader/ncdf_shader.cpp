@@ -158,6 +158,7 @@ static const char* s_frag =
     "uniform sampler2D colorLUT;\n"
     "uniform vec2 texSize;\n"
     "uniform int mode;\n"
+    "uniform int sCurve;\n"
     "varying vec2 vUV;\n"
     "\n"
     "vec4 cubic(float t) {\n"
@@ -266,6 +267,10 @@ static const char* s_frag =
     "            result=val/wSum;\n"
     "        }\n"
     "    }\n"
+    "    // S-curve color mapping (enhance mid-tone contrast)\n"
+    "    if (sCurve == 1) {\n"
+    "        result = 1.0 / (1.0 + exp(-10.0 * (result - 0.5)));\n"
+    "    }\n"
     "    gl_FragColor=vec4(texture2D(colorLUT,vec2(result,0.5)).rgb,1.0);\n"
     "}\n";
 
@@ -370,6 +375,7 @@ bool ncdf_shader_init() {
     s_uniforms.colorLUT = fpGetUniformLocation(s_program, "colorLUT");
     s_uniforms.texSize = fpGetUniformLocation(s_program, "texSize");
     s_uniforms.mode = fpGetUniformLocation(s_program, "mode");
+    s_uniforms.sCurve = fpGetUniformLocation(s_program, "sCurve");
 
     s_initialized = true;
     wxLogMessage(_T("[shader] init OK program=%u"), s_program);

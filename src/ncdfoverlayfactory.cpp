@@ -63,6 +63,18 @@ ncdfOverlayFactory::ncdfOverlayFactory()
       m_useShader = false;
       m_currentInterpMode = 0;
       m_currentSmoothColors = false;
+      m_currentSCurve = false;
+      m_currentSlopeShading = false;
+      m_cachedCurrentGrid = NULL;
+      m_cachedSSTGrid = NULL;
+      m_cachedSalinityGrid = NULL;
+      m_cachedCurrentNj = m_cachedCurrentNi = 0;
+      m_cachedSSTNj = m_cachedSSTNi = 0;
+      m_cachedSalNj = m_cachedSalNi = 0;
+      m_cachedCurrentOwns = m_cachedSSTOwns = m_cachedSalOwns = false;
+      m_glLICTexture = 0;
+      m_bHasLICTexture = false;
+      m_bNeedsLICRebuild = true;
       m_glColorLUT = 0;
       m_bHasColorLUT = false;
 
@@ -113,6 +125,11 @@ ncdfOverlayFactory::~ncdfOverlayFactory()
     DeleteSeaTempTexture();
     DeleteSalinityTexture();
     ClearParticles();
+    if (m_cachedCurrentOwns) FreeSharpenedGrid(m_cachedCurrentGrid, m_cachedCurrentNj);
+    if (m_cachedSSTOwns) FreeSharpenedGrid(m_cachedSSTGrid, m_cachedSSTNj);
+    if (m_cachedSalOwns) FreeSharpenedGrid(m_cachedSalinityGrid, m_cachedSalNj);
+    m_cachedCurrentGrid = m_cachedSSTGrid = m_cachedSalinityGrid = NULL;
+    DeleteLICTexture();
     if (m_bHasColorLUT && m_glColorLUT) {
         glDeleteTextures(1, &m_glColorLUT);
         m_glColorLUT = 0;
@@ -287,24 +304,113 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
           int ni = gui->myMessage.lonLength;
           int nj = gui->myMessage.latLength;
           if (ni > 1 && nj > 1) {
+              // LIC flow visualization (current only)
+              if (plugin->m_settingsCurrent.licFlow) {
+                  if (m_bNeedsLICRebuild || !m_bHasLICTexture) {
+                      BuildLICTexture(ni, nj);
+                  }
+                  if (m_bHasLICTexture) {
+                      // Draw LIC texture using the same tiled overlay approach
+                      double lat_min = blat, lon_min = tlon;
+                      double lat_max = tlat, lon_max = blon;
+                      double latstep = fabs(lat_max - lat_min) / (nj - 1);
+                      double lonstep = (lon_max - lon_min) / (ni - 1);
+                      if (latstep > 1e-10 && lonstep > 1e-10) {
+                          double pw = vp->view_scale_ppm * 1e6 / pow(2, fabs(vp->clat) / 25);
+                          if (pw < 20) pw = 20;
+                          int xs = (int)ceil(vp->pix_width / pw);
+                          int ys = (int)ceil(vp->pix_height / pw);
+                          if (vp->rotation == 0) xs = 1;
+                          if (xs < 2) xs = 2; if (ys < 2) ys = 2;
+                          if (xs > 16) xs = 16; if (ys > 16) ys = 16;
+                          int gridW = xs + 1, gridH = ys + 1;
+                          double *lva = new(std::nothrow) double[gridW * gridH * 2];
+                          if (lva) {
+                              double clon = (lon_min + lon_max) / 2;
+                              for (int ii = 0; ii < gridW; ii++) {
+                                  double px = vp->pix_width / (double)xs * ii;
+                                  for (int jj = 0; jj < gridH; jj++) {
+                                      double py = vp->pix_height / (double)ys * jj;
+                                      double lat, lon;
+                                      wxPoint pt((int)px, (int)py);
+                                      GetCanvasLLPix(vp, pt, &lat, &lon);
+                                      if (clon - lon > 180) lon += 360;
+                                      else if (lon - clon > 180) lon -= 360;
+                                      int idx = (ii * gridH + jj) * 2;
+                                      lva[idx]     = ((lon - lon_min) / lonstep + 0.5) / ni;
+                                      lva[idx + 1] = ((lat - lat_min) / latstep + 0.5) / nj;
+                                  }
+                              }
+                              glEnable(GL_TEXTURE_2D);
+                              glBindTexture(GL_TEXTURE_2D, m_glLICTexture);
+                              glEnable(GL_BLEND);
+                              glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                              glColor4f(1, 1, 1, 1);
+                              double xS = vp->pix_width / (double)xs;
+                              double yS = vp->pix_height / (double)ys;
+                              for (int ii = 0; ii < xs; ii++) {
+                                  for (int jj = 0; jj < ys; jj++) {
+                                      int i00 = (ii * gridH + jj) * 2;
+                                      int i10 = ((ii+1) * gridH + jj) * 2;
+                                      int i11 = ((ii+1) * gridH + jj+1) * 2;
+                                      int i01 = (ii * gridH + jj+1) * 2;
+                                      double u0=lva[i00], u1=lva[i10], u2=lva[i11], u3=lva[i01];
+                                      double v0=lva[i00+1], v1=lva[i10+1], v2=lva[i11+1], v3=lva[i01+1];
+                                      if (!((u0>=0||u1>=0)&&(u0<=1||u1<=1)&&(v0>=0||v1>=0)&&(v0<=1||v1<=1))) continue;
+                                      if (u1 <= u0) continue;
+                                      double x = xS * ii, y = yS * jj;
+                                      glBegin(GL_QUADS);
+                                      glTexCoord2d(u0,v0); glVertex2f((float)x,(float)y);
+                                      glTexCoord2d(u1,v1); glVertex2f((float)(x+xS),(float)y);
+                                      glTexCoord2d(u2,v2); glVertex2f((float)(x+xS),(float)(y+yS));
+                                      glTexCoord2d(u3,v3); glVertex2f((float)x,(float)(y+yS));
+                                      glEnd();
+                                  }
+                              }
+                              delete[] lva;
+                              glDisable(GL_BLEND);
+                              glDisable(GL_TEXTURE_2D);
+                              glBindTexture(GL_TEXTURE_2D, 0);
+                          }
+                      }
+                  }
+                  goto afterCurrent;  // skip normal color map
+              }
+
               m_useShader = s_shaderOk && (plugin->m_settingsCurrent.interpMode >= 1);
               m_currentInterpMode = plugin->m_settingsCurrent.interpMode;
               m_currentSmoothColors = plugin->m_settingsCurrent.smoothColors;
-              double** renderGrid = gui->gridMag;
-              double** sharpGrid = NULL;
-              if (plugin->m_settingsCurrent.sharpen) {
-                  sharpGrid = BuildSharpenedGrid(gui->gridMag, nj, ni);
-                  if (sharpGrid) renderGrid = sharpGrid;
+              m_currentSCurve = plugin->m_settingsCurrent.sCurve;
+              m_currentSlopeShading = plugin->m_settingsCurrent.slopeShading;
+              // Rebuild processed grid only when texture needs rebuild
+              if (m_bNeedsColorTexRebuild || !m_cachedCurrentGrid) {
+                  if (m_cachedCurrentOwns) FreeSharpenedGrid(m_cachedCurrentGrid, m_cachedCurrentNj);
+                  m_cachedCurrentGrid = NULL; m_cachedCurrentOwns = false;
+                  double** src = gui->gridMag;
+                  if (plugin->m_settingsCurrent.anisoDiffusion) {
+                      double** ad = BuildAnisoDiffusedGrid(src, nj, ni);
+                      if (ad) { src = ad; m_cachedCurrentGrid = ad; m_cachedCurrentOwns = true; }
+                  }
+                  if (plugin->m_settingsCurrent.sharpen) {
+                      double** sh = BuildSharpenedGrid(src, nj, ni);
+                      if (sh) {
+                          if (m_cachedCurrentOwns) FreeSharpenedGrid(m_cachedCurrentGrid, nj);
+                          m_cachedCurrentGrid = sh; m_cachedCurrentOwns = true;
+                          src = sh;
+                      }
+                  }
+                  if (!m_cachedCurrentGrid) { m_cachedCurrentGrid = gui->gridMag; m_cachedCurrentOwns = false; }
+                  m_cachedCurrentNj = nj; m_cachedCurrentNi = ni;
               }
-              RenderGridOverlay(vp, renderGrid,
+              RenderGridOverlay(vp, m_cachedCurrentGrid,
                                 &ncdfOverlayFactory::GetSeaCurrentGraphicColor,
                                 m_glColorTexture, m_bHasColorTexture, m_bNeedsColorTexRebuild,
                                 m_texDataDim, m_texGLDim);
-              FreeSharpenedGrid(sharpGrid, nj);
           }
       }
 #endif
 	}
+	afterCurrent:
 
 	// Arrows
 	if(plugin->m_bShowCurrentDir) {
@@ -323,19 +429,33 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 		m_useShader = s_shaderOk && (plugin->m_settingsSeaTemp.interpMode >= 1);
 		m_currentInterpMode = plugin->m_settingsSeaTemp.interpMode;
 		m_currentSmoothColors = plugin->m_settingsSeaTemp.smoothColors;
+		m_currentSCurve = plugin->m_settingsSeaTemp.sCurve;
+		m_currentSlopeShading = plugin->m_settingsSeaTemp.slopeShading;
 		int ni = gui->myMessage.lonLength;
 		int nj = gui->myMessage.latLength;
-		double** renderGrid = gui->gridSST;
-		double** sharpGrid = NULL;
-		if (plugin->m_settingsSeaTemp.sharpen) {
-			sharpGrid = BuildSharpenedGrid(gui->gridSST, nj, ni);
-			if (sharpGrid) renderGrid = sharpGrid;
+		if (m_bNeedsSeaTempTexRebuild || !m_cachedSSTGrid) {
+			if (m_cachedSSTOwns) FreeSharpenedGrid(m_cachedSSTGrid, m_cachedSSTNj);
+			m_cachedSSTGrid = NULL; m_cachedSSTOwns = false;
+			double** src = gui->gridSST;
+			if (plugin->m_settingsSeaTemp.anisoDiffusion) {
+				double** ad = BuildAnisoDiffusedGrid(src, nj, ni);
+				if (ad) { src = ad; m_cachedSSTGrid = ad; m_cachedSSTOwns = true; }
+			}
+			if (plugin->m_settingsSeaTemp.sharpen) {
+				double** sh = BuildSharpenedGrid(src, nj, ni);
+				if (sh) {
+					if (m_cachedSSTOwns) FreeSharpenedGrid(m_cachedSSTGrid, nj);
+					m_cachedSSTGrid = sh; m_cachedSSTOwns = true;
+					src = sh;
+				}
+			}
+			if (!m_cachedSSTGrid) { m_cachedSSTGrid = gui->gridSST; m_cachedSSTOwns = false; }
+			m_cachedSSTNj = nj; m_cachedSSTNi = ni;
 		}
-		RenderGridOverlay(vp, renderGrid,
+		RenderGridOverlay(vp, m_cachedSSTGrid,
 						  &ncdfOverlayFactory::GetSeaTempGraphicColor,
 						  m_glSeaTempTexture, m_bHasSeaTempTexture, m_bNeedsSeaTempTexRebuild,
 						  m_sstTexDataDim, m_sstTexGLDim);
-		FreeSharpenedGrid(sharpGrid, nj);
 	}
 
 	// Sea temperature isolines
@@ -348,19 +468,33 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 		m_useShader = s_shaderOk && (plugin->m_settingsSalinity.interpMode >= 1);
 		m_currentInterpMode = plugin->m_settingsSalinity.interpMode;
 		m_currentSmoothColors = plugin->m_settingsSalinity.smoothColors;
+		m_currentSCurve = plugin->m_settingsSalinity.sCurve;
+		m_currentSlopeShading = plugin->m_settingsSalinity.slopeShading;
 		int ni = gui->myMessage.lonLength;
 		int nj = gui->myMessage.latLength;
-		double** renderGrid = gui->gridSalinity;
-		double** sharpGrid = NULL;
-		if (plugin->m_settingsSalinity.sharpen) {
-			sharpGrid = BuildSharpenedGrid(gui->gridSalinity, nj, ni);
-			if (sharpGrid) renderGrid = sharpGrid;
+		if (m_bNeedsSalinityTexRebuild || !m_cachedSalinityGrid) {
+			if (m_cachedSalOwns) FreeSharpenedGrid(m_cachedSalinityGrid, m_cachedSalNj);
+			m_cachedSalinityGrid = NULL; m_cachedSalOwns = false;
+			double** src = gui->gridSalinity;
+			if (plugin->m_settingsSalinity.anisoDiffusion) {
+				double** ad = BuildAnisoDiffusedGrid(src, nj, ni);
+				if (ad) { src = ad; m_cachedSalinityGrid = ad; m_cachedSalOwns = true; }
+			}
+			if (plugin->m_settingsSalinity.sharpen) {
+				double** sh = BuildSharpenedGrid(src, nj, ni);
+				if (sh) {
+					if (m_cachedSalOwns) FreeSharpenedGrid(m_cachedSalinityGrid, nj);
+					m_cachedSalinityGrid = sh; m_cachedSalOwns = true;
+					src = sh;
+				}
+			}
+			if (!m_cachedSalinityGrid) { m_cachedSalinityGrid = gui->gridSalinity; m_cachedSalOwns = false; }
+			m_cachedSalNj = nj; m_cachedSalNi = ni;
 		}
-		RenderGridOverlay(vp, renderGrid,
+		RenderGridOverlay(vp, m_cachedSalinityGrid,
 						  &ncdfOverlayFactory::GetSalinityGraphicColor,
 						  m_glSalinityTexture, m_bHasSalinityTexture, m_bNeedsSalinityTexRebuild,
 						  m_salTexDataDim, m_salTexGLDim);
-		FreeSharpenedGrid(sharpGrid, nj);
 	}
 
 	// Color legend
@@ -1238,6 +1372,246 @@ void ncdfOverlayFactory::FreeSharpenedGrid(double** grid, int nj)
     if (!grid) return;
     for (int j = 0; j < nj; j++) delete[] grid[j];
     delete[] grid;
+}
+
+//===================================================================
+// Guided Anisotropic Diffusion (Perona-Malik, edge-preserving)
+//===================================================================
+double** ncdfOverlayFactory::BuildAnisoDiffusedGrid(double** grid, int nj, int ni)
+{
+    if (!grid || ni < 3 || nj < 3) return NULL;
+
+    // Allocate two buffers and 4 coefficient arrays (one per direction)
+    double** bufA = new(std::nothrow) double*[nj];
+    double** bufB = new(std::nothrow) double*[nj];
+    float* cN = new(std::nothrow) float[nj * ni];
+    float* cS = new(std::nothrow) float[nj * ni];
+    float* cW = new(std::nothrow) float[nj * ni];
+    float* cE = new(std::nothrow) float[nj * ni];
+    if (!bufA || !bufB || !cN || !cS || !cW || !cE) {
+        delete[] bufA; delete[] bufB; delete[] cN; delete[] cS; delete[] cW; delete[] cE;
+        return NULL;
+    }
+    for (int j = 0; j < nj; j++) {
+        bufA[j] = new(std::nothrow) double[ni];
+        bufB[j] = new(std::nothrow) double[ni];
+        if (!bufA[j] || !bufB[j]) {
+            for (int k = 0; k <= j; k++) { delete[] bufA[k]; delete[] bufB[k]; }
+            delete[] bufA; delete[] bufB; delete[] cN; delete[] cS; delete[] cW; delete[] cE;
+            return NULL;
+        }
+    }
+
+    // Copy original data
+    for (int j = 0; j < nj; j++)
+        for (int i = 0; i < ni; i++)
+            bufA[j][i] = grid[j][i];
+
+    // Compute k from data range
+    double dMin = 1e30, dMax = -1e30;
+    for (int j = 0; j < nj; j++)
+        for (int i = 0; i < ni; i++) {
+            double v = grid[j][i];
+            if (v != ncdf_NOTDEF && v == v && isfinite(v)) {
+                if (v < dMin) dMin = v;
+                if (v > dMax) dMax = v;
+            }
+        }
+    double k = (dMax - dMin) * 0.1;
+    if (k < 1e-10) k = 1.0;
+    double invK2 = 1.0 / (k * k);
+    double lambda = 0.2;
+
+    // Pre-compute diffusion coefficients from original data (guided)
+    for (int j = 0; j < nj; j++) {
+        for (int i = 0; i < ni; i++) {
+            int idx = j * ni + i;
+            double v = grid[j][i];
+            if (v == ncdf_NOTDEF || v != v || !isfinite(v) ||
+                j == 0 || j == nj-1 || i == 0 || i == ni-1) {
+                cN[idx] = cS[idx] = cW[idx] = cE[idx] = 0.0f;
+                continue;
+            }
+            double vn = grid[j-1][i], vs = grid[j+1][i];
+            double vw = grid[j][i-1], ve = grid[j][i+1];
+            if (vn == ncdf_NOTDEF || vs == ncdf_NOTDEF ||
+                vw == ncdf_NOTDEF || ve == ncdf_NOTDEF) {
+                cN[idx] = cS[idx] = cW[idx] = cE[idx] = 0.0f;
+                continue;
+            }
+            double dn = vn - v, ds = vs - v, dw = vw - v, de = ve - v;
+            cN[idx] = (float)exp(-dn * dn * invK2);
+            cS[idx] = (float)exp(-ds * ds * invK2);
+            cW[idx] = (float)exp(-dw * dw * invK2);
+            cE[idx] = (float)exp(-de * de * invK2);
+        }
+    }
+
+    // Iterate: coefficients are fixed (guided), only values change
+    const int ITERATIONS = 5;
+    for (int iter = 0; iter < ITERATIONS; iter++) {
+        double** src = (iter % 2 == 0) ? bufA : bufB;
+        double** dst = (iter % 2 == 0) ? bufB : bufA;
+
+        for (int j = 1; j < nj - 1; j++) {
+            for (int i = 1; i < ni - 1; i++) {
+                int idx = j * ni + i;
+                if (cN[idx] == 0.0f && cS[idx] == 0.0f &&
+                    cW[idx] == 0.0f && cE[idx] == 0.0f) {
+                    dst[j][i] = src[j][i];
+                    continue;
+                }
+                double v = src[j][i];
+                dst[j][i] = v + lambda * (
+                    cN[idx] * (src[j-1][i] - v) +
+                    cS[idx] * (src[j+1][i] - v) +
+                    cW[idx] * (src[j][i-1] - v) +
+                    cE[idx] * (src[j][i+1] - v));
+            }
+        }
+        // Copy borders
+        for (int i = 0; i < ni; i++) { dst[0][i] = src[0][i]; dst[nj-1][i] = src[nj-1][i]; }
+        for (int j = 0; j < nj; j++) { dst[j][0] = src[j][0]; dst[j][ni-1] = src[j][ni-1]; }
+    }
+
+    // Result is in the buffer that was last written to
+    double** result = (ITERATIONS % 2 == 0) ? bufA : bufB;
+    double** other  = (ITERATIONS % 2 == 0) ? bufB : bufA;
+    for (int j = 0; j < nj; j++) delete[] other[j];
+    delete[] other;
+    delete[] cN; delete[] cS; delete[] cW; delete[] cE;
+
+    return result;
+}
+
+//===================================================================
+// Line Integral Convolution (LIC) for current vector field
+//===================================================================
+void ncdfOverlayFactory::DeleteLICTexture()
+{
+    if (m_bHasLICTexture && m_glLICTexture) {
+        glDeleteTextures(1, &m_glLICTexture);
+        m_glLICTexture = 0;
+        m_bHasLICTexture = false;
+    }
+}
+
+void ncdfOverlayFactory::BuildLICTexture(int ni, int nj)
+{
+    if (!gui || !gui->gridu || !gui->gridv || ni < 3 || nj < 3) return;
+
+    // Generate white noise (padded by STEPS on each side to avoid edge artifacts)
+    const int STEPS = 10;
+    const double DT = 0.5;
+    int padN = ni + 2 * STEPS;
+    int padM = nj + 2 * STEPS;
+    unsigned char* noise = new(std::nothrow) unsigned char[padM * padN];
+    if (!noise) return;
+    srand(42);
+    for (int k = 0; k < padM * padN; k++) noise[k] = (unsigned char)(rand() & 0xFF);
+
+    unsigned char* licData = new(std::nothrow) unsigned char[ni * nj * 4];
+    if (!licData) { delete[] noise; return; }
+
+    double** uGrid = gui->gridu;
+    double** vGrid = gui->gridv;
+
+    // Find max speed for normalization
+    double maxSpeed = 0;
+    for (int j = 0; j < nj; j++)
+        for (int i = 0; i < ni; i++) {
+            if (uGrid[j][i] == ncdf_NOTDEF || vGrid[j][i] == ncdf_NOTDEF) continue;
+            double sp = sqrt(uGrid[j][i]*uGrid[j][i] + vGrid[j][i]*vGrid[j][i]);
+            if (maxSpeed < sp) maxSpeed = sp;
+        }
+    if (maxSpeed < 1e-10) maxSpeed = 1.0;
+    double invMax = 1.0 / maxSpeed;
+
+    for (int j = 0; j < nj; j++) {
+        for (int i = 0; i < ni; i++) {
+            int off = (j * ni + i) * 4;
+
+            // Land: use normal color mapping, no LIC modulation
+            if (uGrid[j][i] == ncdf_NOTDEF || vGrid[j][i] == ncdf_NOTDEF) {
+                double mag = 0;
+                // Try to get magnitude from gridMag if available
+                if (gui->gridMag && gui->gridMag[j])
+                    mag = gui->gridMag[j][i];
+                if (mag == ncdf_NOTDEF || mag != mag) mag = 0;
+                wxColour c = GetSeaCurrentGraphicColor(mag);
+                licData[off] = c.Red(); licData[off+1] = c.Green();
+                licData[off+2] = c.Blue(); licData[off+3] = 255;
+                continue;
+            }
+
+            double totalNoise = noise[(j + STEPS) * padN + (i + STEPS)];
+            double totalWeight = 1.0;
+
+            // Trace forward (in padded noise coordinates)
+            double x = i, y = j;
+            for (int s = 0; s < STEPS; s++) {
+                int xi = (int)x, yi = (int)y;
+                if (xi < 0 || xi >= ni-1 || yi < 0 || yi >= nj-1) break;
+                double fx = x - xi, fy = y - yi;
+                double uval = (1-fx)*(1-fy)*uGrid[yi][xi] + fx*(1-fy)*uGrid[yi][xi+1]
+                            + (1-fx)*fy*uGrid[yi+1][xi] + fx*fy*uGrid[yi+1][xi+1];
+                double vval = (1-fx)*(1-fy)*vGrid[yi][xi] + fx*(1-fy)*vGrid[yi][xi+1]
+                            + (1-fx)*fy*vGrid[yi+1][xi] + fx*fy*vGrid[yi+1][xi+1];
+                if (uval == ncdf_NOTDEF || vval == ncdf_NOTDEF) break;
+                x += uval * invMax * DT;
+                y += vval * invMax * DT;
+                xi = (int)x; yi = (int)y;
+                if (xi < 0 || xi >= ni || yi < 0 || yi >= nj) break;
+                double w = 1.0 / (1.0 + s * 0.3);
+                totalNoise += noise[(yi + STEPS) * padN + (xi + STEPS)] * w;
+                totalWeight += w;
+            }
+
+            // Trace backward
+            x = i; y = j;
+            for (int s = 0; s < STEPS; s++) {
+                int xi = (int)x, yi = (int)y;
+                if (xi < 0 || xi >= ni-1 || yi < 0 || yi >= nj-1) break;
+                double fx = x - xi, fy = y - yi;
+                double uval = (1-fx)*(1-fy)*uGrid[yi][xi] + fx*(1-fy)*uGrid[yi][xi+1]
+                            + (1-fx)*fy*uGrid[yi+1][xi] + fx*fy*uGrid[yi+1][xi+1];
+                double vval = (1-fx)*(1-fy)*vGrid[yi][xi] + fx*(1-fy)*vGrid[yi][xi+1]
+                            + (1-fx)*fy*vGrid[yi+1][xi] + fx*fy*vGrid[yi+1][xi+1];
+                if (uval == ncdf_NOTDEF || vval == ncdf_NOTDEF) break;
+                x -= uval * invMax * DT;
+                y -= vval * invMax * DT;
+                xi = (int)x; yi = (int)y;
+                if (xi < 0 || xi >= ni || yi < 0 || yi >= nj) break;
+                double w = 1.0 / (1.0 + s * 0.3);
+                totalNoise += noise[(yi + STEPS) * padN + (xi + STEPS)] * w;
+                totalWeight += w;
+            }
+
+            double val = totalNoise / totalWeight / 255.0;
+            double mag = sqrt(uGrid[j][i]*uGrid[j][i] + vGrid[j][i]*vGrid[j][i]);
+            wxColour c = GetSeaCurrentGraphicColor(mag);
+            double brightness = 0.3 + 0.7 * val;
+            licData[off]     = (unsigned char)fmin(255.0, c.Red() * brightness);
+            licData[off + 1] = (unsigned char)fmin(255.0, c.Green() * brightness);
+            licData[off + 2] = (unsigned char)fmin(255.0, c.Blue() * brightness);
+            licData[off + 3] = 255;
+        }
+    }
+
+    delete[] noise;
+
+    DeleteLICTexture();
+    glGenTextures(1, &m_glLICTexture);
+    glBindTexture(GL_TEXTURE_2D, m_glLICTexture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, ni, nj, 0, GL_RGBA, GL_UNSIGNED_BYTE, licData);
+    m_bHasLICTexture = true;
+    m_bNeedsLICRebuild = false;
+
+    delete[] licData;
 }
 
 

@@ -185,12 +185,22 @@ void MainDialog::setPlugIn(ncdf_pi *p)
   m_choiceInterpCurr->SetSelection(pPlugIn->m_settingsCurrent.interpMode);
   m_checkBoxSmoothCurr->SetValue(pPlugIn->m_settingsCurrent.smoothColors);
   m_checkBoxSharpenCurr->SetValue(pPlugIn->m_settingsCurrent.sharpen);
+  m_checkBoxAnisoDiffCurr->SetValue(pPlugIn->m_settingsCurrent.anisoDiffusion);
+  m_checkBoxSCurveCurr->SetValue(pPlugIn->m_settingsCurrent.sCurve);
+  m_checkBoxSlopeCurr->SetValue(pPlugIn->m_settingsCurrent.slopeShading);
+  m_checkBoxLICCurr->SetValue(pPlugIn->m_settingsCurrent.licFlow);
   m_choiceInterpSST->SetSelection(pPlugIn->m_settingsSeaTemp.interpMode);
   m_checkBoxSmoothSST->SetValue(pPlugIn->m_settingsSeaTemp.smoothColors);
   m_checkBoxSharpenSST->SetValue(pPlugIn->m_settingsSeaTemp.sharpen);
+  m_checkBoxAnisoDiffSST->SetValue(pPlugIn->m_settingsSeaTemp.anisoDiffusion);
+  m_checkBoxSCurveSST->SetValue(pPlugIn->m_settingsSeaTemp.sCurve);
+  m_checkBoxSlopeSST->SetValue(pPlugIn->m_settingsSeaTemp.slopeShading);
   m_choiceInterpSal->SetSelection(pPlugIn->m_settingsSalinity.interpMode);
   m_checkBoxSmoothSal->SetValue(pPlugIn->m_settingsSalinity.smoothColors);
   m_checkBoxSharpenSal->SetValue(pPlugIn->m_settingsSalinity.sharpen);
+  m_checkBoxAnisoDiffSal->SetValue(pPlugIn->m_settingsSalinity.anisoDiffusion);
+  m_checkBoxSCurveSal->SetValue(pPlugIn->m_settingsSalinity.sCurve);
+  m_checkBoxSlopeSal->SetValue(pPlugIn->m_settingsSalinity.slopeShading);
 }
 
 void MainDialog::SetCursorLatLon(double lat, double lon)
@@ -2104,6 +2114,42 @@ void MainDialog::onSmoothCurrClick(wxCommandEvent& event)
 void MainDialog::onSharpenCurrClick(wxCommandEvent& event)
 {
 	pPlugIn->m_settingsCurrent.sharpen = m_checkBoxSharpenCurr->GetValue();
+	if (pPlugIn->m_settingsCurrent.sharpen) {
+		pPlugIn->m_settingsCurrent.anisoDiffusion = false;
+		m_checkBoxAnisoDiffCurr->SetValue(false);
+	}
+	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
+	if (pof) pof->SetBicubicMode(true);
+	RequestRefresh(m_parent);
+}
+void MainDialog::onAnisoDiffCurrClick(wxCommandEvent& event)
+{
+	pPlugIn->m_settingsCurrent.anisoDiffusion = m_checkBoxAnisoDiffCurr->GetValue();
+	if (pPlugIn->m_settingsCurrent.anisoDiffusion) {
+		pPlugIn->m_settingsCurrent.sharpen = false;
+		m_checkBoxSharpenCurr->SetValue(false);
+	}
+	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
+	if (pof) pof->SetBicubicMode(true);
+	RequestRefresh(m_parent);
+}
+void MainDialog::onSCurveCurrClick(wxCommandEvent& event)
+{
+	pPlugIn->m_settingsCurrent.sCurve = m_checkBoxSCurveCurr->GetValue();
+	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
+	if (pof) pof->SetBicubicMode(true);
+	RequestRefresh(m_parent);
+}
+void MainDialog::onSlopeCurrClick(wxCommandEvent& event)
+{
+	pPlugIn->m_settingsCurrent.slopeShading = m_checkBoxSlopeCurr->GetValue();
+	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
+	if (pof) pof->SetBicubicMode(true);
+	RequestRefresh(m_parent);
+}
+void MainDialog::onLICCurrClick(wxCommandEvent& event)
+{
+	pPlugIn->m_settingsCurrent.licFlow = m_checkBoxLICCurr->GetValue();
 	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
 	if (pof) pof->SetBicubicMode(true);
 	RequestRefresh(m_parent);
@@ -2125,6 +2171,35 @@ void MainDialog::onSmoothSSTClick(wxCommandEvent& event)
 void MainDialog::onSharpenSSTClick(wxCommandEvent& event)
 {
 	pPlugIn->m_settingsSeaTemp.sharpen = m_checkBoxSharpenSST->GetValue();
+	if (pPlugIn->m_settingsSeaTemp.sharpen) {
+		pPlugIn->m_settingsSeaTemp.anisoDiffusion = false;
+		m_checkBoxAnisoDiffSST->SetValue(false);
+	}
+	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
+	if (pof) pof->SetBicubicMode(true);
+	RequestRefresh(m_parent);
+}
+void MainDialog::onAnisoDiffSSTClick(wxCommandEvent& event)
+{
+	pPlugIn->m_settingsSeaTemp.anisoDiffusion = m_checkBoxAnisoDiffSST->GetValue();
+	if (pPlugIn->m_settingsSeaTemp.anisoDiffusion) {
+		pPlugIn->m_settingsSeaTemp.sharpen = false;
+		m_checkBoxSharpenSST->SetValue(false);
+	}
+	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
+	if (pof) pof->SetBicubicMode(true);
+	RequestRefresh(m_parent);
+}
+void MainDialog::onSCurveSSTClick(wxCommandEvent& event)
+{
+	pPlugIn->m_settingsSeaTemp.sCurve = m_checkBoxSCurveSST->GetValue();
+	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
+	if (pof) pof->SetBicubicMode(true);
+	RequestRefresh(m_parent);
+}
+void MainDialog::onSlopeSSTClick(wxCommandEvent& event)
+{
+	pPlugIn->m_settingsSeaTemp.slopeShading = m_checkBoxSlopeSST->GetValue();
 	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
 	if (pof) pof->SetBicubicMode(true);
 	RequestRefresh(m_parent);
@@ -2146,6 +2221,35 @@ void MainDialog::onSmoothSalClick(wxCommandEvent& event)
 void MainDialog::onSharpenSalClick(wxCommandEvent& event)
 {
 	pPlugIn->m_settingsSalinity.sharpen = m_checkBoxSharpenSal->GetValue();
+	if (pPlugIn->m_settingsSalinity.sharpen) {
+		pPlugIn->m_settingsSalinity.anisoDiffusion = false;
+		m_checkBoxAnisoDiffSal->SetValue(false);
+	}
+	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
+	if (pof) pof->SetBicubicMode(true);
+	RequestRefresh(m_parent);
+}
+void MainDialog::onAnisoDiffSalClick(wxCommandEvent& event)
+{
+	pPlugIn->m_settingsSalinity.anisoDiffusion = m_checkBoxAnisoDiffSal->GetValue();
+	if (pPlugIn->m_settingsSalinity.anisoDiffusion) {
+		pPlugIn->m_settingsSalinity.sharpen = false;
+		m_checkBoxSharpenSal->SetValue(false);
+	}
+	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
+	if (pof) pof->SetBicubicMode(true);
+	RequestRefresh(m_parent);
+}
+void MainDialog::onSCurveSalClick(wxCommandEvent& event)
+{
+	pPlugIn->m_settingsSalinity.sCurve = m_checkBoxSCurveSal->GetValue();
+	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
+	if (pof) pof->SetBicubicMode(true);
+	RequestRefresh(m_parent);
+}
+void MainDialog::onSlopeSalClick(wxCommandEvent& event)
+{
+	pPlugIn->m_settingsSalinity.slopeShading = m_checkBoxSlopeSal->GetValue();
 	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
 	if (pof) pof->SetBicubicMode(true);
 	RequestRefresh(m_parent);

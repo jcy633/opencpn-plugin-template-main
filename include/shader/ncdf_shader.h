@@ -23,7 +23,8 @@ struct NcdfShaderUniforms {
     int dataTex;   // sampler2D: normalized data texture (R=value, A=validity)
     int colorLUT;  // sampler2D: 1x256 color lookup texture
     int texSize;   // vec2: texture dimensions for bicubic sampling
-    int mode;      // int: 0=bicubic(Catmull-Rom), 1=bilinear(scalar)
+    int mode;      // int: 0=bilinear, 1=bicubic, 2=monotone bicubic
+    int sCurve;    // int: 0=off, 1=on (S-curve color mapping)
 };
 NcdfShaderUniforms ncdf_shader_get_uniforms();
 

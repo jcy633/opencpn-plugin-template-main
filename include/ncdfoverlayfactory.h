@@ -125,6 +125,7 @@ public:
      // Shared color interpolation with optional smoothstep
      static wxColour InterpolateStops(const double stops[][4], int nStops, double val, bool smooth);
      static double** BuildSharpenedGrid(double** grid, int nj, int ni);
+     static double** BuildAnisoDiffusedGrid(double** grid, int nj, int ni);
      static void FreeSharpenedGrid(double** grid, int nj);
      void RenderGridOverlay(PlugIn_ViewPort *vp,
                             double **grid,
@@ -195,6 +196,8 @@ private:
 	 bool m_useShader;
 	 int  m_currentInterpMode;
 	 bool m_currentSmoothColors;
+	 bool m_currentSCurve;
+	 bool m_currentSlopeShading;
 	 GLuint m_glColorLUT;
 	 bool m_bHasColorLUT;
 
@@ -222,7 +225,21 @@ private:
 	 double m_lastIso_vp_lonMin;
 	 double m_lastIso_vp_lonMax;
 
-	 // Cached isoline segments (rebuild only on data change, GRIB pattern)
+	 // Cached processed grids (rebuilt only on data/settings change)
+	 double** m_cachedCurrentGrid;
+	 double** m_cachedSSTGrid;
+	 double** m_cachedSalinityGrid;
+	 int m_cachedCurrentNj, m_cachedCurrentNi;
+	 int m_cachedSSTNj, m_cachedSSTNi;
+	 int m_cachedSalNj, m_cachedSalNi;
+	 bool m_cachedCurrentOwns, m_cachedSSTOwns, m_cachedSalOwns;
+
+	 // LIC texture cache (current only)
+	 GLuint m_glLICTexture;
+	 bool m_bHasLICTexture;
+	 bool m_bNeedsLICRebuild;
+	 void DeleteLICTexture();
+	 void BuildLICTexture(int ni, int nj);
 	 bool m_bNeedsIsoRebuild;
 	 struct IsoSeg { double lat1, lon1, lat2, lon2; };
 	 std::vector<IsoSeg> m_isoSegments;
