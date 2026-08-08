@@ -182,8 +182,15 @@ void MainDialog::setPlugIn(ncdf_pi *p)
   m_checkBoxDCurrent->SetValue(pPlugIn->m_bShowCurrentDir);
   m_checkBoxBmpCurrentForce->SetValue(pPlugIn->m_bShowCurrentForce);
   m_checkBoxParticles->SetValue(pPlugIn->m_bShowParticles);
-  m_choiceInterpMode->SetSelection(pPlugIn->m_interpMode);
-  m_checkBoxSmoothColors->SetValue(pPlugIn->m_bSmoothColors);
+  m_choiceInterpCurr->SetSelection(pPlugIn->m_settingsCurrent.interpMode);
+  m_checkBoxSmoothCurr->SetValue(pPlugIn->m_settingsCurrent.smoothColors);
+  m_checkBoxSharpenCurr->SetValue(pPlugIn->m_settingsCurrent.sharpen);
+  m_choiceInterpSST->SetSelection(pPlugIn->m_settingsSeaTemp.interpMode);
+  m_checkBoxSmoothSST->SetValue(pPlugIn->m_settingsSeaTemp.smoothColors);
+  m_checkBoxSharpenSST->SetValue(pPlugIn->m_settingsSeaTemp.sharpen);
+  m_choiceInterpSal->SetSelection(pPlugIn->m_settingsSalinity.interpMode);
+  m_checkBoxSmoothSal->SetValue(pPlugIn->m_settingsSalinity.smoothColors);
+  m_checkBoxSharpenSal->SetValue(pPlugIn->m_settingsSalinity.sharpen);
 }
 
 void MainDialog::SetCursorLatLon(double lat, double lon)
@@ -2080,41 +2087,67 @@ void MainDialog::onSalinityClick(wxCommandEvent& event)
 	RequestRefresh(m_parent);
 }
 
-void MainDialog::onInterpModeChange(wxCommandEvent& event)
+void MainDialog::onInterpCurrChange(wxCommandEvent& event)
 {
-	int sel = m_choiceInterpMode->GetSelection();
-	if (sel < 0 || sel > 3) sel = 0;
-	pPlugIn->m_interpMode = sel;
+	pPlugIn->m_settingsCurrent.interpMode = m_choiceInterpCurr->GetSelection();
 	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
-	if (pof) {
-		pof->SetBicubicMode(sel >= 1);  // modes 1,2,3 need texture rebuild
-	}
-	// Auto-enable first available data display for non-default modes
-	if (sel >= 1) {
-		if (!pPlugIn->m_bShowCurrentForce && !pPlugIn->m_bShowSeaTemp &&
-		    !pPlugIn->m_bShowSalinity) {
-			if (gridMag) {
-				pPlugIn->m_bShowCurrentForce = true;
-				m_checkBoxBmpCurrentForce->SetValue(true);
-			} else if (gridSST && hasSeaTemp) {
-				pPlugIn->m_bShowSeaTemp = true;
-				m_checkBoxSeaTemp->SetValue(true);
-			} else if (gridSalinity && hasSalinity) {
-				pPlugIn->m_bShowSalinity = true;
-				m_checkBoxSalinity->SetValue(true);
-			}
-		}
-	}
+	if (pof) pof->SetBicubicMode(true);
 	RequestRefresh(m_parent);
 }
-
-void MainDialog::onSmoothColorsClick(wxCommandEvent& event)
+void MainDialog::onSmoothCurrClick(wxCommandEvent& event)
 {
-	pPlugIn->m_bSmoothColors = m_checkBoxSmoothColors->GetValue();
+	pPlugIn->m_settingsCurrent.smoothColors = m_checkBoxSmoothCurr->GetValue();
 	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
-	if (pof) {
-		pof->SetBicubicMode(true);  // triggers texture rebuild for all types
-	}
+	if (pof) pof->SetBicubicMode(true);
+	RequestRefresh(m_parent);
+}
+void MainDialog::onSharpenCurrClick(wxCommandEvent& event)
+{
+	pPlugIn->m_settingsCurrent.sharpen = m_checkBoxSharpenCurr->GetValue();
+	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
+	if (pof) pof->SetBicubicMode(true);
+	RequestRefresh(m_parent);
+}
+void MainDialog::onInterpSSTChange(wxCommandEvent& event)
+{
+	pPlugIn->m_settingsSeaTemp.interpMode = m_choiceInterpSST->GetSelection();
+	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
+	if (pof) pof->SetBicubicMode(true);
+	RequestRefresh(m_parent);
+}
+void MainDialog::onSmoothSSTClick(wxCommandEvent& event)
+{
+	pPlugIn->m_settingsSeaTemp.smoothColors = m_checkBoxSmoothSST->GetValue();
+	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
+	if (pof) pof->SetBicubicMode(true);
+	RequestRefresh(m_parent);
+}
+void MainDialog::onSharpenSSTClick(wxCommandEvent& event)
+{
+	pPlugIn->m_settingsSeaTemp.sharpen = m_checkBoxSharpenSST->GetValue();
+	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
+	if (pof) pof->SetBicubicMode(true);
+	RequestRefresh(m_parent);
+}
+void MainDialog::onInterpSalChange(wxCommandEvent& event)
+{
+	pPlugIn->m_settingsSalinity.interpMode = m_choiceInterpSal->GetSelection();
+	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
+	if (pof) pof->SetBicubicMode(true);
+	RequestRefresh(m_parent);
+}
+void MainDialog::onSmoothSalClick(wxCommandEvent& event)
+{
+	pPlugIn->m_settingsSalinity.smoothColors = m_checkBoxSmoothSal->GetValue();
+	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
+	if (pof) pof->SetBicubicMode(true);
+	RequestRefresh(m_parent);
+}
+void MainDialog::onSharpenSalClick(wxCommandEvent& event)
+{
+	pPlugIn->m_settingsSalinity.sharpen = m_checkBoxSharpenSal->GetValue();
+	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
+	if (pof) pof->SetBicubicMode(true);
 	RequestRefresh(m_parent);
 }
 
@@ -2274,9 +2307,6 @@ void MainDialog::OnContextMenu(double m_lat, double m_lon){
 }
 
 void MainDialog::BuildHelpPage(){
-
-	wxString myHelp;
-	myHelp = _("This page is intended to help users download \nthe areas to use with the ncdf plugin.\n\nThe display Areas for ncdf Tidal Currents\n are as follows:\n\nFormat: \nLat(Min), Lat(Max), Lon(Min), Lon(Max)\n\nEnglish Channel:           48, 51, -7, -2\nIrish Sea:                         50, 56, -9, -2\nSouthern Brittany:         46.5, 48.5, -5.5, -0.5\nNorth Sea:                      51, 56, -2.5, 5\nBiscay South:                 43, 47, -9.5, -0.5\nWestern Ireland:            50, 56, -12, -8               ");
-	m_staticText6->SetLabel(myHelp);
+	// Download page replaced by Settings page - no-op
 }
 

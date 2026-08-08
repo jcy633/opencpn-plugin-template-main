@@ -124,6 +124,8 @@ public:
 
      // Shared color interpolation with optional smoothstep
      static wxColour InterpolateStops(const double stops[][4], int nStops, double val, bool smooth);
+     static double** BuildSharpenedGrid(double** grid, int nj, int ni);
+     static void FreeSharpenedGrid(double** grid, int nj);
      void RenderGridOverlay(PlugIn_ViewPort *vp,
                             double **grid,
                             ColorFunc colorFunc,
@@ -191,6 +193,8 @@ private:
 
 	 // Shader bicubic interpolation (optional, auto-fallback to fixed pipeline)
 	 bool m_useShader;
+	 int  m_currentInterpMode;
+	 bool m_currentSmoothColors;
 	 GLuint m_glColorLUT;
 	 bool m_bHasColorLUT;
 

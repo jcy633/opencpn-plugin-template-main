@@ -219,34 +219,6 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	bSizerSalinity->Add( m_textCtrlSalinity, 0, wxALL|wxALIGN_CENTER_VERTICAL, 0 );
 	fgSizer2->Add( bSizerSalinity, 0, 0, 5 );
 
-	// Interpolation mode selector
-	wxFlexGridSizer* bSizerInterp;
-	bSizerInterp = new wxFlexGridSizer( 1, 3, 0, 0 );
-	bSizerInterp->SetFlexibleDirection( wxBOTH );
-	bSizerInterp->SetNonFlexibleGrowMode( wxFLEX_GROWMODE_SPECIFIED );
-	bSizerInterp->Add( 24, 0, 0, wxEXPAND, 0 );
-	wxStaticText* labelInterp = new wxStaticText( m_panel1, wxID_ANY, _("Interpolation:"), wxDefaultPosition, wxDefaultSize, 0 );
-	bSizerInterp->Add( labelInterp, 0, wxALIGN_CENTER_VERTICAL|wxALL, 0 );
-	wxArrayString interpChoices;
-	interpChoices.Add(_("Linear (color)"));
-	interpChoices.Add(_("Linear (scalar)"));
-	interpChoices.Add(_("Bicubic"));
-	interpChoices.Add(_("Monotone bicubic"));
-	m_choiceInterpMode = new wxChoice( m_panel1, wxID_ANY, wxDefaultPosition, wxDefaultSize, interpChoices );
-	m_choiceInterpMode->SetSelection(0);
-	bSizerInterp->Add( m_choiceInterpMode, 0, wxALL|wxALIGN_CENTER_VERTICAL, 0 );
-	fgSizer2->Add( bSizerInterp, 0, 0, 5 );
-
-	// Smooth colors toggle
-	wxFlexGridSizer* bSizerSmooth;
-	bSizerSmooth = new wxFlexGridSizer( 1, 2, 0, 0 );
-	bSizerSmooth->SetFlexibleDirection( wxBOTH );
-	bSizerSmooth->SetNonFlexibleGrowMode( wxFLEX_GROWMODE_SPECIFIED );
-	bSizerSmooth->Add( 24, 0, 0, wxEXPAND, 0 );
-	m_checkBoxSmoothColors = new wxCheckBox( m_panel1, wxID_ANY, _("Smooth color gradients"), wxDefaultPosition, wxDefaultSize, 0 );
-	bSizerSmooth->Add( m_checkBoxSmoothColors, 0, wxALL|wxALIGN_CENTER_VERTICAL, 0 );
-	fgSizer2->Add( bSizerSmooth, 0, 0, 5 );
-
 
 	fgSizer1->Add( fgSizer2, 0, wxEXPAND, 0 );
 
@@ -255,23 +227,75 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	m_panel1->Layout();
 	fgSizer1->Fit( m_panel1 );
 	m_notebook1->AddPage( m_panel1, _("Data"), true );
-	m_panel2 = new wxPanel( m_notebook1, wxID_ANY, wxPoint( -1,-1 ), wxDefaultSize, wxTAB_TRAVERSAL );
-	m_panel2->SetBackgroundColour( wxSystemSettings::GetColour( wxSYS_COLOUR_3DLIGHT ) );
 
-	wxFlexGridSizer* fgSizer5;
-	fgSizer5 = new wxFlexGridSizer( 0, 2, 0, 0 );
-	fgSizer5->SetFlexibleDirection( wxBOTH );
-	fgSizer5->SetNonFlexibleGrowMode( wxFLEX_GROWMODE_SPECIFIED );
+	// Settings page with 3 sub-tabs (replaces Download)
+	m_panelSettings = new wxPanel( m_notebook1, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxTAB_TRAVERSAL );
+	m_panelSettings->SetBackgroundColour( wxSystemSettings::GetColour( wxSYS_COLOUR_3DLIGHT ) );
+	wxBoxSizer* sizerSettings = new wxBoxSizer( wxVERTICAL );
+	m_notebookSettings = new wxNotebook( m_panelSettings, wxID_ANY );
 
-	m_staticText6 = new wxStaticText( m_panel2, wxID_ANY, _("This page is intended to help users download \nthe areas to use with the ncdf plugin.\n\nThe display Areas for ncdf Tidal Currents\n are as follows:\n\nFormat: \nLat(Min), Lat(Max), Lon(Min), Lon(Max)\n\nEnglish Channel:           48, 51, -7, -2\nIrish Sea:                         50, 56, -9, -2\nSouthern Brittany:         46.5, 48.5, -5, -0.5\nNorth Sea:                      51, 56, -2.5, 5\nBiscay South:                 43, 47, -9.5, -0.5\nWestern Ireland:            50, 56, -12, -8               "), wxDefaultPosition, wxDefaultSize, 0 );
-	m_staticText6->Wrap( -1 );
-	fgSizer5->Add( m_staticText6, 0, wxALL, 5 );
+	// Helper lambda to create a settings tab
+	wxArrayString interpChoices;
+	interpChoices.Add(_("Linear (color)"));
+	interpChoices.Add(_("Linear (scalar)"));
+	interpChoices.Add(_("Bicubic"));
+	interpChoices.Add(_("Monotone bicubic"));
 
+	// --- Current settings tab ---
+	m_panelCurrSettings = new wxPanel( m_notebookSettings );
+	wxFlexGridSizer* sizerCurr = new wxFlexGridSizer( 0, 2, 5, 5 );
+	sizerCurr->AddGrowableCol( 1 );
+	sizerCurr->Add( new wxStaticText(m_panelCurrSettings, wxID_ANY, _("Interpolation:")), 0, wxALIGN_CENTER_VERTICAL|wxALL, 3 );
+	m_choiceInterpCurr = new wxChoice( m_panelCurrSettings, wxID_ANY, wxDefaultPosition, wxDefaultSize, interpChoices );
+	m_choiceInterpCurr->SetSelection(0);
+	sizerCurr->Add( m_choiceInterpCurr, 0, wxALL|wxEXPAND, 3 );
+	sizerCurr->AddSpacer(0);
+	m_checkBoxSmoothCurr = new wxCheckBox( m_panelCurrSettings, wxID_ANY, _("Smooth color gradients") );
+	sizerCurr->Add( m_checkBoxSmoothCurr, 0, wxALL, 3 );
+	sizerCurr->AddSpacer(0);
+	m_checkBoxSharpenCurr = new wxCheckBox( m_panelCurrSettings, wxID_ANY, _("Edge sharpening") );
+	sizerCurr->Add( m_checkBoxSharpenCurr, 0, wxALL, 3 );
+	m_panelCurrSettings->SetSizer( sizerCurr );
+	m_notebookSettings->AddPage( m_panelCurrSettings, _("Current") );
 
-	m_panel2->SetSizer( fgSizer5 );
-	m_panel2->Layout();
-	fgSizer5->Fit( m_panel2 );
-	m_notebook1->AddPage( m_panel2, _("Download"), false );
+	// --- Sea Temp settings tab ---
+	m_panelSSTSettings = new wxPanel( m_notebookSettings );
+	wxFlexGridSizer* sizerSST = new wxFlexGridSizer( 0, 2, 5, 5 );
+	sizerSST->AddGrowableCol( 1 );
+	sizerSST->Add( new wxStaticText(m_panelSSTSettings, wxID_ANY, _("Interpolation:")), 0, wxALIGN_CENTER_VERTICAL|wxALL, 3 );
+	m_choiceInterpSST = new wxChoice( m_panelSSTSettings, wxID_ANY, wxDefaultPosition, wxDefaultSize, interpChoices );
+	m_choiceInterpSST->SetSelection(0);
+	sizerSST->Add( m_choiceInterpSST, 0, wxALL|wxEXPAND, 3 );
+	sizerSST->AddSpacer(0);
+	m_checkBoxSmoothSST = new wxCheckBox( m_panelSSTSettings, wxID_ANY, _("Smooth color gradients") );
+	sizerSST->Add( m_checkBoxSmoothSST, 0, wxALL, 3 );
+	sizerSST->AddSpacer(0);
+	m_checkBoxSharpenSST = new wxCheckBox( m_panelSSTSettings, wxID_ANY, _("Edge sharpening") );
+	sizerSST->Add( m_checkBoxSharpenSST, 0, wxALL, 3 );
+	m_panelSSTSettings->SetSizer( sizerSST );
+	m_notebookSettings->AddPage( m_panelSSTSettings, _("Sea Temp") );
+
+	// --- Salinity settings tab ---
+	m_panelSalSettings = new wxPanel( m_notebookSettings );
+	wxFlexGridSizer* sizerSal = new wxFlexGridSizer( 0, 2, 5, 5 );
+	sizerSal->AddGrowableCol( 1 );
+	sizerSal->Add( new wxStaticText(m_panelSalSettings, wxID_ANY, _("Interpolation:")), 0, wxALIGN_CENTER_VERTICAL|wxALL, 3 );
+	m_choiceInterpSal = new wxChoice( m_panelSalSettings, wxID_ANY, wxDefaultPosition, wxDefaultSize, interpChoices );
+	m_choiceInterpSal->SetSelection(0);
+	sizerSal->Add( m_choiceInterpSal, 0, wxALL|wxEXPAND, 3 );
+	sizerSal->AddSpacer(0);
+	m_checkBoxSmoothSal = new wxCheckBox( m_panelSalSettings, wxID_ANY, _("Smooth color gradients") );
+	sizerSal->Add( m_checkBoxSmoothSal, 0, wxALL, 3 );
+	sizerSal->AddSpacer(0);
+	m_checkBoxSharpenSal = new wxCheckBox( m_panelSalSettings, wxID_ANY, _("Edge sharpening") );
+	sizerSal->Add( m_checkBoxSharpenSal, 0, wxALL, 3 );
+	m_panelSalSettings->SetSizer( sizerSal );
+	m_notebookSettings->AddPage( m_panelSalSettings, _("Salinity") );
+
+	sizerSettings->Add( m_notebookSettings, 1, wxEXPAND|wxALL, 5 );
+	m_panelSettings->SetSizer( sizerSettings );
+	m_panelSettings->Layout();
+	m_notebook1->AddPage( m_panelSettings, _("Settings"), false );
 
 	fgSizer3->Add( m_notebook1, 1, wxEXPAND | wxALL, 5 );
 
@@ -293,8 +317,15 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	m_checkBoxSeaTemp->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSeaTempClick ), NULL, this );
 	m_checkBoxSeaTempIso->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSeaTempIsoClick ), NULL, this );
 	m_checkBoxSalinity->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSalinityClick ), NULL, this );
-	m_choiceInterpMode->Connect( wxEVT_COMMAND_CHOICE_SELECTED, wxCommandEventHandler( ncdfDialog::onInterpModeChange ), NULL, this );
-	m_checkBoxSmoothColors->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSmoothColorsClick ), NULL, this );
+	m_choiceInterpCurr->Connect( wxEVT_COMMAND_CHOICE_SELECTED, wxCommandEventHandler( ncdfDialog::onInterpCurrChange ), NULL, this );
+	m_checkBoxSmoothCurr->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSmoothCurrClick ), NULL, this );
+	m_checkBoxSharpenCurr->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSharpenCurrClick ), NULL, this );
+	m_choiceInterpSST->Connect( wxEVT_COMMAND_CHOICE_SELECTED, wxCommandEventHandler( ncdfDialog::onInterpSSTChange ), NULL, this );
+	m_checkBoxSmoothSST->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSmoothSSTClick ), NULL, this );
+	m_checkBoxSharpenSST->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSharpenSSTClick ), NULL, this );
+	m_choiceInterpSal->Connect( wxEVT_COMMAND_CHOICE_SELECTED, wxCommandEventHandler( ncdfDialog::onInterpSalChange ), NULL, this );
+	m_checkBoxSmoothSal->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSmoothSalClick ), NULL, this );
+	m_checkBoxSharpenSal->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSharpenSalClick ), NULL, this );
 	m_choiceTime->Connect( wxEVT_COMMAND_CHOICE_SELECTED, wxCommandEventHandler( ncdfDialog::onTimeChange ), NULL, this );
 	m_sTimeline->Connect( wxEVT_SCROLL_THUMBTRACK, wxScrollEventHandler( ncdfDialog::OnTimeline ), NULL, this );
 	m_sTimeline->Connect( wxEVT_SCROLL_CHANGED, wxScrollEventHandler( ncdfDialog::OnTimeline ), NULL, this );
@@ -316,8 +347,15 @@ ncdfDialog::~ncdfDialog()
 	m_checkBoxSeaTemp->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSeaTempClick ), NULL, this );
 	m_checkBoxSeaTempIso->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSeaTempIsoClick ), NULL, this );
 	m_checkBoxSalinity->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSalinityClick ), NULL, this );
-	m_choiceInterpMode->Disconnect( wxEVT_COMMAND_CHOICE_SELECTED, wxCommandEventHandler( ncdfDialog::onInterpModeChange ), NULL, this );
-	m_checkBoxSmoothColors->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSmoothColorsClick ), NULL, this );
+	m_choiceInterpCurr->Disconnect( wxEVT_COMMAND_CHOICE_SELECTED, wxCommandEventHandler( ncdfDialog::onInterpCurrChange ), NULL, this );
+	m_checkBoxSmoothCurr->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSmoothCurrClick ), NULL, this );
+	m_checkBoxSharpenCurr->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSharpenCurrClick ), NULL, this );
+	m_choiceInterpSST->Disconnect( wxEVT_COMMAND_CHOICE_SELECTED, wxCommandEventHandler( ncdfDialog::onInterpSSTChange ), NULL, this );
+	m_checkBoxSmoothSST->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSmoothSSTClick ), NULL, this );
+	m_checkBoxSharpenSST->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSharpenSSTClick ), NULL, this );
+	m_choiceInterpSal->Disconnect( wxEVT_COMMAND_CHOICE_SELECTED, wxCommandEventHandler( ncdfDialog::onInterpSalChange ), NULL, this );
+	m_checkBoxSmoothSal->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSmoothSalClick ), NULL, this );
+	m_checkBoxSharpenSal->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSharpenSalClick ), NULL, this );
 	m_choiceTime->Disconnect( wxEVT_COMMAND_CHOICE_SELECTED, wxCommandEventHandler( ncdfDialog::onTimeChange ), NULL, this );
 	m_sTimeline->Disconnect( wxEVT_SCROLL_THUMBTRACK, wxScrollEventHandler( ncdfDialog::OnTimeline ), NULL, this );
 	m_sTimeline->Disconnect( wxEVT_SCROLL_CHANGED, wxScrollEventHandler( ncdfDialog::OnTimeline ), NULL, this );

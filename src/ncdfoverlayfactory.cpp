@@ -61,6 +61,8 @@ ncdfOverlayFactory::ncdfOverlayFactory()
       m_ParticleMap = nullptr;
       m_glColorTexture = 0;
       m_useShader = false;
+      m_currentInterpMode = 0;
+      m_currentSmoothColors = false;
       m_glColorLUT = 0;
       m_bHasColorLUT = false;
 
@@ -229,14 +231,14 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
         s_shaderCompiled = true;
         s_shaderOk = ncdf_shader_init();
     }
-    m_useShader = s_shaderOk && (plugin->m_interpMode >= 1);
+    // m_useShader is set per data type below
+    m_useShader = false;
 
     static bool s_shaderDbg = false;
     if (!s_shaderDbg) {
         s_shaderDbg = true;
-        wxLogMessage(_T("[shader] compiled=%d ok=%d interpMode=%d m_useShader=%d"),
-                     (int)s_shaderCompiled, (int)s_shaderOk,
-                     (int)plugin->m_interpMode, (int)m_useShader);
+        wxLogMessage(_T("[shader] compiled=%d ok=%d m_useShader=%d"),
+                     (int)s_shaderCompiled, (int)s_shaderOk, (int)m_useShader);
     }
 
     static int s_frameDbg = 0;
@@ -285,10 +287,20 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
           int ni = gui->myMessage.lonLength;
           int nj = gui->myMessage.latLength;
           if (ni > 1 && nj > 1) {
-              RenderGridOverlay(vp, gui->gridMag,
+              m_useShader = s_shaderOk && (plugin->m_settingsCurrent.interpMode >= 1);
+              m_currentInterpMode = plugin->m_settingsCurrent.interpMode;
+              m_currentSmoothColors = plugin->m_settingsCurrent.smoothColors;
+              double** renderGrid = gui->gridMag;
+              double** sharpGrid = NULL;
+              if (plugin->m_settingsCurrent.sharpen) {
+                  sharpGrid = BuildSharpenedGrid(gui->gridMag, nj, ni);
+                  if (sharpGrid) renderGrid = sharpGrid;
+              }
+              RenderGridOverlay(vp, renderGrid,
                                 &ncdfOverlayFactory::GetSeaCurrentGraphicColor,
                                 m_glColorTexture, m_bHasColorTexture, m_bNeedsColorTexRebuild,
                                 m_texDataDim, m_texGLDim);
+              FreeSharpenedGrid(sharpGrid, nj);
           }
       }
 #endif
@@ -308,7 +320,22 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 
 	// Sea temperature overlay
 	if (plugin->m_bShowSeaTemp && gui && gui->gridSST && gui->hasSeaTemp) {
-		RenderSeaTempOverlay(vp);
+		m_useShader = s_shaderOk && (plugin->m_settingsSeaTemp.interpMode >= 1);
+		m_currentInterpMode = plugin->m_settingsSeaTemp.interpMode;
+		m_currentSmoothColors = plugin->m_settingsSeaTemp.smoothColors;
+		int ni = gui->myMessage.lonLength;
+		int nj = gui->myMessage.latLength;
+		double** renderGrid = gui->gridSST;
+		double** sharpGrid = NULL;
+		if (plugin->m_settingsSeaTemp.sharpen) {
+			sharpGrid = BuildSharpenedGrid(gui->gridSST, nj, ni);
+			if (sharpGrid) renderGrid = sharpGrid;
+		}
+		RenderGridOverlay(vp, renderGrid,
+						  &ncdfOverlayFactory::GetSeaTempGraphicColor,
+						  m_glSeaTempTexture, m_bHasSeaTempTexture, m_bNeedsSeaTempTexRebuild,
+						  m_sstTexDataDim, m_sstTexGLDim);
+		FreeSharpenedGrid(sharpGrid, nj);
 	}
 
 	// Sea temperature isolines
@@ -318,7 +345,22 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 
 	// Salinity overlay
 	if (plugin->m_bShowSalinity && gui && gui->gridSalinity && gui->hasSalinity) {
-		RenderSalinityOverlay(vp);
+		m_useShader = s_shaderOk && (plugin->m_settingsSalinity.interpMode >= 1);
+		m_currentInterpMode = plugin->m_settingsSalinity.interpMode;
+		m_currentSmoothColors = plugin->m_settingsSalinity.smoothColors;
+		int ni = gui->myMessage.lonLength;
+		int nj = gui->myMessage.latLength;
+		double** renderGrid = gui->gridSalinity;
+		double** sharpGrid = NULL;
+		if (plugin->m_settingsSalinity.sharpen) {
+			sharpGrid = BuildSharpenedGrid(gui->gridSalinity, nj, ni);
+			if (sharpGrid) renderGrid = sharpGrid;
+		}
+		RenderGridOverlay(vp, renderGrid,
+						  &ncdfOverlayFactory::GetSalinityGraphicColor,
+						  m_glSalinityTexture, m_bHasSalinityTexture, m_bNeedsSalinityTexRebuild,
+						  m_salTexDataDim, m_salTexGLDim);
+		FreeSharpenedGrid(sharpGrid, nj);
 	}
 
 	// Color legend
@@ -1144,6 +1186,60 @@ void ncdfOverlayFactory::drawTriangle(wxDC *pmdc, wxPen pen, bool south,
 }
 
 
+//===================================================================
+// Adaptive Laplacian sharpening based on gradient magnitude
+//===================================================================
+double** ncdfOverlayFactory::BuildSharpenedGrid(double** grid, int nj, int ni)
+{
+    if (!grid || ni < 3 || nj < 3) return NULL;
+    double** out = new(std::nothrow) double*[nj];
+    if (!out) return NULL;
+    for (int j = 0; j < nj; j++) {
+        out[j] = new(std::nothrow) double[ni];
+        if (!out[j]) { for (int k = 0; k < j; k++) delete[] out[k]; delete[] out; return NULL; }
+    }
+
+    for (int j = 0; j < nj; j++) {
+        for (int i = 0; i < ni; i++) {
+            double v = grid[j][i];
+            if (v == ncdf_NOTDEF || v != v || !isfinite(v)) {
+                out[j][i] = v;
+                continue;
+            }
+            // Boundary: copy original
+            if (j == 0 || j == nj-1 || i == 0 || i == ni-1) {
+                out[j][i] = v;
+                continue;
+            }
+            // Check 4-neighbors for valid data
+            double vn = grid[j-1][i], vs = grid[j+1][i];
+            double vw = grid[j][i-1], ve = grid[j][i+1];
+            if (vn == ncdf_NOTDEF || vs == ncdf_NOTDEF ||
+                vw == ncdf_NOTDEF || ve == ncdf_NOTDEF) {
+                out[j][i] = v;
+                continue;
+            }
+            // Gradient magnitude
+            double gx = ve - vw;
+            double gy = vs - vn;
+            double mag = sqrt(gx * gx + gy * gy);
+            // Laplacian
+            double lap = vn + vs + vw + ve - 4.0 * v;
+            // Adaptive strength: stronger at edges (0.5~2.0)
+            double strength = 0.5 + 1.5 * (1.0 - exp(-mag * 2.0));
+            out[j][i] = v - strength * lap;
+        }
+    }
+    return out;
+}
+
+void ncdfOverlayFactory::FreeSharpenedGrid(double** grid, int nj)
+{
+    if (!grid) return;
+    for (int j = 0; j < nj; j++) delete[] grid[j];
+    delete[] grid;
+}
+
 
 wxColour ncdfOverlayFactory::GetSeaCurrentGraphicColor(double val_in)
 {
@@ -1152,7 +1248,7 @@ wxColour ncdfOverlayFactory::GetSeaCurrentGraphicColor(double val_in)
         {0.50,   0, 200,  80}, {0.75, 220, 220,  20}, {1.00, 240, 100,  20},
         {1.50, 220,  20,  20},
     };
-    return InterpolateStops(stops, 7, wxMax(val_in, 0.0), plugin && plugin->m_bSmoothColors);
+    return InterpolateStops(stops, 7, wxMax(val_in, 0.0), m_currentSmoothColors);
 }
 
 

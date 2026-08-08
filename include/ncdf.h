@@ -154,8 +154,15 @@ protected:
 	virtual void onSeaTempClick( wxCommandEvent& event );
 	virtual void onSeaTempIsoClick( wxCommandEvent& event );
 	virtual void onSalinityClick( wxCommandEvent& event );
-	virtual void onInterpModeChange( wxCommandEvent& event );
-	virtual void onSmoothColorsClick( wxCommandEvent& event );
+	virtual void onInterpCurrChange( wxCommandEvent& event );
+	virtual void onSmoothCurrClick( wxCommandEvent& event );
+	virtual void onSharpenCurrClick( wxCommandEvent& event );
+	virtual void onInterpSSTChange( wxCommandEvent& event );
+	virtual void onSmoothSSTClick( wxCommandEvent& event );
+	virtual void onSharpenSSTClick( wxCommandEvent& event );
+	virtual void onInterpSalChange( wxCommandEvent& event );
+	virtual void onSmoothSalClick( wxCommandEvent& event );
+	virtual void onSharpenSalClick( wxCommandEvent& event );
 	void fillDirTree(wxString dir, bool start, wxTreeItemId id);
 	void addChildren(wxTreeItemId id, wxString s);
 	void readData(wxTreeItemId itemId);

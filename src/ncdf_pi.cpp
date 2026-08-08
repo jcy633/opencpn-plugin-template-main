@@ -118,8 +118,7 @@ int ncdf_pi::Init(void)
 	  m_bShowSeaTemp = false;
 	  m_bShowSeaTempIso = false;
 	  m_bShowSalinity = false;
-	  m_interpMode = 0;
-	  m_bSmoothColors = false;
+	  // Per-type settings default to all off
 	  m_iParticleDensity = 5;
 
       //    Get a pointer to the opencpn configuration object
@@ -385,8 +384,15 @@ bool ncdf_pi::LoadConfig(void)
             pConf->Read ( _T( "ShowSeaTemp" ), &m_bShowSeaTemp, 0 );
             pConf->Read ( _T( "ShowSeaTempIso" ), &m_bShowSeaTempIso, 0 );
             pConf->Read ( _T( "ShowSalinity" ), &m_bShowSalinity, 0 );
-            pConf->Read ( _T( "InterpMode" ), &m_interpMode, 0 );
-            pConf->Read ( _T( "SmoothColors" ), &m_bSmoothColors, 0 );
+            pConf->Read ( _T( "CurrentInterpMode" ), &m_settingsCurrent.interpMode, 0 );
+            pConf->Read ( _T( "CurrentSmooth" ), &m_settingsCurrent.smoothColors, 0 );
+            pConf->Read ( _T( "CurrentSharpen" ), &m_settingsCurrent.sharpen, 0 );
+            pConf->Read ( _T( "SeaTempInterpMode" ), &m_settingsSeaTemp.interpMode, 0 );
+            pConf->Read ( _T( "SeaTempSmooth" ), &m_settingsSeaTemp.smoothColors, 0 );
+            pConf->Read ( _T( "SeaTempSharpen" ), &m_settingsSeaTemp.sharpen, 0 );
+            pConf->Read ( _T( "SalinityInterpMode" ), &m_settingsSalinity.interpMode, 0 );
+            pConf->Read ( _T( "SalinitySmooth" ), &m_settingsSalinity.smoothColors, 0 );
+            pConf->Read ( _T( "SalinitySharpen" ), &m_settingsSalinity.sharpen, 0 );
             pConf->Read ( _T( "ParticleDensity" ), &m_iParticleDensity, 5 );
 
 
@@ -428,8 +434,15 @@ bool ncdf_pi::SaveConfig(void)
             pConf->Write ( _T ( "ShowSeaTemp" ), m_bShowSeaTemp );
             pConf->Write ( _T ( "ShowSeaTempIso" ), m_bShowSeaTempIso );
             pConf->Write ( _T ( "ShowSalinity" ), m_bShowSalinity );
-            pConf->Write ( _T ( "InterpMode" ), m_interpMode );
-            pConf->Write ( _T ( "SmoothColors" ), m_bSmoothColors );
+            pConf->Write ( _T ( "CurrentInterpMode" ), m_settingsCurrent.interpMode );
+            pConf->Write ( _T ( "CurrentSmooth" ), m_settingsCurrent.smoothColors );
+            pConf->Write ( _T ( "CurrentSharpen" ), m_settingsCurrent.sharpen );
+            pConf->Write ( _T ( "SeaTempInterpMode" ), m_settingsSeaTemp.interpMode );
+            pConf->Write ( _T ( "SeaTempSmooth" ), m_settingsSeaTemp.smoothColors );
+            pConf->Write ( _T ( "SeaTempSharpen" ), m_settingsSeaTemp.sharpen );
+            pConf->Write ( _T ( "SalinityInterpMode" ), m_settingsSalinity.interpMode );
+            pConf->Write ( _T ( "SalinitySmooth" ), m_settingsSalinity.smoothColors );
+            pConf->Write ( _T ( "SalinitySharpen" ), m_settingsSalinity.sharpen );
             pConf->Write ( _T ( "ParticleDensity" ), m_iParticleDensity );
 
             pConf->Write ( _T ( "ncdfDialogSizeX" ),  m_ncdf_dialog_sx );

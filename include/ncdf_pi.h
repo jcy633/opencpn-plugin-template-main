@@ -102,9 +102,16 @@ public:
       bool              m_bShowSeaTemp;
       bool              m_bShowSeaTempIso;
       bool              m_bShowSalinity;
-      // Interpolation mode: 0=linear color, 1=linear scalar, 2=bicubic, 3=monotone bicubic
-      int               m_interpMode;
-      bool              m_bSmoothColors;
+      // Per-data-type rendering settings
+      struct InterpSettings {
+          int  interpMode;      // 0=linear color, 1=linear scalar, 2=bicubic, 3=monotone bicubic
+          bool smoothColors;
+          bool sharpen;
+          InterpSettings() : interpMode(0), smoothColors(false), sharpen(false) {}
+      };
+      InterpSettings m_settingsCurrent;
+      InterpSettings m_settingsSeaTemp;
+      InterpSettings m_settingsSalinity;
       int               m_iOverlayTransparency;
       int               m_iArrowSpacing;
       int               m_iNumberSpacing;

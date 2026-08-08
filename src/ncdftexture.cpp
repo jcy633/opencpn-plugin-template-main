@@ -59,7 +59,7 @@ wxColour ncdfOverlayFactory::GetSeaTempGraphicColor(double temp_c)
         {12, 0x00, 0xd8, 0xb0}, {17, 0x10, 0xbb, 0x20}, {22, 0x90, 0xd0, 0x00},
         {26, 0xf0, 0xd0, 0x00}, {30, 0xf0, 0x70, 0x00}, {32, 0xff, 0x00, 0x00},
     };
-    return InterpolateStops(stops, 9, temp_c, plugin && plugin->m_bSmoothColors);
+    return InterpolateStops(stops, 9, temp_c, m_currentSmoothColors);
 }
 
 wxColour ncdfOverlayFactory::GetSalinityGraphicColor(double sal_psu)
@@ -71,7 +71,7 @@ wxColour ncdfOverlayFactory::GetSalinityGraphicColor(double sal_psu)
         {37.0, 0xC0, 0xB0, 0x20}, {37.5, 0xE0, 0xA0, 0x10}, {38.0, 0xE0, 0x70, 0x20},
         {38.5, 0xD0, 0x40, 0x20}, {39.0, 0xC0, 0x20, 0x20},
     };
-    return InterpolateStops(stops, 14, sal_psu, plugin && plugin->m_bSmoothColors);
+    return InterpolateStops(stops, 14, sal_psu, m_currentSmoothColors);
 }
 
 void ncdfOverlayFactory::DeleteSalinityTexture()
@@ -304,8 +304,7 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
                 NcdfShaderUniforms u = ncdf_shader_get_uniforms();
                 if (u.texSize >= 0) ncdf_shader_uniform_2f(u.texSize, (float)tw, (float)th);
                 // mode: 0=linear scalar, 1=bicubic, 2=monotone bicubic
-                int shaderMode = 0;
-                if (plugin) shaderMode = (plugin->m_interpMode >= 2) ? plugin->m_interpMode - 1 : 0;
+                int shaderMode = (m_currentInterpMode >= 2) ? m_currentInterpMode - 1 : 0;
                 if (u.mode >= 0) ncdf_shader_uniform_1i(u.mode, shaderMode);
                 if (u.dataTex >= 0) {
                     ncdf_shader_active_texture(0x84C0);
