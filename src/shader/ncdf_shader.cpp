@@ -156,9 +156,14 @@ static const char* s_frag =
     "#version 120\n"
     "uniform sampler2D dataTex;\n"
     "uniform sampler2D colorLUT;\n"
+    "uniform sampler2D slopeTex;\n"
     "uniform vec2 texSize;\n"
     "uniform int mode;\n"
     "uniform int sCurve;\n"
+    "uniform int slope;\n"
+    "uniform float dataMin;\n"
+    "uniform float dataMax;\n"
+    "uniform int slopeMode;\n"
     "varying vec2 vUV;\n"
     "\n"
     "vec4 cubic(float t) {\n"
@@ -271,7 +276,70 @@ static const char* s_frag =
     "    if (sCurve == 1) {\n"
     "        result = 1.0 / (1.0 + exp(-10.0 * (result - 0.5)));\n"
     "    }\n"
-    "    gl_FragColor=vec4(texture2D(colorLUT,vec2(result,0.5)).rgb,1.0);\n"
+    "    vec3 color = texture2D(colorLUT, vec2(result, 0.5)).rgb;\n"
+    "\n"
+    "    // Slope shading: modulate brightness by gradient from slopeTex\n"
+    "    if (slope == 1) {\n"
+    "        float vN = texture2D(slopeTex, vUV + vec2(0.0, -ts.y)).r;\n"
+    "        float vS = texture2D(slopeTex, vUV + vec2(0.0,  ts.y)).r;\n"
+    "        float vW = texture2D(slopeTex, vUV + vec2(-ts.x, 0.0)).r;\n"
+    "        float vE = texture2D(slopeTex, vUV + vec2( ts.x, 0.0)).r;\n"
+    "        bool nValid = texture2D(slopeTex, vUV + vec2(0.0, -ts.y)).a > 0.01;\n"
+    "        bool sValid = texture2D(slopeTex, vUV + vec2(0.0,  ts.y)).a > 0.01;\n"
+    "        bool wValid = texture2D(slopeTex, vUV + vec2(-ts.x, 0.0)).a > 0.01;\n"
+    "        bool eValid = texture2D(slopeTex, vUV + vec2( ts.x, 0.0)).a > 0.01;\n"
+    "        if (nValid && sValid && wValid && eValid) {\n"
+    "            float dataRange = dataMax - dataMin;\n"
+    "            if (slopeMode == 1) {\n"
+    "                // SST: smooth gradient with enhancement at temperature boundaries\n"
+    "                float tC = result * dataRange + dataMin;\n"
+    "                float nC = vN * dataRange + dataMin;\n"
+    "                float sC = vS * dataRange + dataMin;\n"
+    "                float wC = vW * dataRange + dataMin;\n"
+    "                float eC = vE * dataRange + dataMin;\n"
+    "                // Sigmoid remap: enhances contrast at 2°C segment boundaries\n"
+    "                // peaks at 1, 3, 5, 7, ..., 31°C (boundaries between 2°C segments)\n"
+    "                float sCv = 0.5 + 0.5 * sin((tC - 1.0) * 3.14159);\n"
+    "                float sN  = 0.5 + 0.5 * sin((nC - 1.0) * 3.14159);\n"
+    "                float sS  = 0.5 + 0.5 * sin((sC - 1.0) * 3.14159);\n"
+    "                float sW  = 0.5 + 0.5 * sin((wC - 1.0) * 3.14159);\n"
+    "                float sE  = 0.5 + 0.5 * sin((eC - 1.0) * 3.14159);\n"
+    "                float gx = (sE - sW);\n"
+    "                float gy = (sS - sN);\n"
+    "                float mag = sqrt(gx*gx + gy*gy);\n"
+    "                if (mag > 0.01) {\n"
+    "                    float nx = -gx, ny = -gy, nz = 1.0;\n"
+    "                    float nm = sqrt(nx*nx + ny*ny + nz*nz);\n"
+    "                    float light = (nx*(-0.5) + ny*(-0.5) + nz*0.707) / nm;\n"
+    "                    light = clamp(0.5 + light * 0.8, 0.3, 1.5);\n"
+    "                    color *= light;\n"
+    "                }\n"
+    "            } else {\n"
+    "                // Continuous Sobel gradient from slopeTex\n"
+    "                float vNN = texture2D(slopeTex, vUV + vec2(0.0, -2.0*ts.y)).r;\n"
+    "                float vSS = texture2D(slopeTex, vUV + vec2(0.0,  2.0*ts.y)).r;\n"
+    "                float vWW = texture2D(slopeTex, vUV + vec2(-2.0*ts.x, 0.0)).r;\n"
+    "                float vEE = texture2D(slopeTex, vUV + vec2( 2.0*ts.x, 0.0)).r;\n"
+    "                float vNW = texture2D(slopeTex, vUV + vec2(-ts.x, -ts.y)).r;\n"
+    "                float vNE = texture2D(slopeTex, vUV + vec2( ts.x, -ts.y)).r;\n"
+    "                float vSW = texture2D(slopeTex, vUV + vec2(-ts.x,  ts.y)).r;\n"
+    "                float vSE = texture2D(slopeTex, vUV + vec2( ts.x,  ts.y)).r;\n"
+    "                float gx = (vEE + 2.0*vE + vNE + vSE - vWW - 2.0*vW - vNW - vSW) / 8.0;\n"
+    "                float gy = (vSS + 2.0*vS + vSW + vSE - vNN - 2.0*vN - vNW - vNE) / 8.0;\n"
+    "                gx *= (dataRange / 9.0);\n"
+    "                gy *= (dataRange / 9.0);\n"
+    "                float mag = sqrt(gx*gx + gy*gy);\n"
+    "                if (mag > 0.0001) {\n"
+    "                    float nx = -gx, ny = -gy, nz = 1.0;\n"
+    "                    float nm = sqrt(nx*nx + ny*ny + nz*nz);\n"
+    "                    float light = (nx*(-0.5) + ny*(-0.5) + nz*0.707) / nm;\n"
+    "                    light = clamp(0.5 + light * 0.8, 0.3, 1.5);\n"
+    "                    color *= light;\n"
+    "                }\n"
+    "            }\n"
+    "        }\n"
+    "    }\n"
+    "    gl_FragColor = vec4(color, 1.0);\n"
     "}\n";
 
 //===================================================================
@@ -373,9 +441,14 @@ bool ncdf_shader_init() {
     memset(&s_uniforms, 0xFF, sizeof(s_uniforms));
     s_uniforms.dataTex = fpGetUniformLocation(s_program, "dataTex");
     s_uniforms.colorLUT = fpGetUniformLocation(s_program, "colorLUT");
+    s_uniforms.slopeTex = fpGetUniformLocation(s_program, "slopeTex");
     s_uniforms.texSize = fpGetUniformLocation(s_program, "texSize");
     s_uniforms.mode = fpGetUniformLocation(s_program, "mode");
     s_uniforms.sCurve = fpGetUniformLocation(s_program, "sCurve");
+    s_uniforms.slope = fpGetUniformLocation(s_program, "slope");
+    s_uniforms.dataMin = fpGetUniformLocation(s_program, "dataMin");
+    s_uniforms.dataMax = fpGetUniformLocation(s_program, "dataMax");
+    s_uniforms.slopeMode = fpGetUniformLocation(s_program, "slopeMode");
 
     s_initialized = true;
     wxLogMessage(_T("[shader] init OK program=%u"), s_program);

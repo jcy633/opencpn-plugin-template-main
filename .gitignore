@@ -46,7 +46,7 @@ build-deps/
 wxWidgetsDLL.7z
 wxWidgetsDev.7z
 wxWidgetsHeaders.7z
-
+line-integral-convolution-master/
 # ============ Binary / Library files ============
 *.dll
 *.lib

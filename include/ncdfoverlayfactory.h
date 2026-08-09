@@ -126,12 +126,15 @@ public:
      static wxColour InterpolateStops(const double stops[][4], int nStops, double val, bool smooth);
      static double** BuildSharpenedGrid(double** grid, int nj, int ni);
      static double** BuildAnisoDiffusedGrid(double** grid, int nj, int ni);
+     static double** BuildVorticityGrid(double** uGrid, double** vGrid, int nj, int ni);
      static void FreeSharpenedGrid(double** grid, int nj);
      void RenderGridOverlay(PlugIn_ViewPort *vp,
                             double **grid,
                             ColorFunc colorFunc,
                             GLuint &texID, bool &hasTex, bool &needsRebuild,
-                            int dataDim[2], int glDim[2]);
+                            int dataDim[2], int glDim[2],
+                            double **slopeGrid = NULL,
+                            GLuint slopeTexID = 0);
 
      PlugIn_ViewPort 	*vp;
 	 bool 		m_bReadyToRender;
@@ -198,8 +201,14 @@ private:
 	 bool m_currentSmoothColors;
 	 bool m_currentSCurve;
 	 bool m_currentSlopeShading;
+	 float m_currentDataMin;
+	 float m_currentDataMax;
+	 int m_currentSlopeMode;
 	 GLuint m_glColorLUT;
 	 bool m_bHasColorLUT;
+	 GLuint m_glVortTexture;  // normalized vorticity texture for shader slope
+	 bool m_bHasVortTexture;
+	 GLuint m_glSlopeSource;  // texture ID bound to slopeTex uniform
 
 	 // Color legend
 	 ncdfLegend m_legend;
@@ -233,6 +242,10 @@ private:
 	 int m_cachedSSTNj, m_cachedSSTNi;
 	 int m_cachedSalNj, m_cachedSalNi;
 	 bool m_cachedCurrentOwns, m_cachedSSTOwns, m_cachedSalOwns;
+
+	 // Cached vorticity grid for current slope shading
+	 double** m_cachedVorticity;
+	 int m_cachedVortNj, m_cachedVortNi;
 
 	 // LIC texture cache (current only)
 	 GLuint m_glLICTexture;

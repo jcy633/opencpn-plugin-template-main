@@ -22,9 +22,14 @@ unsigned int ncdf_shader_get_grid_program();
 struct NcdfShaderUniforms {
     int dataTex;   // sampler2D: normalized data texture (R=value, A=validity)
     int colorLUT;  // sampler2D: 1x256 color lookup texture
+    int slopeTex;  // sampler2D: slope source texture (vorticity for current, same format)
     int texSize;   // vec2: texture dimensions for bicubic sampling
     int mode;      // int: 0=bilinear, 1=bicubic, 2=monotone bicubic
     int sCurve;    // int: 0=off, 1=on (S-curve color mapping)
+    int slope;     // int: 0=off, 1=on (slope shading)
+    int dataMin;   // float: data range min
+    int dataMax;   // float: data range max
+    int slopeMode; // int: 0=continuous Sobel, 1=SST segments
 };
 NcdfShaderUniforms ncdf_shader_get_uniforms();
 

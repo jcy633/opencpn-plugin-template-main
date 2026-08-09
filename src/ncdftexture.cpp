@@ -99,7 +99,9 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
                                            double **grid,
                                            ColorFunc colorFunc,
                                            GLuint &texID, bool &hasTex, bool &needsRebuild,
-                                           int dataDim[2], int glDim[2])
+                                           int dataDim[2], int glDim[2],
+                                           double **slopeGrid,
+                                           GLuint slopeTexID)
 {
     if (!gui || !vp || !grid) return;
     int ni = gui->myMessage.lonLength;
@@ -204,20 +206,21 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
 
                         // Slope shading: modulate brightness by gradient
                         if (m_currentSlopeShading && j > 0 && j < nj-1 && i > 0 && i < ni-1) {
-                            double vn = grid[j-1][i], vs = grid[j+1][i];
-                            double vw = grid[j][i-1], ve = grid[j][i+1];
+                            // Use slopeGrid (e.g., vorticity) if available, otherwise use data grid
+                            double** gSlope = slopeGrid ? slopeGrid : grid;
+                            double vn = gSlope[j-1][i], vs = gSlope[j+1][i];
+                            double vw = gSlope[j][i-1], ve = gSlope[j][i+1];
                             if (vn != ncdf_NOTDEF && vs != ncdf_NOTDEF &&
                                 vw != ncdf_NOTDEF && ve != ncdf_NOTDEF) {
                                 double gx = (ve - vw) * 0.5;
                                 double gy = (vs - vn) * 0.5;
                                 double mag = sqrt(gx*gx + gy*gy);
                                 if (mag > 1e-10) {
-                                    // Light from upper-left, slope modulates brightness
                                     double nx = -gx, ny = -gy;
                                     double nz = 1.0;
                                     double nm = sqrt(nx*nx + ny*ny + nz*nz);
                                     double light = (nx*(-0.5) + ny*(-0.5) + nz*0.707) / nm;
-                                    light = 0.5 + light * 0.8;  // map to [0.3, 1.3]
+                                    light = 0.5 + light * 0.8;
                                     light = fmax(0.3, fmin(1.5, light));
                                     r = (unsigned char)fmin(255.0, r * light);
                                     g = (unsigned char)fmin(255.0, g * light);
@@ -332,6 +335,16 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
                 int shaderMode = (m_currentInterpMode >= 2) ? m_currentInterpMode - 1 : 0;
                 if (u.mode >= 0) ncdf_shader_uniform_1i(u.mode, shaderMode);
                 if (u.sCurve >= 0) ncdf_shader_uniform_1i(u.sCurve, m_currentSCurve ? 1 : 0);
+                if (u.slope >= 0) ncdf_shader_uniform_1i(u.slope, m_currentSlopeShading ? 1 : 0);
+                if (u.slopeTex >= 0) {
+                    ncdf_shader_active_texture(0x84C2);  // GL_TEXTURE2
+                    GLuint stID = slopeTexID ? slopeTexID : texID;
+                    glBindTexture(GL_TEXTURE_2D, stID);
+                    ncdf_shader_uniform_1i(u.slopeTex, 2);
+                }
+                if (u.dataMin >= 0) ncdf_shader_uniform_1f(u.dataMin, m_currentDataMin);
+                if (u.dataMax >= 0) ncdf_shader_uniform_1f(u.dataMax, m_currentDataMax);
+                if (u.slopeMode >= 0) ncdf_shader_uniform_1i(u.slopeMode, m_currentSlopeMode);
                 if (u.dataTex >= 0) {
                     ncdf_shader_active_texture(0x84C0);
                     glBindTexture(GL_TEXTURE_2D, texID);

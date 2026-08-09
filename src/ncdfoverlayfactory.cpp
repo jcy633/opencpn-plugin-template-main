@@ -65,6 +65,9 @@ ncdfOverlayFactory::ncdfOverlayFactory()
       m_currentSmoothColors = false;
       m_currentSCurve = false;
       m_currentSlopeShading = false;
+      m_currentDataMin = 0.0f;
+      m_currentDataMax = 1.0f;
+      m_currentSlopeMode = 0;
       m_cachedCurrentGrid = NULL;
       m_cachedSSTGrid = NULL;
       m_cachedSalinityGrid = NULL;
@@ -72,11 +75,15 @@ ncdfOverlayFactory::ncdfOverlayFactory()
       m_cachedSSTNj = m_cachedSSTNi = 0;
       m_cachedSalNj = m_cachedSalNi = 0;
       m_cachedCurrentOwns = m_cachedSSTOwns = m_cachedSalOwns = false;
+      m_cachedVorticity = NULL;
+      m_cachedVortNj = m_cachedVortNi = 0;
       m_glLICTexture = 0;
       m_bHasLICTexture = false;
       m_bNeedsLICRebuild = true;
       m_glColorLUT = 0;
       m_bHasColorLUT = false;
+      m_glVortTexture = 0;
+      m_bHasVortTexture = false;
 
       // Pre-compute arrow shape (GRIB LineBuffer pattern)
       // Shaft: from -10 to +10
@@ -130,6 +137,9 @@ ncdfOverlayFactory::~ncdfOverlayFactory()
     if (m_cachedSalOwns) FreeSharpenedGrid(m_cachedSalinityGrid, m_cachedSalNj);
     m_cachedCurrentGrid = m_cachedSSTGrid = m_cachedSalinityGrid = NULL;
     DeleteLICTexture();
+    if (m_bHasVortTexture && m_glVortTexture) { glDeleteTextures(1, &m_glVortTexture); m_glVortTexture = 0; m_bHasVortTexture = false; }
+    FreeSharpenedGrid(m_cachedVorticity, m_cachedVortNj);
+    m_cachedVorticity = NULL;
     if (m_bHasColorLUT && m_glColorLUT) {
         glDeleteTextures(1, &m_glColorLUT);
         m_glColorLUT = 0;
@@ -304,13 +314,128 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
           int ni = gui->myMessage.lonLength;
           int nj = gui->myMessage.latLength;
           if (ni > 1 && nj > 1) {
-              // LIC flow visualization (current only)
+              m_useShader = s_shaderOk && (plugin->m_settingsCurrent.interpMode >= 1);
+              m_currentInterpMode = plugin->m_settingsCurrent.interpMode;
+              m_currentSmoothColors = plugin->m_settingsCurrent.smoothColors;
+              m_currentSCurve = plugin->m_settingsCurrent.sCurve;
+              m_currentSlopeShading = plugin->m_settingsCurrent.slopeShading;
+              m_currentSlopeMode = 0;  // continuous gradient for current
+              if (m_currentSlopeShading && gui->gridMag) {
+                  double dMin = 1e30, dMax = -1e30;
+                  for (int jj = 0; jj < nj; jj++)
+                      for (int ii = 0; ii < ni; ii++) {
+                          double v = gui->gridMag[jj][ii];
+                          if (v != ncdf_NOTDEF && v == v && isfinite(v)) {
+                              if (v < dMin) dMin = v;
+                              if (v > dMax) dMax = v;
+                          }
+                      }
+                  m_currentDataMin = (float)dMin;
+                  m_currentDataMax = (float)dMax;
+              }
+              // Rebuild processed grid only when texture needs rebuild
+              if (m_bNeedsColorTexRebuild || !m_cachedCurrentGrid) {
+                  if (m_cachedCurrentOwns) FreeSharpenedGrid(m_cachedCurrentGrid, m_cachedCurrentNj);
+                  m_cachedCurrentGrid = NULL; m_cachedCurrentOwns = false;
+                  double** src = gui->gridMag;
+                  if (plugin->m_settingsCurrent.anisoDiffusion) {
+                      double** ad = BuildAnisoDiffusedGrid(src, nj, ni);
+                      if (ad) { src = ad; m_cachedCurrentGrid = ad; m_cachedCurrentOwns = true; }
+                  }
+                  if (plugin->m_settingsCurrent.sharpen) {
+                      double** sh = BuildSharpenedGrid(src, nj, ni);
+                      if (sh) {
+                          if (m_cachedCurrentOwns) FreeSharpenedGrid(m_cachedCurrentGrid, nj);
+                          m_cachedCurrentGrid = sh; m_cachedCurrentOwns = true;
+                          src = sh;
+                      }
+                  }
+                  if (!m_cachedCurrentGrid) { m_cachedCurrentGrid = gui->gridMag; m_cachedCurrentOwns = false; }
+                  m_cachedCurrentNj = nj; m_cachedCurrentNi = ni;
+              }
+              // Compute vorticity for slope shading (cached)
+              double** slopeGrid = NULL;
+              m_glSlopeSource = m_glColorTexture;  // default: use data texture
+              if (plugin->m_settingsCurrent.slopeShading && gui->gridu && gui->gridv) {
+                  if (m_bNeedsColorTexRebuild || !m_cachedVorticity) {
+                      FreeSharpenedGrid(m_cachedVorticity, m_cachedVortNj);
+                      m_cachedVorticity = BuildVorticityGrid(gui->gridu, gui->gridv, nj, ni);
+                      m_cachedVortNj = nj; m_cachedVortNi = ni;
+                  }
+                  slopeGrid = m_cachedVorticity;
+                  // Build normalized vorticity texture for shader path
+                  if (m_useShader && m_cachedVorticity && (m_bNeedsColorTexRebuild || !m_bHasVortTexture)) {
+                      if (m_bHasVortTexture) { glDeleteTextures(1, &m_glVortTexture); m_bHasVortTexture = false; }
+                      double vMin = 1e30, vMax = -1e30;
+                      for (int jj = 0; jj < nj; jj++)
+                          for (int ii = 0; ii < ni; ii++) {
+                              double v = m_cachedVorticity[jj][ii];
+                              if (v != ncdf_NOTDEF && v == v && isfinite(v)) {
+                                  if (v < vMin) vMin = v; if (v > vMax) vMax = v;
+                              }
+                          }
+                      double vRange = vMax - vMin; if (vRange < 1e-10) vRange = 1.0;
+                      // Build texture with same border handling as data texture
+                      double lonMin = tlon, lonMax = blon;
+                      double gridSpacingLon = (lonMax - lonMin) / (ni - 1);
+                      bool vRepeat = (lonMax - lonMin + gridSpacingLon >= 360);
+                      int bH = vRepeat ? 0 : 1, eC = vRepeat ? 1 : 0;
+                      int vtw = ni + 2 * bH + eC, vth = nj + 2;
+                      unsigned char* vData = new(std::nothrow) unsigned char[vtw * vth * 4];
+                      if (vData) {
+                          memset(vData, 0, vtw * vth * 4);
+                          for (int jj = 0; jj < nj; jj++) {
+                              int texRow = (gui->myMessage.jDirectionIncr >= 0) ? jj : (nj - 1 - jj);
+                              for (int ii = 0; ii < ni; ii++) {
+                                  double val = m_cachedVorticity[jj][ii];
+                                  int x = ii + bH, y = texRow + 1;
+                                  if (x >= vtw - 1 || y >= vth - 1) continue;
+                                  int off = 4 * (y * vtw + x);
+                                  if (val == ncdf_NOTDEF || val != val || !isfinite(val)) {
+                                      vData[off] = 0; vData[off+3] = 0;
+                                  } else {
+                                      double nv = (val - vMin) / vRange;
+                                      vData[off] = (unsigned char)(fmin(fmax(nv, 0.0), 1.0) * 255.0);
+                                      vData[off+1] = 0; vData[off+2] = 0; vData[off+3] = 255;
+                                  }
+                              }
+                          }
+                          // Border handling
+                          memcpy(vData, vData + 4 * vtw, 4 * vtw);
+                          memcpy(vData + 4 * vtw * (vth-1), vData + 4 * vtw * (vth-2), 4 * vtw);
+                          for (int x = 0; x < vtw; x++) { vData[4*x+3] = 0; vData[4*((vth-1)*vtw+x)+3] = 0; }
+                          if (!vRepeat) {
+                              for (int y = 0; y < vth; y++) {
+                                  memcpy(vData+4*y*vtw, vData+4*(y*vtw+1), 4);
+                                  memcpy(vData+4*(y*vtw+vtw-1), vData+4*(y*vtw+vtw-2), 4);
+                              }
+                              for (int y = 0; y < vth; y++) { vData[4*y*vtw+3] = 0; vData[4*(y*vtw+vtw-1)+3] = 0; }
+                          }
+                          glGenTextures(1, &m_glVortTexture);
+                          glBindTexture(GL_TEXTURE_2D, m_glVortTexture);
+                          glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, vRepeat ? GL_REPEAT : GL_CLAMP_TO_EDGE);
+                          glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                          glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+                          glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+                          glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, vtw, vth, 0, GL_RGBA, GL_UNSIGNED_BYTE, vData);
+                          m_bHasVortTexture = true;
+                          delete[] vData;
+                      }
+                  }
+                  if (m_useShader && m_bHasVortTexture) m_glSlopeSource = m_glVortTexture;
+              }
+              RenderGridOverlay(vp, m_cachedCurrentGrid,
+                                &ncdfOverlayFactory::GetSeaCurrentGraphicColor,
+                                m_glColorTexture, m_bHasColorTexture, m_bNeedsColorTexRebuild,
+                                m_texDataDim, m_texGLDim,
+                                slopeGrid,
+                                m_bHasVortTexture ? m_glVortTexture : 0);
+              // LIC overlay: draw grayscale brightness texture with GL_MODULATE
               if (plugin->m_settingsCurrent.licFlow) {
                   if (m_bNeedsLICRebuild || !m_bHasLICTexture) {
                       BuildLICTexture(ni, nj);
                   }
-                  if (m_bHasLICTexture) {
-                      // Draw LIC texture using the same tiled overlay approach
+                  if (m_bHasLICTexture && m_glColorTexture) {
                       double lat_min = blat, lon_min = tlon;
                       double lat_max = tlat, lon_max = blon;
                       double latstep = fabs(lat_max - lat_min) / (nj - 1);
@@ -343,8 +468,7 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
                               }
                               glEnable(GL_TEXTURE_2D);
                               glBindTexture(GL_TEXTURE_2D, m_glLICTexture);
-                              glEnable(GL_BLEND);
-                              glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                              glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
                               glColor4f(1, 1, 1, 1);
                               double xS = vp->pix_width / (double)xs;
                               double yS = vp->pix_height / (double)ys;
@@ -368,49 +492,17 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
                                   }
                               }
                               delete[] lva;
-                              glDisable(GL_BLEND);
+                              glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
                               glDisable(GL_TEXTURE_2D);
                               glBindTexture(GL_TEXTURE_2D, 0);
                           }
                       }
                   }
-                  goto afterCurrent;  // skip normal color map
               }
-
-              m_useShader = s_shaderOk && (plugin->m_settingsCurrent.interpMode >= 1);
-              m_currentInterpMode = plugin->m_settingsCurrent.interpMode;
-              m_currentSmoothColors = plugin->m_settingsCurrent.smoothColors;
-              m_currentSCurve = plugin->m_settingsCurrent.sCurve;
-              m_currentSlopeShading = plugin->m_settingsCurrent.slopeShading;
-              // Rebuild processed grid only when texture needs rebuild
-              if (m_bNeedsColorTexRebuild || !m_cachedCurrentGrid) {
-                  if (m_cachedCurrentOwns) FreeSharpenedGrid(m_cachedCurrentGrid, m_cachedCurrentNj);
-                  m_cachedCurrentGrid = NULL; m_cachedCurrentOwns = false;
-                  double** src = gui->gridMag;
-                  if (plugin->m_settingsCurrent.anisoDiffusion) {
-                      double** ad = BuildAnisoDiffusedGrid(src, nj, ni);
-                      if (ad) { src = ad; m_cachedCurrentGrid = ad; m_cachedCurrentOwns = true; }
-                  }
-                  if (plugin->m_settingsCurrent.sharpen) {
-                      double** sh = BuildSharpenedGrid(src, nj, ni);
-                      if (sh) {
-                          if (m_cachedCurrentOwns) FreeSharpenedGrid(m_cachedCurrentGrid, nj);
-                          m_cachedCurrentGrid = sh; m_cachedCurrentOwns = true;
-                          src = sh;
-                      }
-                  }
-                  if (!m_cachedCurrentGrid) { m_cachedCurrentGrid = gui->gridMag; m_cachedCurrentOwns = false; }
-                  m_cachedCurrentNj = nj; m_cachedCurrentNi = ni;
-              }
-              RenderGridOverlay(vp, m_cachedCurrentGrid,
-                                &ncdfOverlayFactory::GetSeaCurrentGraphicColor,
-                                m_glColorTexture, m_bHasColorTexture, m_bNeedsColorTexRebuild,
-                                m_texDataDim, m_texGLDim);
           }
       }
 #endif
 	}
-	afterCurrent:
 
 	// Arrows
 	if(plugin->m_bShowCurrentDir) {
@@ -431,6 +523,21 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 		m_currentSmoothColors = plugin->m_settingsSeaTemp.smoothColors;
 		m_currentSCurve = plugin->m_settingsSeaTemp.sCurve;
 		m_currentSlopeShading = plugin->m_settingsSeaTemp.slopeShading;
+		m_currentSlopeMode = 1;  // SST temperature segments
+		if (m_currentSlopeShading && gui->gridSST) {
+			int sni = gui->myMessage.lonLength, snj = gui->myMessage.latLength;
+			double dMin = 1e30, dMax = -1e30;
+			for (int jj = 0; jj < snj; jj++)
+				for (int ii = 0; ii < sni; ii++) {
+					double v = gui->gridSST[jj][ii];
+					if (v != ncdf_NOTDEF && v == v && isfinite(v)) {
+						if (v < dMin) dMin = v;
+						if (v > dMax) dMax = v;
+					}
+				}
+			m_currentDataMin = (float)dMin;
+			m_currentDataMax = (float)dMax;
+		}
 		int ni = gui->myMessage.lonLength;
 		int nj = gui->myMessage.latLength;
 		if (m_bNeedsSeaTempTexRebuild || !m_cachedSSTGrid) {
@@ -470,6 +577,21 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 		m_currentSmoothColors = plugin->m_settingsSalinity.smoothColors;
 		m_currentSCurve = plugin->m_settingsSalinity.sCurve;
 		m_currentSlopeShading = plugin->m_settingsSalinity.slopeShading;
+		m_currentSlopeMode = 0;  // continuous Sobel for salinity
+		if (m_currentSlopeShading && gui->gridSalinity) {
+			int sni = gui->myMessage.lonLength, snj = gui->myMessage.latLength;
+			double dMin = 1e30, dMax = -1e30;
+			for (int jj = 0; jj < snj; jj++)
+				for (int ii = 0; ii < sni; ii++) {
+					double v = gui->gridSalinity[jj][ii];
+					if (v != ncdf_NOTDEF && v == v && isfinite(v)) {
+						if (v < dMin) dMin = v;
+						if (v > dMax) dMax = v;
+					}
+				}
+			m_currentDataMin = (float)dMin;
+			m_currentDataMax = (float)dMax;
+		}
 		int ni = gui->myMessage.lonLength;
 		int nj = gui->myMessage.latLength;
 		if (m_bNeedsSalinityTexRebuild || !m_cachedSalinityGrid) {
@@ -1375,6 +1497,33 @@ void ncdfOverlayFactory::FreeSharpenedGrid(double** grid, int nj)
 }
 
 //===================================================================
+// Vorticity: curl of velocity field (∂v/∂x - ∂u/∂y)
+//===================================================================
+double** ncdfOverlayFactory::BuildVorticityGrid(double** uGrid, double** vGrid, int nj, int ni)
+{
+    if (!uGrid || !vGrid || ni < 3 || nj < 3) return NULL;
+    double** out = new(std::nothrow) double*[nj];
+    if (!out) return NULL;
+    for (int j = 0; j < nj; j++) {
+        out[j] = new(std::nothrow) double[ni];
+        if (!out[j]) { for (int k = 0; k < j; k++) delete[] out[k]; delete[] out; return NULL; }
+    }
+    for (int j = 0; j < nj; j++) {
+        for (int i = 0; i < ni; i++) {
+            if (uGrid[j][i] == ncdf_NOTDEF || vGrid[j][i] == ncdf_NOTDEF ||
+                j == 0 || j == nj-1 || i == 0 || i == ni-1) {
+                out[j][i] = 0;
+                continue;
+            }
+            double dVdx = vGrid[j][i+1] - vGrid[j][i-1];
+            double dUdy = uGrid[j+1][i] - uGrid[j-1][i];
+            out[j][i] = dVdx - dUdy;
+        }
+    }
+    return out;
+}
+
+//===================================================================
 // Guided Anisotropic Diffusion (Perona-Malik, edge-preserving)
 //===================================================================
 double** ncdfOverlayFactory::BuildAnisoDiffusedGrid(double** grid, int nj, int ni)
@@ -1500,23 +1649,24 @@ void ncdfOverlayFactory::BuildLICTexture(int ni, int nj)
 {
     if (!gui || !gui->gridu || !gui->gridv || ni < 3 || nj < 3) return;
 
-    // Generate white noise (padded by STEPS on each side to avoid edge artifacts)
-    const int STEPS = 10;
-    const double DT = 0.5;
-    int padN = ni + 2 * STEPS;
-    int padM = nj + 2 * STEPS;
-    unsigned char* noise = new(std::nothrow) unsigned char[padM * padN];
-    if (!noise) return;
+    // Generate float noise field (padded)
+    const int STEPS = 40;
+    const float STEPSIZE = 0.002f;  // step in normalized texture space
+    int pad = 20;
+    int padW = ni + 2 * pad;
+    int padH = nj + 2 * pad;
+    float* noiseField = new(std::nothrow) float[padH * padW];
+    if (!noiseField) return;
     srand(42);
-    for (int k = 0; k < padM * padN; k++) noise[k] = (unsigned char)(rand() & 0xFF);
+    for (int k = 0; k < padH * padW; k++) noiseField[k] = (float)rand() / RAND_MAX;
 
     unsigned char* licData = new(std::nothrow) unsigned char[ni * nj * 4];
-    if (!licData) { delete[] noise; return; }
+    if (!licData) { delete[] noiseField; return; }
 
     double** uGrid = gui->gridu;
     double** vGrid = gui->gridv;
 
-    // Find max speed for normalization
+    // Normalize vector field to [-1, 1] texture space
     double maxSpeed = 0;
     for (int j = 0; j < nj; j++)
         for (int i = 0; i < ni; i++) {
@@ -1525,80 +1675,94 @@ void ncdfOverlayFactory::BuildLICTexture(int ni, int nj)
             if (maxSpeed < sp) maxSpeed = sp;
         }
     if (maxSpeed < 1e-10) maxSpeed = 1.0;
-    double invMax = 1.0 / maxSpeed;
+
+    // Helper: bilinear noise lookup in padded field
+    // coord in normalized [0,1] → padded field index
+    auto sampleNoise = [&](float u, float v) -> float {
+        // Map [0,1] to padded grid coordinates
+        float px = u * (ni - 1) + pad;
+        float py = v * (nj - 1) + pad;
+        int xi = (int)px, yi = (int)py;
+        if (xi < 0) xi = 0; if (xi >= padW - 1) xi = padW - 2;
+        if (yi < 0) yi = 0; if (yi >= padH - 1) yi = padH - 2;
+        float fx = px - xi, fy = py - yi;
+        return (1-fx)*(1-fy)*noiseField[yi*padW + xi]
+             + fx*(1-fy)*noiseField[yi*padW + xi+1]
+             + (1-fx)*fy*noiseField[(yi+1)*padW + xi]
+             + fx*fy*noiseField[(yi+1)*padW + xi+1];
+    };
+
+    // Helper: bilinear vector field lookup
+    auto sampleVector = [&](float u, float v, float& outU, float& outV) -> bool {
+        float px = u * (ni - 1);
+        float py = v * (nj - 1);
+        int xi = (int)px, yi = (int)py;
+        if (xi < 0 || xi >= ni - 1 || yi < 0 || yi >= nj - 1) return false;
+        float fx = px - xi, fy = py - yi;
+        double uu = (1-fx)*(1-fy)*uGrid[yi][xi] + fx*(1-fy)*uGrid[yi][xi+1]
+                   + (1-fx)*fy*uGrid[yi+1][xi] + fx*fy*uGrid[yi+1][xi+1];
+        double vv = (1-fx)*(1-fy)*vGrid[yi][xi] + fx*(1-fy)*vGrid[yi][xi+1]
+                   + (1-fx)*fy*vGrid[yi+1][xi] + fx*fy*vGrid[yi+1][xi+1];
+        if (uu == ncdf_NOTDEF || vv == ncdf_NOTDEF) return false;
+        outU = (float)(uu / maxSpeed);
+        outV = (float)(vv / maxSpeed);
+        return true;
+    };
 
     for (int j = 0; j < nj; j++) {
         for (int i = 0; i < ni; i++) {
             int off = (j * ni + i) * 4;
 
-            // Land: use normal color mapping, no LIC modulation
+            // Land: white (no modulation)
             if (uGrid[j][i] == ncdf_NOTDEF || vGrid[j][i] == ncdf_NOTDEF) {
-                double mag = 0;
-                // Try to get magnitude from gridMag if available
-                if (gui->gridMag && gui->gridMag[j])
-                    mag = gui->gridMag[j][i];
-                if (mag == ncdf_NOTDEF || mag != mag) mag = 0;
-                wxColour c = GetSeaCurrentGraphicColor(mag);
-                licData[off] = c.Red(); licData[off+1] = c.Green();
-                licData[off+2] = c.Blue(); licData[off+3] = 255;
+                licData[off] = licData[off+1] = licData[off+2] = 255;
+                licData[off+3] = 255;
                 continue;
             }
 
-            double totalNoise = noise[(j + STEPS) * padN + (i + STEPS)];
-            double totalWeight = 1.0;
+            // Start at this pixel's normalized position
+            float u0 = (float)i / (ni - 1);
+            float v0 = (float)j / (nj - 1);
 
-            // Trace forward (in padded noise coordinates)
-            double x = i, y = j;
+            float runningTotal = 0.0f;
+            int sampleCount = 0;
+
+            // Trace forward
+            float cu = u0, cv = v0;
             for (int s = 0; s < STEPS; s++) {
-                int xi = (int)x, yi = (int)y;
-                if (xi < 0 || xi >= ni-1 || yi < 0 || yi >= nj-1) break;
-                double fx = x - xi, fy = y - yi;
-                double uval = (1-fx)*(1-fy)*uGrid[yi][xi] + fx*(1-fy)*uGrid[yi][xi+1]
-                            + (1-fx)*fy*uGrid[yi+1][xi] + fx*fy*uGrid[yi+1][xi+1];
-                double vval = (1-fx)*(1-fy)*vGrid[yi][xi] + fx*(1-fy)*vGrid[yi][xi+1]
-                            + (1-fx)*fy*vGrid[yi+1][xi] + fx*fy*vGrid[yi+1][xi+1];
-                if (uval == ncdf_NOTDEF || vval == ncdf_NOTDEF) break;
-                x += uval * invMax * DT;
-                y += vval * invMax * DT;
-                xi = (int)x; yi = (int)y;
-                if (xi < 0 || xi >= ni || yi < 0 || yi >= nj) break;
-                double w = 1.0 / (1.0 + s * 0.3);
-                totalNoise += noise[(yi + STEPS) * padN + (xi + STEPS)] * w;
-                totalWeight += w;
+                float vu, vv;
+                if (!sampleVector(cu, cv, vu, vv)) break;
+                cu += vu * STEPSIZE;
+                cv += vv * STEPSIZE;
+                if (cu < 0 || cu > 1 || cv < 0 || cv > 1) break;
+                runningTotal += sampleNoise(cu, cv);
+                sampleCount++;
             }
 
             // Trace backward
-            x = i; y = j;
+            cu = u0; cv = v0;
             for (int s = 0; s < STEPS; s++) {
-                int xi = (int)x, yi = (int)y;
-                if (xi < 0 || xi >= ni-1 || yi < 0 || yi >= nj-1) break;
-                double fx = x - xi, fy = y - yi;
-                double uval = (1-fx)*(1-fy)*uGrid[yi][xi] + fx*(1-fy)*uGrid[yi][xi+1]
-                            + (1-fx)*fy*uGrid[yi+1][xi] + fx*fy*uGrid[yi+1][xi+1];
-                double vval = (1-fx)*(1-fy)*vGrid[yi][xi] + fx*(1-fy)*vGrid[yi][xi+1]
-                            + (1-fx)*fy*vGrid[yi+1][xi] + fx*fy*vGrid[yi+1][xi+1];
-                if (uval == ncdf_NOTDEF || vval == ncdf_NOTDEF) break;
-                x -= uval * invMax * DT;
-                y -= vval * invMax * DT;
-                xi = (int)x; yi = (int)y;
-                if (xi < 0 || xi >= ni || yi < 0 || yi >= nj) break;
-                double w = 1.0 / (1.0 + s * 0.3);
-                totalNoise += noise[(yi + STEPS) * padN + (xi + STEPS)] * w;
-                totalWeight += w;
+                float vu, vv;
+                if (!sampleVector(cu, cv, vu, vv)) break;
+                cu -= vu * STEPSIZE;
+                cv -= vv * STEPSIZE;
+                if (cu < 0 || cu > 1 || cv < 0 || cv > 1) break;
+                runningTotal += sampleNoise(cu, cv);
+                sampleCount++;
             }
 
-            double val = totalNoise / totalWeight / 255.0;
-            double mag = sqrt(uGrid[j][i]*uGrid[j][i] + vGrid[j][i]*vGrid[j][i]);
-            wxColour c = GetSeaCurrentGraphicColor(mag);
-            double brightness = 0.3 + 0.7 * val;
-            licData[off]     = (unsigned char)fmin(255.0, c.Red() * brightness);
-            licData[off + 1] = (unsigned char)fmin(255.0, c.Green() * brightness);
-            licData[off + 2] = (unsigned char)fmin(255.0, c.Blue() * brightness);
-            licData[off + 3] = 255;
+            // Average (exclude center pixel, like reference implementation)
+            float avgValue = (sampleCount > 0) ? runningTotal / sampleCount : 0.5f;
+
+            // Brightness: 0.3 (dark) to 1.0 (white)
+            float brightness = 0.3f + 0.7f * avgValue;
+            unsigned char bri = (unsigned char)(brightness * 255.0f);
+            licData[off] = licData[off+1] = licData[off+2] = bri;
+            licData[off+3] = 255;
         }
     }
 
-    delete[] noise;
+    delete[] noiseField;
 
     DeleteLICTexture();
     glGenTextures(1, &m_glLICTexture);
