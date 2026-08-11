@@ -339,6 +339,7 @@ static const char* s_frag =
     "            }\n"
     "        }\n"
     "    }\n"
+    "\n"
     "    gl_FragColor = vec4(color, 1.0);\n"
     "}\n";
 

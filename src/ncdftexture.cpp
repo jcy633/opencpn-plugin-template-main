@@ -473,58 +473,73 @@ void ncdfOverlayFactory::RenderSalinityOverlay(PlugIn_ViewPort *vp)
                       m_salTexDataDim, m_salTexGLDim);
 }
 
-void ncdfOverlayFactory::RenderSeaTempIsoLines(PlugIn_ViewPort *vp)
+// Generic isoline renderer: CPU Marching Squares + glBegin/glEnd
+static void DrawIsoLines(PlugIn_ViewPort *vp,
+                         double **grid, int ni, int nj,
+                         bool &needsRebuild,
+                         std::vector<ncdfIsoSeg> &segments,
+                         double tlat, double tlon, double blat, double blon,
+                         double jDirectionIncr)
 {
-    if (!gui || !vp) return;
-    double **sstGrid = gui->gridSST;
-    if (!sstGrid) return;
-    int ni = gui->myMessage.lonLength;
-    int nj = gui->myMessage.latLength;
-    if (ni < 2 || nj < 2) return;
+    if (!vp || !grid || ni < 2 || nj < 2) return;
 
-    // Rebuild cached isolines only when data changes (GRIB pattern)
-    if (m_bNeedsIsoRebuild) {
-        m_isoSegments.clear();
-
-        double minT = 1e10, maxT = -1e10;
+    // Rebuild segments when data changes
+    if (needsRebuild) {
+        segments.clear();
+        double dMin = 1e10, dMax = -1e10;
         for (int j = 0; j < nj; j++) {
-            if (!sstGrid[j]) break;
+            if (!grid[j]) break;
             for (int i = 0; i < ni; i++) {
-                double v = sstGrid[j][i];
-                if (v == ncdf_NOTDEF || isnan(v) || !isfinite(v)) continue;
-                if (v < minT) minT = v;
-                if (v > maxT) maxT = v;
+                double v = grid[j][i];
+                if (v == ncdf_NOTDEF || v != v || !isfinite(v)) continue;
+                if (v < dMin) dMin = v;
+                if (v > dMax) dMax = v;
             }
         }
+        if (dMin < dMax) {
+            // Adaptive spacing: ~10 isolines, rounded to "nice" numbers
+            double range = dMax - dMin;
+            double rawSpacing = range / 10.0;
+            double mag = pow(10.0, floor(log10(rawSpacing)));
+            double norm = rawSpacing / mag;
+            double spacing;
+            if (norm < 1.5) spacing = mag;
+            else if (norm < 3.5) spacing = 2.0 * mag;
+            else if (norm < 7.5) spacing = 5.0 * mag;
+            else spacing = 10.0 * mag;
+            if (spacing < 1e-10) spacing = 1.0;
 
-        if (minT < maxT) {
-            double spacing = 1.0;
-            minT = floor(minT / spacing) * spacing;
-            maxT = ceil(maxT / spacing) * spacing;
-            double lat_max = tlat, lon_min = tlon;
-            double incrLat = (lat_max - blat) / (nj - 1);
-            if (gui->myMessage.jDirectionIncr < 0) incrLat = -incrLat;
-            double incrLon = (blon - lon_min) / (ni - 1);
-
-            for (double temp = minT; temp <= maxT; temp += spacing) {
-                IsoLine isoLine(temp, sstGrid, nj, ni, lat_max, lon_min, incrLat, incrLon);
+            dMin = floor(dMin / spacing) * spacing;
+            dMax = ceil(dMax / spacing) * spacing;
+            double lat_origin, lon_origin;
+            if (jDirectionIncr >= 0) {
+                // South-to-north: j=0 at south boundary
+                lat_origin = blat;  // min latitude
+            } else {
+                // North-to-south: j=0 at north boundary
+                lat_origin = tlat;  // max latitude
+            }
+            lon_origin = tlon;  // min longitude
+            double incrLat = fabs((tlat - blat) / (nj - 1));
+            if (jDirectionIncr < 0) incrLat = -incrLat;
+            double incrLon = (blon - lon_origin) / (ni - 1);
+            for (double val = dMin; val <= dMax; val += spacing) {
+                IsoLine isoLine(val, grid, nj, ni, lat_origin, lon_origin, incrLat, incrLon);
                 std::list<Segment*>& trace = isoLine.getTrace();
                 for (std::list<Segment*>::iterator it = trace.begin(); it != trace.end(); ++it) {
                     Segment *seg = *it;
-                    IsoSeg s = {seg->py1, seg->px1, seg->py2, seg->px2};
-                    m_isoSegments.push_back(s);
+                    ncdfIsoSeg s = {seg->py1, seg->px1, seg->py2, seg->px2, val};
+                    segments.push_back(s);
                 }
             }
-            wxLogMessage(_T("[iso] cached %d segments"), (int)m_isoSegments.size());
         }
-        m_bNeedsIsoRebuild = false;
+        needsRebuild = false;
     }
 
-    if (m_isoSegments.empty()) return;
+    if (segments.empty()) return;
 
-    if (!m_pdc) {
 #ifdef ocpnUSE_GL
-        glEnable(GL_BLEND);
+    glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glEnable(GL_LINE_SMOOTH);
         glHint(GL_LINE_SMOOTH_HINT, GL_NICEST);
@@ -532,8 +547,8 @@ void ncdfOverlayFactory::RenderSeaTempIsoLines(PlugIn_ViewPort *vp)
         glColor4ub(80, 80, 80, 220);
 
         glBegin(GL_LINES);
-        for (size_t k = 0; k < m_isoSegments.size(); k++) {
-            const IsoSeg& s = m_isoSegments[k];
+        for (size_t k = 0; k < segments.size(); k++) {
+            const ncdfIsoSeg& s = segments[k];
             wxPoint ab, cd;
             GetCanvasPixLL(vp, &ab, s.lat1, s.lon1);
             GetCanvasPixLL(vp, &cd, s.lat2, s.lon2);
@@ -546,5 +561,24 @@ void ncdfOverlayFactory::RenderSeaTempIsoLines(PlugIn_ViewPort *vp)
         glDisable(GL_LINE_SMOOTH);
         glDisable(GL_BLEND);
 #endif
-    }
+}
+
+void ncdfOverlayFactory::RenderSeaTempIsoLines(PlugIn_ViewPort *vp)
+{
+    if (!gui || !vp || !gui->gridSST) return;
+    int ni = gui->myMessage.lonLength;
+    int nj = gui->myMessage.latLength;
+    DrawIsoLines(vp, gui->gridSST, ni, nj,
+                 m_bNeedsIsoRebuild, m_isoSegments,
+                 tlat, tlon, blat, blon, gui->myMessage.jDirectionIncr);
+}
+
+void ncdfOverlayFactory::RenderSalinityIsoLines(PlugIn_ViewPort *vp)
+{
+    if (!gui || !vp || !gui->gridSalinity) return;
+    int ni = gui->myMessage.lonLength;
+    int nj = gui->myMessage.latLength;
+    DrawIsoLines(vp, gui->gridSalinity, ni, nj,
+                 m_bNeedsSalIsoRebuild, m_salIsoSegments,
+                 tlat, tlon, blat, blon, gui->myMessage.jDirectionIncr);
 }

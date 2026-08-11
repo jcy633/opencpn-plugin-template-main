@@ -397,12 +397,14 @@ bool ncdf_pi::LoadConfig(void)
             pConf->Read ( _T( "SeaTempAnisoDiff" ), &m_settingsSeaTemp.anisoDiffusion, 0 );
             pConf->Read ( _T( "SeaTempSCurve" ), &m_settingsSeaTemp.sCurve, 0 );
             pConf->Read ( _T( "SeaTempSlope" ), &m_settingsSeaTemp.slopeShading, 0 );
+            pConf->Read ( _T( "SeaTempIso" ), &m_settingsSeaTemp.showIsoLines, 0 );
             pConf->Read ( _T( "SalinityInterpMode" ), &m_settingsSalinity.interpMode, 0 );
             pConf->Read ( _T( "SalinitySmooth" ), &m_settingsSalinity.smoothColors, 0 );
             pConf->Read ( _T( "SalinitySharpen" ), &m_settingsSalinity.sharpen, 0 );
             pConf->Read ( _T( "SalinityAnisoDiff" ), &m_settingsSalinity.anisoDiffusion, 0 );
             pConf->Read ( _T( "SalinitySCurve" ), &m_settingsSalinity.sCurve, 0 );
             pConf->Read ( _T( "SalinitySlope" ), &m_settingsSalinity.slopeShading, 0 );
+            pConf->Read ( _T( "SalinityIso" ), &m_settingsSalinity.showIsoLines, 0 );
             pConf->Read ( _T( "ParticleDensity" ), &m_iParticleDensity, 5 );
 
 
@@ -457,12 +459,14 @@ bool ncdf_pi::SaveConfig(void)
             pConf->Write ( _T ( "SeaTempAnisoDiff" ), m_settingsSeaTemp.anisoDiffusion );
             pConf->Write ( _T ( "SeaTempSCurve" ), m_settingsSeaTemp.sCurve );
             pConf->Write ( _T ( "SeaTempSlope" ), m_settingsSeaTemp.slopeShading );
+            pConf->Write ( _T ( "SeaTempIso" ), m_settingsSeaTemp.showIsoLines );
             pConf->Write ( _T ( "SalinityInterpMode" ), m_settingsSalinity.interpMode );
             pConf->Write ( _T ( "SalinitySmooth" ), m_settingsSalinity.smoothColors );
             pConf->Write ( _T ( "SalinitySharpen" ), m_settingsSalinity.sharpen );
             pConf->Write ( _T ( "SalinityAnisoDiff" ), m_settingsSalinity.anisoDiffusion );
             pConf->Write ( _T ( "SalinitySCurve" ), m_settingsSalinity.sCurve );
             pConf->Write ( _T ( "SalinitySlope" ), m_settingsSalinity.slopeShading );
+            pConf->Write ( _T ( "SalinityIso" ), m_settingsSalinity.showIsoLines );
             pConf->Write ( _T ( "ParticleDensity" ), m_iParticleDensity );
 
             pConf->Write ( _T ( "ncdfDialogSizeX" ),  m_ncdf_dialog_sx );

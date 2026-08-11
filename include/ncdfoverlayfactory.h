@@ -53,6 +53,9 @@ OVERLAP Intersect(PlugIn_ViewPort *vp,
        double lat_min, double lat_max, double lon_min, double lon_max, double Marge);
 bool PointInLLBox(PlugIn_ViewPort *vp, double x, double y);
 
+// Isoline segment (shared between class and free rendering function)
+struct ncdfIsoSeg { double lat1, lon1, lat2, lon2, value; };
+
 class ncdfOverlayFactory
 {
 public:
@@ -113,6 +116,7 @@ public:
 
      void RenderSeaTempOverlay(PlugIn_ViewPort *vp);
      void RenderSeaTempIsoLines(PlugIn_ViewPort *vp);
+     void RenderSalinityIsoLines(PlugIn_ViewPort *vp);
      void DeleteSeaTempTexture();
 
      wxColour GetSalinityGraphicColor(double sal_psu);
@@ -253,9 +257,12 @@ private:
 	 bool m_bNeedsLICRebuild;
 	 void DeleteLICTexture();
 	 void BuildLICTexture(int ni, int nj);
+
+	 // Isolines (CPU Marching Squares)
 	 bool m_bNeedsIsoRebuild;
-	 struct IsoSeg { double lat1, lon1, lat2, lon2; };
-	 std::vector<IsoSeg> m_isoSegments;
+	 std::vector<ncdfIsoSeg> m_isoSegments;
+	 bool m_bNeedsSalIsoRebuild;
+	 std::vector<ncdfIsoSeg> m_salIsoSegments;
 };
 
 

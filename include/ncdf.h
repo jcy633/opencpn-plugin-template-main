@@ -152,7 +152,6 @@ protected:
 	virtual void onBmpCurrentForceClick( wxCommandEvent& event );
 	virtual void onParticlesClick( wxCommandEvent& event );
 	virtual void onSeaTempClick( wxCommandEvent& event );
-	virtual void onSeaTempIsoClick( wxCommandEvent& event );
 	virtual void onSalinityClick( wxCommandEvent& event );
 	virtual void onInterpCurrChange( wxCommandEvent& event );
 	virtual void onSmoothCurrClick( wxCommandEvent& event );
@@ -167,12 +166,14 @@ protected:
 	virtual void onAnisoDiffSSTClick( wxCommandEvent& event );
 	virtual void onSCurveSSTClick( wxCommandEvent& event );
 	virtual void onSlopeSSTClick( wxCommandEvent& event );
+	virtual void onIsoSSTClick( wxCommandEvent& event );
 	virtual void onInterpSalChange( wxCommandEvent& event );
 	virtual void onSmoothSalClick( wxCommandEvent& event );
 	virtual void onSharpenSalClick( wxCommandEvent& event );
 	virtual void onAnisoDiffSalClick( wxCommandEvent& event );
 	virtual void onSCurveSalClick( wxCommandEvent& event );
 	virtual void onSlopeSalClick( wxCommandEvent& event );
+	virtual void onIsoSalClick( wxCommandEvent& event );
 	void fillDirTree(wxString dir, bool start, wxTreeItemId id);
 	void addChildren(wxTreeItemId id, wxString s);
 	void readData(wxTreeItemId itemId);

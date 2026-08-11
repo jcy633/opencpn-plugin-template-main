@@ -191,19 +191,6 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	bSizerSeaTemp->Add( m_staticTextSeaTempUnit, 0, wxALL|wxALIGN_CENTER_VERTICAL, 2 );
 	fgSizer2->Add( bSizerSeaTemp, 0, 0, 5 );
 
-	// Sea Temperature isolines (hidden by default)
-	wxFlexGridSizer* bSizerSeaTempIso;
-	bSizerSeaTempIso = new wxFlexGridSizer( 1, 4, 0, 0 );
-	bSizerSeaTempIso->SetFlexibleDirection( wxBOTH );
-	bSizerSeaTempIso->SetNonFlexibleGrowMode( wxFLEX_GROWMODE_SPECIFIED );
-	bSizerSeaTempIso->Add( 24, 0, 0, wxEXPAND, 0 );
-	m_checkBoxSeaTempIso = new wxCheckBox( m_panel1, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, 0 );
-	bSizerSeaTempIso->Add( m_checkBoxSeaTempIso, 0, wxALL|wxALIGN_CENTER_VERTICAL, 0 );
-	m_staticTextSeaTempIso = new wxStaticText( m_panel1, wxID_ANY, _("SST Iso"), wxDefaultPosition, wxDefaultSize, 0 );
-	m_staticTextSeaTempIso->Wrap( -1 );
-	bSizerSeaTempIso->Add( m_staticTextSeaTempIso, 0, wxALIGN_CENTER_VERTICAL|wxALL, 0 );
-	fgSizer2->Add( bSizerSeaTempIso, 0, 0, 5 );
-
 	// Salinity overlay (hidden by default)
 	wxFlexGridSizer* bSizerSalinity;
 	bSizerSalinity = new wxFlexGridSizer( 1, 4, 0, 0 );
@@ -293,6 +280,9 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	sizerSST->AddSpacer(0);
 	m_checkBoxSlopeSST = new wxCheckBox( m_panelSSTSettings, wxID_ANY, _("Slope shading overlay") );
 	sizerSST->Add( m_checkBoxSlopeSST, 0, wxALL, 3 );
+	sizerSST->AddSpacer(0);
+	m_checkBoxIsoSST = new wxCheckBox( m_panelSSTSettings, wxID_ANY, _("Show isolines") );
+	sizerSST->Add( m_checkBoxIsoSST, 0, wxALL, 3 );
 	m_panelSSTSettings->SetSizer( sizerSST );
 	m_notebookSettings->AddPage( m_panelSSTSettings, _("Sea Temp") );
 
@@ -319,6 +309,9 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	sizerSal->AddSpacer(0);
 	m_checkBoxSlopeSal = new wxCheckBox( m_panelSalSettings, wxID_ANY, _("Slope shading overlay") );
 	sizerSal->Add( m_checkBoxSlopeSal, 0, wxALL, 3 );
+	sizerSal->AddSpacer(0);
+	m_checkBoxIsoSal = new wxCheckBox( m_panelSalSettings, wxID_ANY, _("Show isolines") );
+	sizerSal->Add( m_checkBoxIsoSal, 0, wxALL, 3 );
 	m_panelSalSettings->SetSizer( sizerSal );
 	m_notebookSettings->AddPage( m_panelSalSettings, _("Salinity") );
 
@@ -345,7 +338,8 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	m_checkBoxBmpCurrentForce->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onBmpCurrentForceClick ), NULL, this );
 	m_checkBoxParticles->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onParticlesClick ), NULL, this );
 	m_checkBoxSeaTemp->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSeaTempClick ), NULL, this );
-	m_checkBoxSeaTempIso->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSeaTempIsoClick ), NULL, this );
+	m_checkBoxIsoSST->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onIsoSSTClick ), NULL, this );
+	m_checkBoxIsoSal->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onIsoSalClick ), NULL, this );
 	m_checkBoxSalinity->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSalinityClick ), NULL, this );
 	m_choiceInterpCurr->Connect( wxEVT_COMMAND_CHOICE_SELECTED, wxCommandEventHandler( ncdfDialog::onInterpCurrChange ), NULL, this );
 	m_checkBoxSmoothCurr->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSmoothCurrClick ), NULL, this );
@@ -385,7 +379,8 @@ ncdfDialog::~ncdfDialog()
 	m_checkBoxBmpCurrentForce->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onBmpCurrentForceClick ), NULL, this );
 	m_checkBoxParticles->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onParticlesClick ), NULL, this );
 	m_checkBoxSeaTemp->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSeaTempClick ), NULL, this );
-	m_checkBoxSeaTempIso->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSeaTempIsoClick ), NULL, this );
+	m_checkBoxIsoSST->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onIsoSSTClick ), NULL, this );
+	m_checkBoxIsoSal->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onIsoSalClick ), NULL, this );
 	m_checkBoxSalinity->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSalinityClick ), NULL, this );
 	m_choiceInterpCurr->Disconnect( wxEVT_COMMAND_CHOICE_SELECTED, wxCommandEventHandler( ncdfDialog::onInterpCurrChange ), NULL, this );
 	m_checkBoxSmoothCurr->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSmoothCurrClick ), NULL, this );

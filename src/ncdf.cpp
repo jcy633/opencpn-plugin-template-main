@@ -96,8 +96,6 @@ MainDialog::MainDialog(wxWindow *parent) : ncdfDialog( parent ), m_isTreeUpdatin
 	m_staticTextSeaTemp->Hide();
 	m_textCtrlSeaTemp->Hide();
 	m_staticTextSeaTempUnit->Hide();
-	m_checkBoxSeaTempIso->Hide();
-	m_staticTextSeaTempIso->Hide();
 	m_checkBoxSalinity->Hide();
 	m_staticTextSalinity->Hide();
 	m_textCtrlSalinity->Hide();
@@ -195,12 +193,14 @@ void MainDialog::setPlugIn(ncdf_pi *p)
   m_checkBoxAnisoDiffSST->SetValue(pPlugIn->m_settingsSeaTemp.anisoDiffusion);
   m_checkBoxSCurveSST->SetValue(pPlugIn->m_settingsSeaTemp.sCurve);
   m_checkBoxSlopeSST->SetValue(pPlugIn->m_settingsSeaTemp.slopeShading);
+  m_checkBoxIsoSST->SetValue(pPlugIn->m_settingsSeaTemp.showIsoLines);
   m_choiceInterpSal->SetSelection(pPlugIn->m_settingsSalinity.interpMode);
   m_checkBoxSmoothSal->SetValue(pPlugIn->m_settingsSalinity.smoothColors);
   m_checkBoxSharpenSal->SetValue(pPlugIn->m_settingsSalinity.sharpen);
   m_checkBoxAnisoDiffSal->SetValue(pPlugIn->m_settingsSalinity.anisoDiffusion);
   m_checkBoxSCurveSal->SetValue(pPlugIn->m_settingsSalinity.sCurve);
   m_checkBoxSlopeSal->SetValue(pPlugIn->m_settingsSalinity.slopeShading);
+  m_checkBoxIsoSal->SetValue(pPlugIn->m_settingsSalinity.showIsoLines);
 }
 
 void MainDialog::SetCursorLatLon(double lat, double lon)
@@ -1729,7 +1729,6 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 		m_checkBoxSeaTemp->Show(showSST);
 		m_staticTextSeaTemp->Show(showSST);
 		m_textCtrlSeaTemp->Show(showSST);
-		m_staticTextSeaTempIso->Show(showSST);
 		bool showSalinity = m_fileHasSalinity;
 		m_checkBoxSalinity->Show(showSalinity);
 		m_staticTextSalinity->Show(showSalinity);
@@ -1826,8 +1825,6 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 				m_checkBoxSeaTemp->Show(showSST);
 				m_staticTextSeaTemp->Show(showSST);
 				m_textCtrlSeaTemp->Show(showSST);
-				m_checkBoxSeaTempIso->Show(showSST);
-				m_staticTextSeaTempIso->Show(showSST);
 				bool showSal = m_fileHasSalinity;
 				m_checkBoxSalinity->Show(showSal);
 				m_staticTextSalinity->Show(showSal);
@@ -1928,8 +1925,6 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 	m_checkBoxSeaTemp->Show(showSST);
 	m_staticTextSeaTemp->Show(showSST);
 	m_textCtrlSeaTemp->Show(showSST);
-	m_checkBoxSeaTempIso->Show(showSST);
-	m_staticTextSeaTempIso->Show(showSST);
 	// Salinity checkboxes: show if file has salinity data
 	bool showSal = m_fileHasSalinity;
 	m_checkBoxSalinity->Show(showSal);
@@ -2085,9 +2080,19 @@ void MainDialog::onSeaTempClick(wxCommandEvent& event)
 	RequestRefresh(m_parent);
 }
 
-void MainDialog::onSeaTempIsoClick(wxCommandEvent& event)
+void MainDialog::onIsoSSTClick(wxCommandEvent& event)
 {
-	pPlugIn->m_bShowSeaTempIso = m_checkBoxSeaTempIso->GetValue();
+	pPlugIn->m_settingsSeaTemp.showIsoLines = m_checkBoxIsoSST->GetValue();
+	pPlugIn->m_bShowSeaTempIso = pPlugIn->m_settingsSeaTemp.showIsoLines;  // sync legacy flag
+	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
+	if (pof) pof->SetBicubicMode(true);
+	RequestRefresh(m_parent);
+}
+void MainDialog::onIsoSalClick(wxCommandEvent& event)
+{
+	pPlugIn->m_settingsSalinity.showIsoLines = m_checkBoxIsoSal->GetValue();
+	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
+	if (pof) pof->SetBicubicMode(true);
 	RequestRefresh(m_parent);
 }
 

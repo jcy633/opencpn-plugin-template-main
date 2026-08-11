@@ -72,7 +72,6 @@ class ncdfDialog : public wxDialog
 	virtual void onNumbersClick( wxCommandEvent& event ) { event.Skip(); }
 	virtual void onParticlesClick( wxCommandEvent& event ) { event.Skip(); }
 	virtual void onSeaTempClick( wxCommandEvent& event ) { event.Skip(); }
-	virtual void onSeaTempIsoClick( wxCommandEvent& event ) { event.Skip(); }
 	virtual void onTimeChange( wxCommandEvent& event ) { event.Skip(); }
 	virtual void OnTimeline( wxScrollEvent& event ) { event.Skip(); }
 	virtual void OnPlayStop( wxCommandEvent& event ) { event.Skip(); }
@@ -96,8 +95,6 @@ class ncdfDialog : public wxDialog
 		wxStaticText* m_staticTextSeaTemp;
 		wxTextCtrl* m_textCtrlSeaTemp;
 		wxStaticText* m_staticTextSeaTempUnit;
-		wxCheckBox* m_checkBoxSeaTempIso;
-		wxStaticText* m_staticTextSeaTempIso;
 		wxCheckBox* m_checkBoxSalinity;
 		wxStaticText* m_staticTextSalinity;
 		wxTextCtrl* m_textCtrlSalinity;
@@ -135,6 +132,8 @@ class ncdfDialog : public wxDialog
 		virtual void onSCurveSSTClick( wxCommandEvent& event ) { event.Skip(); }
 		wxCheckBox* m_checkBoxSlopeSST;
 		virtual void onSlopeSSTClick( wxCommandEvent& event ) { event.Skip(); }
+		wxCheckBox* m_checkBoxIsoSST;
+		virtual void onIsoSSTClick( wxCommandEvent& event ) { event.Skip(); }
 		// Salinity settings tab
 		wxPanel* m_panelSalSettings;
 		wxChoice* m_choiceInterpSal;
@@ -149,6 +148,8 @@ class ncdfDialog : public wxDialog
 		virtual void onSCurveSalClick( wxCommandEvent& event ) { event.Skip(); }
 		wxCheckBox* m_checkBoxSlopeSal;
 		virtual void onSlopeSalClick( wxCommandEvent& event ) { event.Skip(); }
+		wxCheckBox* m_checkBoxIsoSal;
+		virtual void onIsoSalClick( wxCommandEvent& event ) { event.Skip(); }
 
 		ncdfDialog( wxWindow* parent, wxWindowID id = wxID_ANY, const wxString& title = _("ncdf Dialog"), const wxPoint& pos = wxDefaultPosition, const wxSize& size = wxSize( 280,460 ), long style = wxDEFAULT_DIALOG_STYLE|wxRESIZE_BORDER );
 

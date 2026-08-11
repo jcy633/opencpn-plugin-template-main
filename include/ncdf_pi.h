@@ -111,7 +111,8 @@ public:
           bool sCurve;          // S-curve color mapping
           bool slopeShading;    // gradient-based slope shading
           bool licFlow;         // line integral convolution (current only)
-          InterpSettings() : interpMode(0), smoothColors(false), sharpen(false), anisoDiffusion(false), sCurve(false), slopeShading(false), licFlow(false) {}
+          bool showIsoLines;    // isolines (SST/salinity)
+          InterpSettings() : interpMode(0), smoothColors(false), sharpen(false), anisoDiffusion(false), sCurve(false), slopeShading(false), licFlow(false), showIsoLines(false) {}
       };
       InterpSettings m_settingsCurrent;
       InterpSettings m_settingsSeaTemp;

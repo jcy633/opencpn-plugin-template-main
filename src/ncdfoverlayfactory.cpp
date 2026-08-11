@@ -74,7 +74,8 @@ ncdfOverlayFactory::ncdfOverlayFactory()
       m_cachedCurrentNj = m_cachedCurrentNi = 0;
       m_cachedSSTNj = m_cachedSSTNi = 0;
       m_cachedSalNj = m_cachedSalNi = 0;
-      m_cachedCurrentOwns = m_cachedSSTOwns = m_cachedSalOwns = false;
+      m_bNeedsIsoRebuild = true;
+      m_bNeedsSalIsoRebuild = true;
       m_cachedVorticity = NULL;
       m_cachedVortNj = m_cachedVortNi = 0;
       m_glLICTexture = 0;
@@ -106,6 +107,7 @@ ncdfOverlayFactory::ncdfOverlayFactory()
       m_lastIso_vp_lonMin = -99999;
       m_lastIso_vp_lonMax = -99999;
       m_bNeedsIsoRebuild = true;
+      m_bNeedsSalIsoRebuild = true;
       m_sstTexDataDim[0] = m_sstTexDataDim[1] = 0;
       m_sstTexGLDim[0] = m_sstTexGLDim[1] = 0;
       m_glSalinityTexture = 0;
@@ -170,6 +172,7 @@ void ncdfOverlayFactory::setData(MainDialog *gui, ncdf_pi *plugin, const ncdfDat
 	m_bNeedsSalinityTexRebuild = true;
 	m_lastIso_vp_scale = -1;  // Force isoline redraw on data change
 	m_bNeedsIsoRebuild = true;  // Rebuild cached isolines
+	m_bNeedsSalIsoRebuild = true;  // Rebuild salinity isolines
 	ClearParticles();
 	m_last_vp_scale = -1;
 	m_last_vp_latMax = -99999.0;
@@ -565,7 +568,7 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 						  m_sstTexDataDim, m_sstTexGLDim);
 	}
 
-	// Sea temperature isolines
+	// Sea temperature isolines (CPU Marching Squares + VBO rendering)
 	if (plugin->m_bShowSeaTempIso && gui && gui->gridSST && gui->hasSeaTemp) {
 		RenderSeaTempIsoLines(vp);
 	}
@@ -617,6 +620,11 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 						  &ncdfOverlayFactory::GetSalinityGraphicColor,
 						  m_glSalinityTexture, m_bHasSalinityTexture, m_bNeedsSalinityTexRebuild,
 						  m_salTexDataDim, m_salTexGLDim);
+	}
+
+	// Salinity isolines (CPU Marching Squares + VBO rendering)
+	if (plugin->m_settingsSalinity.showIsoLines && plugin->m_bShowSalinity && gui && gui->gridSalinity && gui->hasSalinity) {
+		RenderSalinityIsoLines(vp);
 	}
 
 	// Color legend
