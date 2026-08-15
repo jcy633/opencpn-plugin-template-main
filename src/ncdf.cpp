@@ -187,6 +187,9 @@ void MainDialog::setPlugIn(ncdf_pi *p)
   m_checkBoxSCurveCurr->SetValue(pPlugIn->m_settingsCurrent.sCurve);
   m_checkBoxSlopeCurr->SetValue(pPlugIn->m_settingsCurrent.slopeShading);
   m_checkBoxLICCurr->SetValue(pPlugIn->m_settingsCurrent.licFlow);
+  m_checkBoxAnimate->SetValue(pPlugIn->m_settingsCurrent.animate);
+  m_checkBoxAnimateSST->SetValue(pPlugIn->m_settingsSeaTemp.animate);
+  m_checkBoxAnimateSal->SetValue(pPlugIn->m_settingsSalinity.animate);
   m_choiceInterpSST->SetSelection(pPlugIn->m_settingsSeaTemp.interpMode);
   m_checkBoxSmoothSST->SetValue(pPlugIn->m_settingsSeaTemp.smoothColors);
   m_checkBoxSharpenSST->SetValue(pPlugIn->m_settingsSeaTemp.sharpen);
@@ -2157,6 +2160,37 @@ void MainDialog::onLICCurrClick(wxCommandEvent& event)
 	pPlugIn->m_settingsCurrent.licFlow = m_checkBoxLICCurr->GetValue();
 	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
 	if (pof) pof->SetBicubicMode(true);
+	RequestRefresh(m_parent);
+}
+void MainDialog::onAnimateClick(wxCommandEvent& event)
+{
+	pPlugIn->m_settingsCurrent.animate = m_checkBoxAnimate->GetValue();
+	// Invalidate displacement map to force recomputation
+	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
+	if (pof) {
+		pof->DeleteDispTexture();
+		pof->SetBicubicMode(true);
+	}
+	RequestRefresh(m_parent);
+}
+void MainDialog::onAnimateSSTClick(wxCommandEvent& event)
+{
+	pPlugIn->m_settingsSeaTemp.animate = m_checkBoxAnimateSST->GetValue();
+	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
+	if (pof) {
+		pof->DeleteDispTexture();
+		pof->SetBicubicMode(true);
+	}
+	RequestRefresh(m_parent);
+}
+void MainDialog::onAnimateSalClick(wxCommandEvent& event)
+{
+	pPlugIn->m_settingsSalinity.animate = m_checkBoxAnimateSal->GetValue();
+	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
+	if (pof) {
+		pof->DeleteDispTexture();
+		pof->SetBicubicMode(true);
+	}
 	RequestRefresh(m_parent);
 }
 void MainDialog::onInterpSSTChange(wxCommandEvent& event)

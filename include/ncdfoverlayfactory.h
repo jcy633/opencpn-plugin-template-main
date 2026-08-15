@@ -44,6 +44,7 @@
 #include "ncdf.h"
 #include <map>
 #include "ncdf_legend.h"
+#include "ncdf_animate.h"
 
 using namespace std;
 
@@ -71,6 +72,11 @@ public:
 	 bool RenderncdfOverlay(wxDC &dc, PlugIn_ViewPort *vp);
 	 bool DoRenderncdfOverlay(PlugIn_ViewPort *vp);
 	 void SetBicubicMode(bool enable);
+	 ncdfAnimate m_animate;
+	 GLuint m_glDispTexture;   // displacement map for animation
+	 bool m_bHasDispTexture;
+	 void DeleteDispTexture();
+	 wxTimer m_animateTimer;
      void RenderSelectionRectangle();
 	 void RenderMyArrows(PlugIn_ViewPort *vp);  
      void RenderncdfCurrent();     

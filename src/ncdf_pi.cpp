@@ -391,6 +391,7 @@ bool ncdf_pi::LoadConfig(void)
             pConf->Read ( _T( "CurrentSCurve" ), &m_settingsCurrent.sCurve, 0 );
             pConf->Read ( _T( "CurrentSlope" ), &m_settingsCurrent.slopeShading, 0 );
             pConf->Read ( _T( "CurrentLIC" ), &m_settingsCurrent.licFlow, 0 );
+            pConf->Read ( _T( "Animate" ), &m_settingsCurrent.animate, 0 );
             pConf->Read ( _T( "SeaTempInterpMode" ), &m_settingsSeaTemp.interpMode, 0 );
             pConf->Read ( _T( "SeaTempSmooth" ), &m_settingsSeaTemp.smoothColors, 0 );
             pConf->Read ( _T( "SeaTempSharpen" ), &m_settingsSeaTemp.sharpen, 0 );
@@ -453,6 +454,7 @@ bool ncdf_pi::SaveConfig(void)
             pConf->Write ( _T ( "CurrentSCurve" ), m_settingsCurrent.sCurve );
             pConf->Write ( _T ( "CurrentSlope" ), m_settingsCurrent.slopeShading );
             pConf->Write ( _T ( "CurrentLIC" ), m_settingsCurrent.licFlow );
+            pConf->Write ( _T ( "Animate" ), m_settingsCurrent.animate );
             pConf->Write ( _T ( "SeaTempInterpMode" ), m_settingsSeaTemp.interpMode );
             pConf->Write ( _T ( "SeaTempSmooth" ), m_settingsSeaTemp.smoothColors );
             pConf->Write ( _T ( "SeaTempSharpen" ), m_settingsSeaTemp.sharpen );

@@ -254,6 +254,9 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	sizerCurr->AddSpacer(0);
 	m_checkBoxLICCurr = new wxCheckBox( m_panelCurrSettings, wxID_ANY, _("LIC flow visualization") );
 	sizerCurr->Add( m_checkBoxLICCurr, 0, wxALL, 3 );
+	sizerCurr->AddSpacer(0);
+	m_checkBoxAnimate = new wxCheckBox( m_panelCurrSettings, wxID_ANY, _("Flow animation") );
+	sizerCurr->Add( m_checkBoxAnimate, 0, wxALL, 3 );
 	m_panelCurrSettings->SetSizer( sizerCurr );
 	m_notebookSettings->AddPage( m_panelCurrSettings, _("Current") );
 
@@ -283,6 +286,9 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	sizerSST->AddSpacer(0);
 	m_checkBoxIsoSST = new wxCheckBox( m_panelSSTSettings, wxID_ANY, _("Show isolines") );
 	sizerSST->Add( m_checkBoxIsoSST, 0, wxALL, 3 );
+	sizerSST->AddSpacer(0);
+	m_checkBoxAnimateSST = new wxCheckBox( m_panelSSTSettings, wxID_ANY, _("Flow animation") );
+	sizerSST->Add( m_checkBoxAnimateSST, 0, wxALL, 3 );
 	m_panelSSTSettings->SetSizer( sizerSST );
 	m_notebookSettings->AddPage( m_panelSSTSettings, _("Sea Temp") );
 
@@ -312,6 +318,9 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	sizerSal->AddSpacer(0);
 	m_checkBoxIsoSal = new wxCheckBox( m_panelSalSettings, wxID_ANY, _("Show isolines") );
 	sizerSal->Add( m_checkBoxIsoSal, 0, wxALL, 3 );
+	sizerSal->AddSpacer(0);
+	m_checkBoxAnimateSal = new wxCheckBox( m_panelSalSettings, wxID_ANY, _("Flow animation") );
+	sizerSal->Add( m_checkBoxAnimateSal, 0, wxALL, 3 );
 	m_panelSalSettings->SetSizer( sizerSal );
 	m_notebookSettings->AddPage( m_panelSalSettings, _("Salinity") );
 
@@ -339,7 +348,9 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	m_checkBoxParticles->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onParticlesClick ), NULL, this );
 	m_checkBoxSeaTemp->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSeaTempClick ), NULL, this );
 	m_checkBoxIsoSST->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onIsoSSTClick ), NULL, this );
+	m_checkBoxAnimateSST->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onAnimateSSTClick ), NULL, this );
 	m_checkBoxIsoSal->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onIsoSalClick ), NULL, this );
+	m_checkBoxAnimateSal->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onAnimateSalClick ), NULL, this );
 	m_checkBoxSalinity->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSalinityClick ), NULL, this );
 	m_choiceInterpCurr->Connect( wxEVT_COMMAND_CHOICE_SELECTED, wxCommandEventHandler( ncdfDialog::onInterpCurrChange ), NULL, this );
 	m_checkBoxSmoothCurr->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSmoothCurrClick ), NULL, this );
@@ -348,6 +359,7 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	m_checkBoxSCurveCurr->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSCurveCurrClick ), NULL, this );
 	m_checkBoxSlopeCurr->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSlopeCurrClick ), NULL, this );
 	m_checkBoxLICCurr->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onLICCurrClick ), NULL, this );
+	m_checkBoxAnimate->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onAnimateClick ), NULL, this );
 	m_choiceInterpSST->Connect( wxEVT_COMMAND_CHOICE_SELECTED, wxCommandEventHandler( ncdfDialog::onInterpSSTChange ), NULL, this );
 	m_checkBoxSmoothSST->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSmoothSSTClick ), NULL, this );
 	m_checkBoxSharpenSST->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSharpenSSTClick ), NULL, this );
@@ -380,7 +392,9 @@ ncdfDialog::~ncdfDialog()
 	m_checkBoxParticles->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onParticlesClick ), NULL, this );
 	m_checkBoxSeaTemp->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSeaTempClick ), NULL, this );
 	m_checkBoxIsoSST->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onIsoSSTClick ), NULL, this );
+	m_checkBoxAnimateSST->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onAnimateSSTClick ), NULL, this );
 	m_checkBoxIsoSal->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onIsoSalClick ), NULL, this );
+	m_checkBoxAnimateSal->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onAnimateSalClick ), NULL, this );
 	m_checkBoxSalinity->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSalinityClick ), NULL, this );
 	m_choiceInterpCurr->Disconnect( wxEVT_COMMAND_CHOICE_SELECTED, wxCommandEventHandler( ncdfDialog::onInterpCurrChange ), NULL, this );
 	m_checkBoxSmoothCurr->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSmoothCurrClick ), NULL, this );
@@ -389,6 +403,7 @@ ncdfDialog::~ncdfDialog()
 	m_checkBoxSCurveCurr->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSCurveCurrClick ), NULL, this );
 	m_checkBoxSlopeCurr->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSlopeCurrClick ), NULL, this );
 	m_checkBoxLICCurr->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onLICCurrClick ), NULL, this );
+	m_checkBoxAnimate->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onAnimateClick ), NULL, this );
 	m_choiceInterpSST->Disconnect( wxEVT_COMMAND_CHOICE_SELECTED, wxCommandEventHandler( ncdfDialog::onInterpSSTChange ), NULL, this );
 	m_checkBoxSmoothSST->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSmoothSSTClick ), NULL, this );
 	m_checkBoxSharpenSST->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSharpenSSTClick ), NULL, this );

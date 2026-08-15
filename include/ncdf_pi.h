@@ -112,7 +112,8 @@ public:
           bool slopeShading;    // gradient-based slope shading
           bool licFlow;         // line integral convolution (current only)
           bool showIsoLines;    // isolines (SST/salinity)
-          InterpSettings() : interpMode(0), smoothColors(false), sharpen(false), anisoDiffusion(false), sCurve(false), slopeShading(false), licFlow(false), showIsoLines(false) {}
+          bool animate;         // flow-field animation (global, shared across types)
+          InterpSettings() : interpMode(0), smoothColors(false), sharpen(false), anisoDiffusion(false), sCurve(false), slopeShading(false), licFlow(false), showIsoLines(false), animate(false) {}
       };
       InterpSettings m_settingsCurrent;
       InterpSettings m_settingsSeaTemp;

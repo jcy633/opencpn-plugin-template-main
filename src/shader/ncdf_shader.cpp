@@ -205,6 +205,7 @@ static const char* s_frag =
     "void main() {\n"
     "    vec4 center = texture2D(dataTex, vUV);\n"
     "    if (center.a < 0.01) discard;\n"
+    "\n"
     "    vec2 ts = 1.0 / texSize;\n"
     "    vec2 tc = vUV * texSize - 0.5;\n"
     "    vec2 f = fract(tc);\n"

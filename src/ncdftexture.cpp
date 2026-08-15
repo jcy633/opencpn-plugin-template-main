@@ -7,6 +7,17 @@
 #include "ncdf_pi.h"
 #include "ncdfdata.h"
 #include "shader/ncdf_shader.h"
+#include "shader/ncdf_animate_shader.h"
+
+#ifndef GL_CURRENT_PROGRAM
+#define GL_CURRENT_PROGRAM 0x8B8D
+#endif
+#ifndef GL_ACTIVE_TEXTURE
+#define GL_ACTIVE_TEXTURE 0x84C0
+#endif
+#ifndef GL_VIEWPORT
+#define GL_VIEWPORT 0x0BA2
+#endif
 
 #ifndef PI
 #define PI 3.14159265

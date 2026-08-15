@@ -160,6 +160,9 @@ protected:
 	virtual void onSCurveCurrClick( wxCommandEvent& event );
 	virtual void onSlopeCurrClick( wxCommandEvent& event );
 	virtual void onLICCurrClick( wxCommandEvent& event );
+	virtual void onAnimateClick( wxCommandEvent& event );
+	virtual void onAnimateSSTClick( wxCommandEvent& event );
+	virtual void onAnimateSalClick( wxCommandEvent& event );
 	virtual void onInterpSSTChange( wxCommandEvent& event );
 	virtual void onSmoothSSTClick( wxCommandEvent& event );
 	virtual void onSharpenSSTClick( wxCommandEvent& event );

@@ -118,6 +118,8 @@ class ncdfDialog : public wxDialog
 		virtual void onSlopeCurrClick( wxCommandEvent& event ) { event.Skip(); }
 		wxCheckBox* m_checkBoxLICCurr;
 		virtual void onLICCurrClick( wxCommandEvent& event ) { event.Skip(); }
+		wxCheckBox* m_checkBoxAnimate;
+		virtual void onAnimateClick( wxCommandEvent& event ) { event.Skip(); }
 		// Sea Temp settings tab
 		wxPanel* m_panelSSTSettings;
 		wxChoice* m_choiceInterpSST;
@@ -134,6 +136,8 @@ class ncdfDialog : public wxDialog
 		virtual void onSlopeSSTClick( wxCommandEvent& event ) { event.Skip(); }
 		wxCheckBox* m_checkBoxIsoSST;
 		virtual void onIsoSSTClick( wxCommandEvent& event ) { event.Skip(); }
+		wxCheckBox* m_checkBoxAnimateSST;
+		virtual void onAnimateSSTClick( wxCommandEvent& event ) { event.Skip(); }
 		// Salinity settings tab
 		wxPanel* m_panelSalSettings;
 		wxChoice* m_choiceInterpSal;
@@ -150,6 +154,8 @@ class ncdfDialog : public wxDialog
 		virtual void onSlopeSalClick( wxCommandEvent& event ) { event.Skip(); }
 		wxCheckBox* m_checkBoxIsoSal;
 		virtual void onIsoSalClick( wxCommandEvent& event ) { event.Skip(); }
+		wxCheckBox* m_checkBoxAnimateSal;
+		virtual void onAnimateSalClick( wxCommandEvent& event ) { event.Skip(); }
 
 		ncdfDialog( wxWindow* parent, wxWindowID id = wxID_ANY, const wxString& title = _("ncdf Dialog"), const wxPoint& pos = wxDefaultPosition, const wxSize& size = wxSize( 280,460 ), long style = wxDEFAULT_DIALOG_STYLE|wxRESIZE_BORDER );
 

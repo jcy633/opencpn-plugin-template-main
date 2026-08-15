@@ -68,6 +68,13 @@ ncdfOverlayFactory::ncdfOverlayFactory()
       m_currentDataMin = 0.0f;
       m_currentDataMax = 1.0f;
       m_currentSlopeMode = 0;
+      m_glDispTexture = 0;
+      m_bHasDispTexture = false;
+
+      // Animation timer: triggers periodic redraws when animation is active
+      m_animateTimer.Bind(wxEVT_TIMER, [this](wxTimerEvent&) {
+          GetOCPNCanvasWindow()->Refresh(false);
+      });
       m_cachedCurrentGrid = NULL;
       m_cachedSSTGrid = NULL;
       m_cachedSalinityGrid = NULL;
@@ -139,6 +146,8 @@ ncdfOverlayFactory::~ncdfOverlayFactory()
     if (m_cachedSalOwns) FreeSharpenedGrid(m_cachedSalinityGrid, m_cachedSalNj);
     m_cachedCurrentGrid = m_cachedSSTGrid = m_cachedSalinityGrid = NULL;
     DeleteLICTexture();
+    DeleteDispTexture();
+    if (m_animateTimer.IsRunning()) m_animateTimer.Stop();
     if (m_bHasVortTexture && m_glVortTexture) { glDeleteTextures(1, &m_glVortTexture); m_glVortTexture = 0; m_bHasVortTexture = false; }
     FreeSharpenedGrid(m_cachedVorticity, m_cachedVortNj);
     m_cachedVorticity = NULL;
@@ -148,6 +157,16 @@ ncdfOverlayFactory::~ncdfOverlayFactory()
         m_bHasColorLUT = false;
     }
     ncdf_shader_cleanup();
+    DeleteDispTexture();
+}
+
+void ncdfOverlayFactory::DeleteDispTexture()
+{
+    if (m_bHasDispTexture && m_glDispTexture) {
+        glDeleteTextures(1, &m_glDispTexture);
+        m_glDispTexture = 0;
+        m_bHasDispTexture = false;
+    }
 }
 
 void ncdfOverlayFactory::SetBicubicMode(bool enable)
@@ -271,6 +290,27 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
                      (int)s_shaderCompiled, (int)s_shaderOk, (int)m_useShader);
     }
 
+    // Animation: compute advected grid if animation is active
+    bool anyAnimate = plugin->m_settingsCurrent.animate ||
+                      plugin->m_settingsSeaTemp.animate ||
+                      plugin->m_settingsSalinity.animate;
+    double** animGrid = NULL;
+    if (anyAnimate && gui->gridu && gui->gridv) {
+        if (!m_animate.IsInitialized()) m_animate.Init(plugin, gui);
+        if (m_animate.IsInitialized()) {
+            if (!m_animate.HasDisplacement()) m_animate.ComputeDisplacementMap();
+            if (m_animate.HasDisplacement()) {
+                animGrid = m_animate.GetAdvectedGrid();
+                // Drive continuous animation at ~20fps
+                if (!m_animateTimer.IsRunning()) m_animateTimer.Start(50, wxTIMER_ONE_SHOT);
+            }
+        }
+    } else {
+        if (m_animateTimer.IsRunning()) m_animateTimer.Stop();
+    }
+
+    // ... normal rendering uses animGrid when available ...
+
     static int s_frameDbg = 0;
     if (s_frameDbg < 5) {
         wxLogMessage(_T("[render] frame %d gridu=%p gridv=%p gridSST=%p gridSal=%p"), s_frameDbg, (void*)gui->gridu, (void*)gui->gridv, (void*)gui->gridSST, (void*)gui->gridSalinity);
@@ -336,25 +376,34 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
                   m_currentDataMin = (float)dMin;
                   m_currentDataMax = (float)dMax;
               }
-              // Rebuild processed grid only when texture needs rebuild
-              if (m_bNeedsColorTexRebuild || !m_cachedCurrentGrid) {
-                  if (m_cachedCurrentOwns) FreeSharpenedGrid(m_cachedCurrentGrid, m_cachedCurrentNj);
-                  m_cachedCurrentGrid = NULL; m_cachedCurrentOwns = false;
-                  double** src = gui->gridMag;
-                  if (plugin->m_settingsCurrent.anisoDiffusion) {
-                      double** ad = BuildAnisoDiffusedGrid(src, nj, ni);
-                      if (ad) { src = ad; m_cachedCurrentGrid = ad; m_cachedCurrentOwns = true; }
-                  }
-                  if (plugin->m_settingsCurrent.sharpen) {
-                      double** sh = BuildSharpenedGrid(src, nj, ni);
-                      if (sh) {
-                          if (m_cachedCurrentOwns) FreeSharpenedGrid(m_cachedCurrentGrid, nj);
-                          m_cachedCurrentGrid = sh; m_cachedCurrentOwns = true;
-                          src = sh;
+              // Use animation grid if available, otherwise use processed cached grid
+              double** renderGrid = m_cachedCurrentGrid;
+              if (plugin->m_settingsCurrent.animate && animGrid) {
+                  renderGrid = animGrid;
+                  // Force texture rebuild every frame for animation
+                  m_bNeedsColorTexRebuild = true;
+              } else {
+                  // Rebuild processed grid only when texture needs rebuild
+                  if (m_bNeedsColorTexRebuild || !m_cachedCurrentGrid) {
+                      if (m_cachedCurrentOwns) FreeSharpenedGrid(m_cachedCurrentGrid, m_cachedCurrentNj);
+                      m_cachedCurrentGrid = NULL; m_cachedCurrentOwns = false;
+                      double** src = gui->gridMag;
+                      if (plugin->m_settingsCurrent.anisoDiffusion) {
+                          double** ad = BuildAnisoDiffusedGrid(src, nj, ni);
+                          if (ad) { src = ad; m_cachedCurrentGrid = ad; m_cachedCurrentOwns = true; }
                       }
+                      if (plugin->m_settingsCurrent.sharpen) {
+                          double** sh = BuildSharpenedGrid(src, nj, ni);
+                          if (sh) {
+                              if (m_cachedCurrentOwns) FreeSharpenedGrid(m_cachedCurrentGrid, nj);
+                              m_cachedCurrentGrid = sh; m_cachedCurrentOwns = true;
+                              src = sh;
+                          }
+                      }
+                      if (!m_cachedCurrentGrid) { m_cachedCurrentGrid = gui->gridMag; m_cachedCurrentOwns = false; }
+                      m_cachedCurrentNj = nj; m_cachedCurrentNi = ni;
                   }
-                  if (!m_cachedCurrentGrid) { m_cachedCurrentGrid = gui->gridMag; m_cachedCurrentOwns = false; }
-                  m_cachedCurrentNj = nj; m_cachedCurrentNi = ni;
+                  renderGrid = m_cachedCurrentGrid;
               }
               // Compute vorticity for slope shading (cached)
               double** slopeGrid = NULL;
@@ -427,7 +476,7 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
                   }
                   if (m_useShader && m_bHasVortTexture) m_glSlopeSource = m_glVortTexture;
               }
-              RenderGridOverlay(vp, m_cachedCurrentGrid,
+              RenderGridOverlay(vp, renderGrid,
                                 &ncdfOverlayFactory::GetSeaCurrentGraphicColor,
                                 m_glColorTexture, m_bHasColorTexture, m_bNeedsColorTexRebuild,
                                 m_texDataDim, m_texGLDim,
@@ -562,7 +611,9 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 			if (!m_cachedSSTGrid) { m_cachedSSTGrid = gui->gridSST; m_cachedSSTOwns = false; }
 			m_cachedSSTNj = nj; m_cachedSSTNi = ni;
 		}
-		RenderGridOverlay(vp, m_cachedSSTGrid,
+		double** sstRenderGrid = (plugin->m_settingsSeaTemp.animate && animGrid) ? animGrid : m_cachedSSTGrid;
+		if (plugin->m_settingsSeaTemp.animate && animGrid) m_bNeedsSeaTempTexRebuild = true;
+		RenderGridOverlay(vp, sstRenderGrid,
 						  &ncdfOverlayFactory::GetSeaTempGraphicColor,
 						  m_glSeaTempTexture, m_bHasSeaTempTexture, m_bNeedsSeaTempTexRebuild,
 						  m_sstTexDataDim, m_sstTexGLDim);
@@ -616,7 +667,9 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 			if (!m_cachedSalinityGrid) { m_cachedSalinityGrid = gui->gridSalinity; m_cachedSalOwns = false; }
 			m_cachedSalNj = nj; m_cachedSalNi = ni;
 		}
-		RenderGridOverlay(vp, m_cachedSalinityGrid,
+		double** salRenderGrid = (plugin->m_settingsSalinity.animate && animGrid) ? animGrid : m_cachedSalinityGrid;
+		if (plugin->m_settingsSalinity.animate && animGrid) m_bNeedsSalinityTexRebuild = true;
+		RenderGridOverlay(vp, salRenderGrid,
 						  &ncdfOverlayFactory::GetSalinityGraphicColor,
 						  m_glSalinityTexture, m_bHasSalinityTexture, m_bNeedsSalinityTexRebuild,
 						  m_salTexDataDim, m_salTexGLDim);
@@ -660,6 +713,9 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 
     m_last_vp_scale = vp->view_scale_ppm;
     m_last_vp_latMax = vp->lat_max;
+
+    // Advance animation frame
+    if (animGrid) m_animate.AdvanceFrame();
 
     // Reset GL state to avoid corrupting other plugins (GRIB, OpenCPN core)
     glDisable(GL_TEXTURE_2D);
