@@ -7,17 +7,6 @@
 #include "ncdf_pi.h"
 #include "ncdfdata.h"
 #include "shader/ncdf_shader.h"
-#include "shader/ncdf_animate_shader.h"
-
-#ifndef GL_CURRENT_PROGRAM
-#define GL_CURRENT_PROGRAM 0x8B8D
-#endif
-#ifndef GL_ACTIVE_TEXTURE
-#define GL_ACTIVE_TEXTURE 0x84C0
-#endif
-#ifndef GL_VIEWPORT
-#define GL_VIEWPORT 0x0BA2
-#endif
 
 #ifndef PI
 #define PI 3.14159265
@@ -28,17 +17,8 @@
 //===================================================================
 // Color texture (shared via RenderGridOverlay)
 //===================================================================
-void ncdfOverlayFactory::DeleteColorTexture()
-{
-    if (m_bHasColorTexture && m_glColorTexture) {
-        glDeleteTextures(1, &m_glColorTexture);
-        m_glColorTexture = 0;
-        m_bHasColorTexture = false;
-    }
-}
-
 //===================================================================
-// Sea Temperature rendering
+// Shared utilities
 //===================================================================
 
 // Sea temperature color map (-2°C to 32°C, purple→red, smoothstep)
@@ -63,54 +43,17 @@ wxColour ncdfOverlayFactory::InterpolateStops(const double stops[][4], int nStop
     return wxColour((unsigned char)stops[nStops-1][1], (unsigned char)stops[nStops-1][2], (unsigned char)stops[nStops-1][3]);
 }
 
-wxColour ncdfOverlayFactory::GetSeaTempGraphicColor(double temp_c)
-{
-    static const double stops[][4] = {
-        {-2, 0x80, 0x00, 0xc0}, { 2, 0x40, 0x30, 0xff}, { 7, 0x00, 0x90, 0xfa},
-        {12, 0x00, 0xd8, 0xb0}, {17, 0x10, 0xbb, 0x20}, {22, 0x90, 0xd0, 0x00},
-        {26, 0xf0, 0xd0, 0x00}, {30, 0xf0, 0x70, 0x00}, {32, 0xff, 0x00, 0x00},
-    };
-    return InterpolateStops(stops, 9, temp_c, m_currentSmoothColors);
-}
-
-wxColour ncdfOverlayFactory::GetSalinityGraphicColor(double sal_psu)
-{
-    static const double stops[][4] = {
-        {30.0, 0x87, 0xCE, 0xEB}, {31.0, 0x60, 0xB0, 0xE0}, {32.0, 0x40, 0x90, 0xD0},
-        {33.0, 0x20, 0x70, 0xC0}, {34.0, 0x10, 0x50, 0xA0}, {35.0, 0x00, 0x80, 0x80},
-        {35.5, 0x20, 0xA0, 0x70}, {36.0, 0x40, 0xC0, 0x60}, {36.5, 0x80, 0xC0, 0x40},
-        {37.0, 0xC0, 0xB0, 0x20}, {37.5, 0xE0, 0xA0, 0x10}, {38.0, 0xE0, 0x70, 0x20},
-        {38.5, 0xD0, 0x40, 0x20}, {39.0, 0xC0, 0x20, 0x20},
-    };
-    return InterpolateStops(stops, 14, sal_psu, m_currentSmoothColors);
-}
-
-void ncdfOverlayFactory::DeleteSalinityTexture()
-{
-    if (m_bHasSalinityTexture && m_glSalinityTexture) {
-        glDeleteTextures(1, &m_glSalinityTexture);
-        m_glSalinityTexture = 0;
-        m_bHasSalinityTexture = false;
-    }
-}
-
-void ncdfOverlayFactory::DeleteSeaTempTexture()
-{
-    if (m_bHasSeaTempTexture && m_glSeaTempTexture) {
-        glDeleteTextures(1, &m_glSeaTempTexture);
-        m_glSeaTempTexture = 0;
-        m_bHasSeaTempTexture = false;
-    }
-}
-
 //===================================================================
-// Shared grid overlay renderer (SST & Salinity)
+// Shared grid overlay renderer
 //===================================================================
 void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
                                            double **grid,
                                            ColorFunc colorFunc,
+                                           const RenderSettings &settings,
                                            GLuint &texID, bool &hasTex, bool &needsRebuild,
                                            int dataDim[2], int glDim[2],
+                                           GLuint &lutID, bool &hasLUT,
+                                           unsigned char *&uploadBuf, int &uploadBufSize,
                                            double **slopeGrid,
                                            GLuint slopeTexID)
 {
@@ -139,11 +82,17 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
             int borderH = repeat ? 0 : 1;
             int extraCol = repeat ? 1 : 0;
             tw = ni + 2 * borderH + extraCol; th = nj + 2;
-            unsigned char *texData = new(std::nothrow) unsigned char[tw * th * 4];
+            int _bufSize = tw * th * 4;
+            if (!uploadBuf || uploadBufSize < _bufSize) {
+                if (uploadBuf) free(uploadBuf);
+                uploadBuf = (unsigned char*)malloc(_bufSize);
+                uploadBufSize = uploadBuf ? _bufSize : 0;
+            }
+            unsigned char *texData = uploadBuf;
             if (!texData) return;
             memset(texData, 0, tw * th * 4);
 
-            if (m_useShader) {
+            if (settings.useShader) {
                 // --- Shader path: normalized data in R channel, alpha=validity ---
                 double dMin = 1e30, dMax = -1e30;
                 for (int j = 0; j < nj; j++) {
@@ -180,25 +129,25 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
                 }
 
                 // Color LUT (256 entries)
-                if (m_bHasColorLUT && m_glColorLUT) {
-                    glDeleteTextures(1, &m_glColorLUT);
-                    m_glColorLUT = 0; m_bHasColorLUT = false;
+                if (hasLUT && lutID) {
+                    glDeleteTextures(1, &lutID);
+                    lutID = 0; hasLUT = false;
                 }
                 unsigned char lutData[256 * 4];
                 for (int k = 0; k < 256; k++) {
                     double val = dMin + (k / 255.0) * dRange;
-                    wxColour c = (this->*colorFunc)(val);
+                    wxColour c = colorFunc(val);
                     lutData[k*4] = c.Red(); lutData[k*4+1] = c.Green();
                     lutData[k*4+2] = c.Blue(); lutData[k*4+3] = 255;
                 }
-                glGenTextures(1, &m_glColorLUT);
-                glBindTexture(GL_TEXTURE_2D, m_glColorLUT);
+                glGenTextures(1, &lutID);
+                glBindTexture(GL_TEXTURE_2D, lutID);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
                 glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 256, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, lutData);
-                m_bHasColorLUT = true;
+                hasLUT = true;
 
             } else {
                 // --- Fixed-function path: colored RGBA texture ---
@@ -211,12 +160,12 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
                         if (val == ncdf_NOTDEF || isnan(val) || !isfinite(val)) continue;
                         int x = i + borderH, y = texRow + 1;
                         if (x >= tw - 1 || y >= th - 1) continue;
-                        wxColour c = (this->*colorFunc)(val);
+                        wxColour c = colorFunc(val);
                         int off = 4 * (y * tw + x);
                         unsigned char r = c.Red(), g = c.Green(), b = c.Blue();
 
                         // Slope shading: modulate brightness by gradient
-                        if (m_currentSlopeShading && j > 0 && j < nj-1 && i > 0 && i < ni-1) {
+                        if (settings.slopeShading && j > 0 && j < nj-1 && i > 0 && i < ni-1) {
                             // Use slopeGrid (e.g., vorticity) if available, otherwise use data grid
                             double** gSlope = slopeGrid ? slopeGrid : grid;
                             double vn = gSlope[j-1][i], vs = gSlope[j+1][i];
@@ -279,11 +228,10 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
             glBindTexture(GL_TEXTURE_2D, texID);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, repeat ? GL_REPEAT : GL_CLAMP_TO_EDGE);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            GLenum filter = m_useShader ? GL_NEAREST : GL_LINEAR;
+            GLenum filter = settings.useShader ? GL_NEAREST : GL_LINEAR;
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, tw, th, 0, GL_RGBA, GL_UNSIGNED_BYTE, texData);
-            delete[] texData;
 
             hasTex = true;
             dataDim[0] = tw; dataDim[1] = th;
@@ -335,35 +283,35 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
             }
 
             // === Shader bicubic path ===
-            if (m_useShader && ncdf_shader_initialized() &&
+            if (settings.useShader && ncdf_shader_initialized() &&
                 ncdf_shader_get_grid_program() > 0) {
                 wxLogMessage(_T("[shader] drawing with Catmull-Rom bicubic, texID=%u LUT=%u"),
-                             texID, m_glColorLUT);
+                             texID, lutID);
                 ncdf_shader_use_program(ncdf_shader_get_grid_program());
                 NcdfShaderUniforms u = ncdf_shader_get_uniforms();
                 if (u.texSize >= 0) ncdf_shader_uniform_2f(u.texSize, (float)tw, (float)th);
                 // mode: 0=linear scalar, 1=bicubic, 2=monotone bicubic
-                int shaderMode = (m_currentInterpMode >= 2) ? m_currentInterpMode - 1 : 0;
+                int shaderMode = (settings.interpMode >= 2) ? settings.interpMode - 1 : 0;
                 if (u.mode >= 0) ncdf_shader_uniform_1i(u.mode, shaderMode);
-                if (u.sCurve >= 0) ncdf_shader_uniform_1i(u.sCurve, m_currentSCurve ? 1 : 0);
-                if (u.slope >= 0) ncdf_shader_uniform_1i(u.slope, m_currentSlopeShading ? 1 : 0);
+                if (u.sCurve >= 0) ncdf_shader_uniform_1i(u.sCurve, settings.sCurve ? 1 : 0);
+                if (u.slope >= 0) ncdf_shader_uniform_1i(u.slope, settings.slopeShading ? 1 : 0);
                 if (u.slopeTex >= 0) {
                     ncdf_shader_active_texture(0x84C2);  // GL_TEXTURE2
                     GLuint stID = slopeTexID ? slopeTexID : texID;
                     glBindTexture(GL_TEXTURE_2D, stID);
                     ncdf_shader_uniform_1i(u.slopeTex, 2);
                 }
-                if (u.dataMin >= 0) ncdf_shader_uniform_1f(u.dataMin, m_currentDataMin);
-                if (u.dataMax >= 0) ncdf_shader_uniform_1f(u.dataMax, m_currentDataMax);
-                if (u.slopeMode >= 0) ncdf_shader_uniform_1i(u.slopeMode, m_currentSlopeMode);
+                if (u.dataMin >= 0) ncdf_shader_uniform_1f(u.dataMin, settings.dataMin);
+                if (u.dataMax >= 0) ncdf_shader_uniform_1f(u.dataMax, settings.dataMax);
+                if (u.slopeMode >= 0) ncdf_shader_uniform_1i(u.slopeMode, settings.slopeMode);
                 if (u.dataTex >= 0) {
                     ncdf_shader_active_texture(0x84C0);
                     glBindTexture(GL_TEXTURE_2D, texID);
                     ncdf_shader_uniform_1i(u.dataTex, 0);
                 }
-                if (u.colorLUT >= 0 && m_bHasColorLUT) {
+                if (u.colorLUT >= 0 && hasLUT) {
                     ncdf_shader_active_texture(0x84C1);
-                    glBindTexture(GL_TEXTURE_2D, m_glColorLUT);
+                    glBindTexture(GL_TEXTURE_2D, lutID);
                     ncdf_shader_uniform_1i(u.colorLUT, 1);
                 }
 
@@ -468,24 +416,8 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
     }
 }
 
-void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp)
-{
-    RenderGridOverlay(vp, gui ? gui->gridSST : NULL,
-                      &ncdfOverlayFactory::GetSeaTempGraphicColor,
-                      m_glSeaTempTexture, m_bHasSeaTempTexture, m_bNeedsSeaTempTexRebuild,
-                      m_sstTexDataDim, m_sstTexGLDim);
-}
-
-void ncdfOverlayFactory::RenderSalinityOverlay(PlugIn_ViewPort *vp)
-{
-    RenderGridOverlay(vp, gui ? gui->gridSalinity : NULL,
-                      &ncdfOverlayFactory::GetSalinityGraphicColor,
-                      m_glSalinityTexture, m_bHasSalinityTexture, m_bNeedsSalinityTexRebuild,
-                      m_salTexDataDim, m_salTexGLDim);
-}
-
 // Generic isoline renderer: CPU Marching Squares + glBegin/glEnd
-static void DrawIsoLines(PlugIn_ViewPort *vp,
+void ncdfOverlayFactory::DrawIsoLines(PlugIn_ViewPort *vp,
                          double **grid, int ni, int nj,
                          bool &needsRebuild,
                          std::vector<ncdfIsoSeg> &segments,
@@ -572,24 +504,4 @@ static void DrawIsoLines(PlugIn_ViewPort *vp,
         glDisable(GL_LINE_SMOOTH);
         glDisable(GL_BLEND);
 #endif
-}
-
-void ncdfOverlayFactory::RenderSeaTempIsoLines(PlugIn_ViewPort *vp)
-{
-    if (!gui || !vp || !gui->gridSST) return;
-    int ni = gui->myMessage.lonLength;
-    int nj = gui->myMessage.latLength;
-    DrawIsoLines(vp, gui->gridSST, ni, nj,
-                 m_bNeedsIsoRebuild, m_isoSegments,
-                 tlat, tlon, blat, blon, gui->myMessage.jDirectionIncr);
-}
-
-void ncdfOverlayFactory::RenderSalinityIsoLines(PlugIn_ViewPort *vp)
-{
-    if (!gui || !vp || !gui->gridSalinity) return;
-    int ni = gui->myMessage.lonLength;
-    int nj = gui->myMessage.latLength;
-    DrawIsoLines(vp, gui->gridSalinity, ni, nj,
-                 m_bNeedsSalIsoRebuild, m_salIsoSegments,
-                 tlat, tlon, blat, blon, gui->myMessage.jDirectionIncr);
 }

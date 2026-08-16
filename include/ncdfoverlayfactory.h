@@ -45,6 +45,9 @@
 #include <map>
 #include "ncdf_legend.h"
 #include "ncdf_animate.h"
+#include "ncdf_overlay_current.h"
+#include "ncdf_overlay_seatemp.h"
+#include "ncdf_overlay_salinity.h"
 
 using namespace std;
 
@@ -73,6 +76,9 @@ public:
 	 bool DoRenderncdfOverlay(PlugIn_ViewPort *vp);
 	 void SetBicubicMode(bool enable);
 	 ncdfAnimate m_animate;
+	 CurrentOverlay m_currentOverlay;
+	 SeaTempOverlay m_seaTempOverlay;
+	 SalinityOverlay m_salinityOverlay;
 	 GLuint m_glDispTexture;   // displacement map for animation
 	 bool m_bHasDispTexture;
 	 void DeleteDispTexture();
@@ -117,20 +123,21 @@ public:
      void drawTriangle(wxDC *pmdc, wxPen pen, bool south,
 			       double si, double co, int di, int dj, int b); 
      
-     wxColour GetSeaCurrentGraphicColor(double val_in);
-     wxColour GetSeaTempGraphicColor(double temp_c);
-
-     void RenderSeaTempOverlay(PlugIn_ViewPort *vp);
-     void RenderSeaTempIsoLines(PlugIn_ViewPort *vp);
-     void RenderSalinityIsoLines(PlugIn_ViewPort *vp);
-     void DeleteSeaTempTexture();
-
-     wxColour GetSalinityGraphicColor(double sal_psu);
-     void RenderSalinityOverlay(PlugIn_ViewPort *vp);
-     void DeleteSalinityTexture();
+     static wxColour GetSeaCurrentGraphicColor(double val_in);
 
      // Shared grid overlay renderer for SST / Salinity / Current (parameterized)
-     typedef wxColour (ncdfOverlayFactory::*ColorFunc)(double);
+     typedef wxColour (*ColorFunc)(double);
+
+     // Per-call shader settings (passed by each overlay type)
+     struct RenderSettings {
+         bool useShader;
+         int interpMode;
+         bool smoothColors;
+         bool sCurve;
+         bool slopeShading;
+         float dataMin, dataMax;
+         int slopeMode;
+     };
 
      // Shared color interpolation with optional smoothstep
      static wxColour InterpolateStops(const double stops[][4], int nStops, double val, bool smooth);
@@ -138,11 +145,20 @@ public:
      static double** BuildAnisoDiffusedGrid(double** grid, int nj, int ni);
      static double** BuildVorticityGrid(double** uGrid, double** vGrid, int nj, int ni);
      static void FreeSharpenedGrid(double** grid, int nj);
+     static void DrawIsoLines(PlugIn_ViewPort *vp,
+                              double **grid, int ni, int nj,
+                              bool &needsRebuild,
+                              std::vector<ncdfIsoSeg> &segments,
+                              double tlat, double tlon, double blat, double blon,
+                              double jDirectionIncr);
      void RenderGridOverlay(PlugIn_ViewPort *vp,
                             double **grid,
                             ColorFunc colorFunc,
+                            const RenderSettings &settings,
                             GLuint &texID, bool &hasTex, bool &needsRebuild,
                             int dataDim[2], int glDim[2],
+                            GLuint &lutID, bool &hasLUT,
+                            unsigned char *&uploadBuf, int &uploadBufSize,
                             double **slopeGrid = NULL,
                             GLuint slopeTexID = 0);
 
@@ -197,14 +213,6 @@ private:
 	 void ClearParticles();
 	 void RenderParticles(PlugIn_ViewPort *vp);
 
-	 // GL texture cache for current color map (now using shared RenderGridOverlay)
-	 GLuint m_glColorTexture;
-	 bool m_bHasColorTexture;
-	 bool m_bNeedsColorTexRebuild;
-	 int m_texDataDim[2];
-	 int m_texGLDim[2];
-	 void DeleteColorTexture();
-
 	 // Shader bicubic interpolation (optional, auto-fallback to fixed pipeline)
 	 bool m_useShader;
 	 int  m_currentInterpMode;
@@ -214,8 +222,6 @@ private:
 	 float m_currentDataMin;
 	 float m_currentDataMax;
 	 int m_currentSlopeMode;
-	 GLuint m_glColorLUT;
-	 bool m_bHasColorLUT;
 	 GLuint m_glVortTexture;  // normalized vorticity texture for shader slope
 	 bool m_bHasVortTexture;
 	 GLuint m_glSlopeSource;  // texture ID bound to slopeTex uniform
@@ -223,35 +229,21 @@ private:
 	 // Color legend
 	 ncdfLegend m_legend;
 
-	 // Sea temperature texture cache
-	 GLuint m_glSeaTempTexture;
-	 bool m_bHasSeaTempTexture;
-	 bool m_bNeedsSeaTempTexRebuild;
-	 int m_sstTexDataDim[2];
-	 int m_sstTexGLDim[2];
+	 // Animation textures (independent from static textures)
+	 GLuint m_glAnimColorTexture;
+	 bool m_bHasAnimColorTexture;
+	 int m_animTexDataDim[2];
+	 int m_animTexGLDim[2];
 
-	 // Salinity texture cache
-	 GLuint m_glSalinityTexture;
-	 bool m_bHasSalinityTexture;
-	 bool m_bNeedsSalinityTexRebuild;
-	 int m_salTexDataDim[2];
-	 int m_salTexGLDim[2];
+	 GLuint m_glAnimSeaTempTexture;
+	 bool m_bHasAnimSeaTempTexture;
+	 int m_animSstTexDataDim[2];
+	 int m_animSstTexGLDim[2];
 
-	 // Isoline rendering cache (skip when viewport unchanged)
-	 double m_lastIso_vp_scale;
-	 double m_lastIso_vp_latMax;
-	 double m_lastIso_vp_latMin;
-	 double m_lastIso_vp_lonMin;
-	 double m_lastIso_vp_lonMax;
-
-	 // Cached processed grids (rebuilt only on data/settings change)
-	 double** m_cachedCurrentGrid;
-	 double** m_cachedSSTGrid;
-	 double** m_cachedSalinityGrid;
-	 int m_cachedCurrentNj, m_cachedCurrentNi;
-	 int m_cachedSSTNj, m_cachedSSTNi;
-	 int m_cachedSalNj, m_cachedSalNi;
-	 bool m_cachedCurrentOwns, m_cachedSSTOwns, m_cachedSalOwns;
+	 GLuint m_glAnimSalinityTexture;
+	 bool m_bHasAnimSalinityTexture;
+	 int m_animSalTexDataDim[2];
+	 int m_animSalTexGLDim[2];
 
 	 // Cached vorticity grid for current slope shading
 	 double** m_cachedVorticity;
@@ -263,12 +255,6 @@ private:
 	 bool m_bNeedsLICRebuild;
 	 void DeleteLICTexture();
 	 void BuildLICTexture(int ni, int nj);
-
-	 // Isolines (CPU Marching Squares)
-	 bool m_bNeedsIsoRebuild;
-	 std::vector<ncdfIsoSeg> m_isoSegments;
-	 bool m_bNeedsSalIsoRebuild;
-	 std::vector<ncdfIsoSeg> m_salIsoSegments;
 };
 
 

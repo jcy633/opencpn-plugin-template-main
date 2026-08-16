@@ -59,7 +59,6 @@ ncdfOverlayFactory::ncdfOverlayFactory()
 	  m_bReadyToRender = false;
       m_space = 0;
       m_ParticleMap = nullptr;
-      m_glColorTexture = 0;
       m_useShader = false;
       m_currentInterpMode = 0;
       m_currentSmoothColors = false;
@@ -75,23 +74,30 @@ ncdfOverlayFactory::ncdfOverlayFactory()
       m_animateTimer.Bind(wxEVT_TIMER, [this](wxTimerEvent&) {
           GetOCPNCanvasWindow()->Refresh(false);
       });
-      m_cachedCurrentGrid = NULL;
-      m_cachedSSTGrid = NULL;
-      m_cachedSalinityGrid = NULL;
-      m_cachedCurrentNj = m_cachedCurrentNi = 0;
-      m_cachedSSTNj = m_cachedSSTNi = 0;
-      m_cachedSalNj = m_cachedSalNi = 0;
-      m_bNeedsIsoRebuild = true;
-      m_bNeedsSalIsoRebuild = true;
       m_cachedVorticity = NULL;
       m_cachedVortNj = m_cachedVortNi = 0;
       m_glLICTexture = 0;
       m_bHasLICTexture = false;
       m_bNeedsLICRebuild = true;
-      m_glColorLUT = 0;
-      m_bHasColorLUT = false;
       m_glVortTexture = 0;
       m_bHasVortTexture = false;
+
+      // Animation textures (independent from static)
+      m_glAnimColorTexture = 0;
+      m_bHasAnimColorTexture = false;
+      m_animTexDataDim[0] = m_animTexDataDim[1] = 0;
+      m_animTexGLDim[0] = m_animTexGLDim[1] = 0;
+      m_glAnimSeaTempTexture = 0;
+      m_bHasAnimSeaTempTexture = false;
+      m_animSstTexDataDim[0] = m_animSstTexDataDim[1] = 0;
+      m_animSstTexGLDim[0] = m_animSstTexGLDim[1] = 0;
+      m_glAnimSalinityTexture = 0;
+      m_bHasAnimSalinityTexture = false;
+      m_animSalTexDataDim[0] = m_animSalTexDataDim[1] = 0;
+      m_animSalTexGLDim[0] = m_animSalTexGLDim[1] = 0;
+      m_currentOverlay.Init();
+      m_seaTempOverlay.Init();
+      m_salinityOverlay.Init();
 
       // Pre-compute arrow shape (GRIB LineBuffer pattern)
       // Shaft: from -10 to +10
@@ -100,28 +106,6 @@ ncdfOverlayFactory::ncdfOverlayFactory()
       m_ArrowBuffer.pushLine(-10, 0, -3, 5);
       m_ArrowBuffer.pushLine(-10, 0, -3, -5);
       m_ArrowBuffer.Finalize();
-      m_bHasColorTexture = false;
-      m_bNeedsColorTexRebuild = false;
-      m_texDataDim[0] = m_texDataDim[1] = 0;
-      m_texGLDim[0] = m_texGLDim[1] = 0;
-      // ...existing code...
-      m_glSeaTempTexture = 0;
-      m_bHasSeaTempTexture = false;
-      m_bNeedsSeaTempTexRebuild = false;
-      m_lastIso_vp_scale = -1;
-      m_lastIso_vp_latMax = -99999;
-      m_lastIso_vp_latMin = -99999;
-      m_lastIso_vp_lonMin = -99999;
-      m_lastIso_vp_lonMax = -99999;
-      m_bNeedsIsoRebuild = true;
-      m_bNeedsSalIsoRebuild = true;
-      m_sstTexDataDim[0] = m_sstTexDataDim[1] = 0;
-      m_sstTexGLDim[0] = m_sstTexGLDim[1] = 0;
-      m_glSalinityTexture = 0;
-      m_bHasSalinityTexture = false;
-      m_bNeedsSalinityTexRebuild = false;
-      m_salTexDataDim[0] = m_salTexDataDim[1] = 0;
-      m_salTexGLDim[0] = m_salTexGLDim[1] = 0;
 
       // Timer for particle animation (GRIB-style ONE_SHOT)
       m_tParticleTimer.Bind(wxEVT_TIMER, [this](wxTimerEvent&) {
@@ -137,25 +121,20 @@ ncdfOverlayFactory::~ncdfOverlayFactory()
     m_bReadyToRender = false;
 	renderSelectionRectangle = false;
     if (m_tParticleTimer.IsRunning()) m_tParticleTimer.Stop();
-    DeleteColorTexture();
-    DeleteSeaTempTexture();
-    DeleteSalinityTexture();
+    m_currentOverlay.Cleanup();
+    m_seaTempOverlay.Cleanup();
+    m_salinityOverlay.Cleanup();
     ClearParticles();
-    if (m_cachedCurrentOwns) FreeSharpenedGrid(m_cachedCurrentGrid, m_cachedCurrentNj);
-    if (m_cachedSSTOwns) FreeSharpenedGrid(m_cachedSSTGrid, m_cachedSSTNj);
-    if (m_cachedSalOwns) FreeSharpenedGrid(m_cachedSalinityGrid, m_cachedSalNj);
-    m_cachedCurrentGrid = m_cachedSSTGrid = m_cachedSalinityGrid = NULL;
     DeleteLICTexture();
     DeleteDispTexture();
     if (m_animateTimer.IsRunning()) m_animateTimer.Stop();
+    // Clean up animation textures
+    if (m_bHasAnimColorTexture && m_glAnimColorTexture) { glDeleteTextures(1, &m_glAnimColorTexture); }
+    if (m_bHasAnimSeaTempTexture && m_glAnimSeaTempTexture) { glDeleteTextures(1, &m_glAnimSeaTempTexture); }
+    if (m_bHasAnimSalinityTexture && m_glAnimSalinityTexture) { glDeleteTextures(1, &m_glAnimSalinityTexture); }
     if (m_bHasVortTexture && m_glVortTexture) { glDeleteTextures(1, &m_glVortTexture); m_glVortTexture = 0; m_bHasVortTexture = false; }
     FreeSharpenedGrid(m_cachedVorticity, m_cachedVortNj);
     m_cachedVorticity = NULL;
-    if (m_bHasColorLUT && m_glColorLUT) {
-        glDeleteTextures(1, &m_glColorLUT);
-        m_glColorLUT = 0;
-        m_bHasColorLUT = false;
-    }
     ncdf_shader_cleanup();
     DeleteDispTexture();
 }
@@ -171,27 +150,18 @@ void ncdfOverlayFactory::DeleteDispTexture()
 
 void ncdfOverlayFactory::SetBicubicMode(bool enable)
 {
-    // m_useShader is synced from plugin->m_bUseBicubic each frame in DoRenderncdfOverlay
     // Force texture rebuild to switch between GL_NEAREST and GL_LINEAR
-    m_bNeedsColorTexRebuild = true;
-    m_bNeedsSeaTempTexRebuild = true;
-    m_bNeedsSalinityTexRebuild = true;
-    if (m_bHasColorLUT && m_glColorLUT) {
-        glDeleteTextures(1, &m_glColorLUT);
-        m_glColorLUT = 0;
-        m_bHasColorLUT = false;
-    }
+    m_currentOverlay.Invalidate();
+    m_seaTempOverlay.Invalidate();
+    m_salinityOverlay.Invalidate();
 }
 
 void ncdfOverlayFactory::setData(MainDialog *gui, ncdf_pi *plugin, const ncdfDataMessage& g2data, int numberOfPoints, wxDouble tlat, wxDouble tlon, wxDouble blat, wxDouble blon)
 {
 	// Mark textures for rebuild (GL deletion deferred to render)
-	m_bNeedsColorTexRebuild = true;
-	m_bNeedsSeaTempTexRebuild = true;
-	m_bNeedsSalinityTexRebuild = true;
-	m_lastIso_vp_scale = -1;  // Force isoline redraw on data change
-	m_bNeedsIsoRebuild = true;  // Rebuild cached isolines
-	m_bNeedsSalIsoRebuild = true;  // Rebuild salinity isolines
+	m_currentOverlay.Invalidate();
+	m_seaTempOverlay.Invalidate();
+	m_salinityOverlay.Invalidate();
 	ClearParticles();
 	m_last_vp_scale = -1;
 	m_last_vp_latMax = -99999.0;
@@ -290,24 +260,10 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
                      (int)s_shaderCompiled, (int)s_shaderOk, (int)m_useShader);
     }
 
-    // Animation: compute advected grid if animation is active
-    bool anyAnimate = plugin->m_settingsCurrent.animate ||
-                      plugin->m_settingsSeaTemp.animate ||
-                      plugin->m_settingsSalinity.animate;
+    // Animation: DISABLED for now — needs per-type advection to avoid
+    // cross-contaminating SST/salinity with current data.
+    // TODO: re-enable with per-type animGrid (one per data type)
     double** animGrid = NULL;
-    if (anyAnimate && gui->gridu && gui->gridv) {
-        if (!m_animate.IsInitialized()) m_animate.Init(plugin, gui);
-        if (m_animate.IsInitialized()) {
-            if (!m_animate.HasDisplacement()) m_animate.ComputeDisplacementMap();
-            if (m_animate.HasDisplacement()) {
-                animGrid = m_animate.GetAdvectedGrid();
-                // Drive continuous animation at ~20fps
-                if (!m_animateTimer.IsRunning()) m_animateTimer.Start(50, wxTIMER_ONE_SHOT);
-            }
-        }
-    } else {
-        if (m_animateTimer.IsRunning()) m_animateTimer.Stop();
-    }
 
     // ... normal rendering uses animGrid when available ...
 
@@ -344,217 +300,34 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 		s_renderDbg++;
 	}
 
-	// Color map: GRIB-style tiled texture with caching
+	// Current color map overlay (delegated to per-type overlay)
 	if(plugin->m_bShowCurrentForce && gui->gridu && gui->gridv && !m_pdc) {
 #ifdef ocpnUSE_GL
-	  wxLogMessage(_T("[render] color map: gridu=%p gridv=%p ni=%d nj=%d"), (void*)gui->gridu, (void*)gui->gridv, gui->myMessage.lonLength, gui->myMessage.latLength);
-      // Reset GL state to avoid inheriting GRIB's texture bindings
-      glDisable(GL_TEXTURE_2D);
-      glBindTexture(GL_TEXTURE_2D, 0);
-
-      // Current color map: use pre-computed gridMag from MainDialog
-      if (gui && gui->gridMag) {
-          int ni = gui->myMessage.lonLength;
-          int nj = gui->myMessage.latLength;
-          if (ni > 1 && nj > 1) {
-              m_useShader = s_shaderOk && (plugin->m_settingsCurrent.interpMode >= 1);
-              m_currentInterpMode = plugin->m_settingsCurrent.interpMode;
-              m_currentSmoothColors = plugin->m_settingsCurrent.smoothColors;
-              m_currentSCurve = plugin->m_settingsCurrent.sCurve;
-              m_currentSlopeShading = plugin->m_settingsCurrent.slopeShading;
-              m_currentSlopeMode = 0;  // continuous gradient for current
-              if (m_currentSlopeShading && gui->gridMag) {
-                  double dMin = 1e30, dMax = -1e30;
-                  for (int jj = 0; jj < nj; jj++)
-                      for (int ii = 0; ii < ni; ii++) {
-                          double v = gui->gridMag[jj][ii];
-                          if (v != ncdf_NOTDEF && v == v && isfinite(v)) {
-                              if (v < dMin) dMin = v;
-                              if (v > dMax) dMax = v;
-                          }
-                      }
-                  m_currentDataMin = (float)dMin;
-                  m_currentDataMax = (float)dMax;
-              }
-              // Use animation grid if available, otherwise use processed cached grid
-              double** renderGrid = m_cachedCurrentGrid;
-              if (plugin->m_settingsCurrent.animate && animGrid) {
-                  renderGrid = animGrid;
-                  // Force texture rebuild every frame for animation
-                  m_bNeedsColorTexRebuild = true;
-              } else {
-                  // Rebuild processed grid only when texture needs rebuild
-                  if (m_bNeedsColorTexRebuild || !m_cachedCurrentGrid) {
-                      if (m_cachedCurrentOwns) FreeSharpenedGrid(m_cachedCurrentGrid, m_cachedCurrentNj);
-                      m_cachedCurrentGrid = NULL; m_cachedCurrentOwns = false;
-                      double** src = gui->gridMag;
-                      if (plugin->m_settingsCurrent.anisoDiffusion) {
-                          double** ad = BuildAnisoDiffusedGrid(src, nj, ni);
-                          if (ad) { src = ad; m_cachedCurrentGrid = ad; m_cachedCurrentOwns = true; }
-                      }
-                      if (plugin->m_settingsCurrent.sharpen) {
-                          double** sh = BuildSharpenedGrid(src, nj, ni);
-                          if (sh) {
-                              if (m_cachedCurrentOwns) FreeSharpenedGrid(m_cachedCurrentGrid, nj);
-                              m_cachedCurrentGrid = sh; m_cachedCurrentOwns = true;
-                              src = sh;
-                          }
-                      }
-                      if (!m_cachedCurrentGrid) { m_cachedCurrentGrid = gui->gridMag; m_cachedCurrentOwns = false; }
-                      m_cachedCurrentNj = nj; m_cachedCurrentNi = ni;
-                  }
-                  renderGrid = m_cachedCurrentGrid;
-              }
-              // Compute vorticity for slope shading (cached)
-              double** slopeGrid = NULL;
-              m_glSlopeSource = m_glColorTexture;  // default: use data texture
-              if (plugin->m_settingsCurrent.slopeShading && gui->gridu && gui->gridv) {
-                  if (m_bNeedsColorTexRebuild || !m_cachedVorticity) {
-                      FreeSharpenedGrid(m_cachedVorticity, m_cachedVortNj);
-                      m_cachedVorticity = BuildVorticityGrid(gui->gridu, gui->gridv, nj, ni);
-                      m_cachedVortNj = nj; m_cachedVortNi = ni;
-                  }
-                  slopeGrid = m_cachedVorticity;
-                  // Build normalized vorticity texture for shader path
-                  if (m_useShader && m_cachedVorticity && (m_bNeedsColorTexRebuild || !m_bHasVortTexture)) {
-                      if (m_bHasVortTexture) { glDeleteTextures(1, &m_glVortTexture); m_bHasVortTexture = false; }
-                      double vMin = 1e30, vMax = -1e30;
-                      for (int jj = 0; jj < nj; jj++)
-                          for (int ii = 0; ii < ni; ii++) {
-                              double v = m_cachedVorticity[jj][ii];
-                              if (v != ncdf_NOTDEF && v == v && isfinite(v)) {
-                                  if (v < vMin) vMin = v; if (v > vMax) vMax = v;
-                              }
-                          }
-                      double vRange = vMax - vMin; if (vRange < 1e-10) vRange = 1.0;
-                      // Build texture with same border handling as data texture
-                      double lonMin = tlon, lonMax = blon;
-                      double gridSpacingLon = (lonMax - lonMin) / (ni - 1);
-                      bool vRepeat = (lonMax - lonMin + gridSpacingLon >= 360);
-                      int bH = vRepeat ? 0 : 1, eC = vRepeat ? 1 : 0;
-                      int vtw = ni + 2 * bH + eC, vth = nj + 2;
-                      unsigned char* vData = new(std::nothrow) unsigned char[vtw * vth * 4];
-                      if (vData) {
-                          memset(vData, 0, vtw * vth * 4);
-                          for (int jj = 0; jj < nj; jj++) {
-                              int texRow = (gui->myMessage.jDirectionIncr >= 0) ? jj : (nj - 1 - jj);
-                              for (int ii = 0; ii < ni; ii++) {
-                                  double val = m_cachedVorticity[jj][ii];
-                                  int x = ii + bH, y = texRow + 1;
-                                  if (x >= vtw - 1 || y >= vth - 1) continue;
-                                  int off = 4 * (y * vtw + x);
-                                  if (val == ncdf_NOTDEF || val != val || !isfinite(val)) {
-                                      vData[off] = 0; vData[off+3] = 0;
-                                  } else {
-                                      double nv = (val - vMin) / vRange;
-                                      vData[off] = (unsigned char)(fmin(fmax(nv, 0.0), 1.0) * 255.0);
-                                      vData[off+1] = 0; vData[off+2] = 0; vData[off+3] = 255;
-                                  }
-                              }
-                          }
-                          // Border handling
-                          memcpy(vData, vData + 4 * vtw, 4 * vtw);
-                          memcpy(vData + 4 * vtw * (vth-1), vData + 4 * vtw * (vth-2), 4 * vtw);
-                          for (int x = 0; x < vtw; x++) { vData[4*x+3] = 0; vData[4*((vth-1)*vtw+x)+3] = 0; }
-                          if (!vRepeat) {
-                              for (int y = 0; y < vth; y++) {
-                                  memcpy(vData+4*y*vtw, vData+4*(y*vtw+1), 4);
-                                  memcpy(vData+4*(y*vtw+vtw-1), vData+4*(y*vtw+vtw-2), 4);
-                              }
-                              for (int y = 0; y < vth; y++) { vData[4*y*vtw+3] = 0; vData[4*(y*vtw+vtw-1)+3] = 0; }
-                          }
-                          glGenTextures(1, &m_glVortTexture);
-                          glBindTexture(GL_TEXTURE_2D, m_glVortTexture);
-                          glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, vRepeat ? GL_REPEAT : GL_CLAMP_TO_EDGE);
-                          glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-                          glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-                          glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-                          glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, vtw, vth, 0, GL_RGBA, GL_UNSIGNED_BYTE, vData);
-                          m_bHasVortTexture = true;
-                          delete[] vData;
-                      }
-                  }
-                  if (m_useShader && m_bHasVortTexture) m_glSlopeSource = m_glVortTexture;
-              }
-              RenderGridOverlay(vp, renderGrid,
-                                &ncdfOverlayFactory::GetSeaCurrentGraphicColor,
-                                m_glColorTexture, m_bHasColorTexture, m_bNeedsColorTexRebuild,
-                                m_texDataDim, m_texGLDim,
-                                slopeGrid,
-                                m_bHasVortTexture ? m_glVortTexture : 0);
-              // LIC overlay: draw grayscale brightness texture with GL_MODULATE
-              if (plugin->m_settingsCurrent.licFlow) {
-                  if (m_bNeedsLICRebuild || !m_bHasLICTexture) {
-                      BuildLICTexture(ni, nj);
-                  }
-                  if (m_bHasLICTexture && m_glColorTexture) {
-                      double lat_min = blat, lon_min = tlon;
-                      double lat_max = tlat, lon_max = blon;
-                      double latstep = fabs(lat_max - lat_min) / (nj - 1);
-                      double lonstep = (lon_max - lon_min) / (ni - 1);
-                      if (latstep > 1e-10 && lonstep > 1e-10) {
-                          double pw = vp->view_scale_ppm * 1e6 / pow(2, fabs(vp->clat) / 25);
-                          if (pw < 20) pw = 20;
-                          int xs = (int)ceil(vp->pix_width / pw);
-                          int ys = (int)ceil(vp->pix_height / pw);
-                          if (vp->rotation == 0) xs = 1;
-                          if (xs < 2) xs = 2; if (ys < 2) ys = 2;
-                          if (xs > 16) xs = 16; if (ys > 16) ys = 16;
-                          int gridW = xs + 1, gridH = ys + 1;
-                          double *lva = new(std::nothrow) double[gridW * gridH * 2];
-                          if (lva) {
-                              double clon = (lon_min + lon_max) / 2;
-                              for (int ii = 0; ii < gridW; ii++) {
-                                  double px = vp->pix_width / (double)xs * ii;
-                                  for (int jj = 0; jj < gridH; jj++) {
-                                      double py = vp->pix_height / (double)ys * jj;
-                                      double lat, lon;
-                                      wxPoint pt((int)px, (int)py);
-                                      GetCanvasLLPix(vp, pt, &lat, &lon);
-                                      if (clon - lon > 180) lon += 360;
-                                      else if (lon - clon > 180) lon -= 360;
-                                      int idx = (ii * gridH + jj) * 2;
-                                      lva[idx]     = ((lon - lon_min) / lonstep + 0.5) / ni;
-                                      lva[idx + 1] = ((lat - lat_min) / latstep + 0.5) / nj;
-                                  }
-                              }
-                              glEnable(GL_TEXTURE_2D);
-                              glBindTexture(GL_TEXTURE_2D, m_glLICTexture);
-                              glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
-                              glColor4f(1, 1, 1, 1);
-                              double xS = vp->pix_width / (double)xs;
-                              double yS = vp->pix_height / (double)ys;
-                              for (int ii = 0; ii < xs; ii++) {
-                                  for (int jj = 0; jj < ys; jj++) {
-                                      int i00 = (ii * gridH + jj) * 2;
-                                      int i10 = ((ii+1) * gridH + jj) * 2;
-                                      int i11 = ((ii+1) * gridH + jj+1) * 2;
-                                      int i01 = (ii * gridH + jj+1) * 2;
-                                      double u0=lva[i00], u1=lva[i10], u2=lva[i11], u3=lva[i01];
-                                      double v0=lva[i00+1], v1=lva[i10+1], v2=lva[i11+1], v3=lva[i01+1];
-                                      if (!((u0>=0||u1>=0)&&(u0<=1||u1<=1)&&(v0>=0||v1>=0)&&(v0<=1||v1<=1))) continue;
-                                      if (u1 <= u0) continue;
-                                      double x = xS * ii, y = yS * jj;
-                                      glBegin(GL_QUADS);
-                                      glTexCoord2d(u0,v0); glVertex2f((float)x,(float)y);
-                                      glTexCoord2d(u1,v1); glVertex2f((float)(x+xS),(float)y);
-                                      glTexCoord2d(u2,v2); glVertex2f((float)(x+xS),(float)(y+yS));
-                                      glTexCoord2d(u3,v3); glVertex2f((float)x,(float)(y+yS));
-                                      glEnd();
-                                  }
-                              }
-                              delete[] lva;
-                              glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
-                              glDisable(GL_TEXTURE_2D);
-                              glBindTexture(GL_TEXTURE_2D, 0);
-                          }
-                      }
-                  }
-              }
-          }
-      }
+	      glDisable(GL_TEXTURE_2D);
+	      glBindTexture(GL_TEXTURE_2D, 0);
+	      m_useShader = s_shaderOk && (plugin->m_settingsCurrent.interpMode >= 1);
+	      m_currentInterpMode = plugin->m_settingsCurrent.interpMode;
+	      m_currentSmoothColors = plugin->m_settingsCurrent.smoothColors;
+	      m_currentSCurve = plugin->m_settingsCurrent.sCurve;
+	      m_currentSlopeShading = plugin->m_settingsCurrent.slopeShading;
+	      m_currentSlopeMode = 0;
+	      if (m_currentSlopeShading && gui->gridMag) {
+	          int c_ni = gui->myMessage.lonLength, c_nj = gui->myMessage.latLength;
+	          double dMin = 1e30, dMax = -1e30;
+	          for (int jj = 0; jj < c_nj; jj++)
+	              for (int ii = 0; ii < c_ni; ii++) {
+	                  double v = gui->gridMag[jj][ii];
+	                  if (v != ncdf_NOTDEF && v == v && isfinite(v)) {
+	                      if (v < dMin) dMin = v; if (v > dMax) dMax = v;
+	                  }
+	              }
+	          m_currentDataMin = (float)dMin;
+	          m_currentDataMax = (float)dMax;
+	      }
+	      m_currentOverlay.RenderColorMap(vp, gui, plugin, this, m_useShader, m_currentInterpMode);
 #endif
 	}
+
 
 	// Arrows
 	if(plugin->m_bShowCurrentDir) {
@@ -568,14 +341,15 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
       ClearParticles();
 	}
 
-	// Sea temperature overlay
-	if (plugin->m_bShowSeaTemp && gui && gui->gridSST && gui->hasSeaTemp) {
+	// Sea temperature color map overlay
+	if (plugin->m_bShowSeaTemp && gui && gui->gridSST && gui->hasSeaTemp && !m_pdc) {
+#ifdef ocpnUSE_GL
 		m_useShader = s_shaderOk && (plugin->m_settingsSeaTemp.interpMode >= 1);
 		m_currentInterpMode = plugin->m_settingsSeaTemp.interpMode;
 		m_currentSmoothColors = plugin->m_settingsSeaTemp.smoothColors;
 		m_currentSCurve = plugin->m_settingsSeaTemp.sCurve;
 		m_currentSlopeShading = plugin->m_settingsSeaTemp.slopeShading;
-		m_currentSlopeMode = 1;  // SST temperature segments
+		m_currentSlopeMode = 1;
 		if (m_currentSlopeShading && gui->gridSST) {
 			int sni = gui->myMessage.lonLength, snj = gui->myMessage.latLength;
 			double dMin = 1e30, dMax = -1e30;
@@ -583,55 +357,30 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 				for (int ii = 0; ii < sni; ii++) {
 					double v = gui->gridSST[jj][ii];
 					if (v != ncdf_NOTDEF && v == v && isfinite(v)) {
-						if (v < dMin) dMin = v;
-						if (v > dMax) dMax = v;
+						if (v < dMin) dMin = v; if (v > dMax) dMax = v;
 					}
 				}
 			m_currentDataMin = (float)dMin;
 			m_currentDataMax = (float)dMax;
 		}
-		int ni = gui->myMessage.lonLength;
-		int nj = gui->myMessage.latLength;
-		if (m_bNeedsSeaTempTexRebuild || !m_cachedSSTGrid) {
-			if (m_cachedSSTOwns) FreeSharpenedGrid(m_cachedSSTGrid, m_cachedSSTNj);
-			m_cachedSSTGrid = NULL; m_cachedSSTOwns = false;
-			double** src = gui->gridSST;
-			if (plugin->m_settingsSeaTemp.anisoDiffusion) {
-				double** ad = BuildAnisoDiffusedGrid(src, nj, ni);
-				if (ad) { src = ad; m_cachedSSTGrid = ad; m_cachedSSTOwns = true; }
-			}
-			if (plugin->m_settingsSeaTemp.sharpen) {
-				double** sh = BuildSharpenedGrid(src, nj, ni);
-				if (sh) {
-					if (m_cachedSSTOwns) FreeSharpenedGrid(m_cachedSSTGrid, nj);
-					m_cachedSSTGrid = sh; m_cachedSSTOwns = true;
-					src = sh;
-				}
-			}
-			if (!m_cachedSSTGrid) { m_cachedSSTGrid = gui->gridSST; m_cachedSSTOwns = false; }
-			m_cachedSSTNj = nj; m_cachedSSTNi = ni;
-		}
-		double** sstRenderGrid = (plugin->m_settingsSeaTemp.animate && animGrid) ? animGrid : m_cachedSSTGrid;
-		if (plugin->m_settingsSeaTemp.animate && animGrid) m_bNeedsSeaTempTexRebuild = true;
-		RenderGridOverlay(vp, sstRenderGrid,
-						  &ncdfOverlayFactory::GetSeaTempGraphicColor,
-						  m_glSeaTempTexture, m_bHasSeaTempTexture, m_bNeedsSeaTempTexRebuild,
-						  m_sstTexDataDim, m_sstTexGLDim);
+		m_seaTempOverlay.RenderColorMap(vp, gui, plugin, this, m_useShader, m_currentInterpMode);
+#endif
 	}
 
-	// Sea temperature isolines (CPU Marching Squares + VBO rendering)
+	// Sea temperature isolines
 	if (plugin->m_bShowSeaTempIso && gui && gui->gridSST && gui->hasSeaTemp) {
-		RenderSeaTempIsoLines(vp);
+		m_seaTempOverlay.RenderIsoLines(vp, gui);
 	}
 
-	// Salinity overlay
-	if (plugin->m_bShowSalinity && gui && gui->gridSalinity && gui->hasSalinity) {
+	// Salinity color map overlay
+	if (plugin->m_bShowSalinity && gui && gui->gridSalinity && gui->hasSalinity && !m_pdc) {
+#ifdef ocpnUSE_GL
 		m_useShader = s_shaderOk && (plugin->m_settingsSalinity.interpMode >= 1);
 		m_currentInterpMode = plugin->m_settingsSalinity.interpMode;
 		m_currentSmoothColors = plugin->m_settingsSalinity.smoothColors;
 		m_currentSCurve = plugin->m_settingsSalinity.sCurve;
 		m_currentSlopeShading = plugin->m_settingsSalinity.slopeShading;
-		m_currentSlopeMode = 0;  // continuous Sobel for salinity
+		m_currentSlopeMode = 0;
 		if (m_currentSlopeShading && gui->gridSalinity) {
 			int sni = gui->myMessage.lonLength, snj = gui->myMessage.latLength;
 			double dMin = 1e30, dMax = -1e30;
@@ -639,45 +388,19 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 				for (int ii = 0; ii < sni; ii++) {
 					double v = gui->gridSalinity[jj][ii];
 					if (v != ncdf_NOTDEF && v == v && isfinite(v)) {
-						if (v < dMin) dMin = v;
-						if (v > dMax) dMax = v;
+						if (v < dMin) dMin = v; if (v > dMax) dMax = v;
 					}
 				}
 			m_currentDataMin = (float)dMin;
 			m_currentDataMax = (float)dMax;
 		}
-		int ni = gui->myMessage.lonLength;
-		int nj = gui->myMessage.latLength;
-		if (m_bNeedsSalinityTexRebuild || !m_cachedSalinityGrid) {
-			if (m_cachedSalOwns) FreeSharpenedGrid(m_cachedSalinityGrid, m_cachedSalNj);
-			m_cachedSalinityGrid = NULL; m_cachedSalOwns = false;
-			double** src = gui->gridSalinity;
-			if (plugin->m_settingsSalinity.anisoDiffusion) {
-				double** ad = BuildAnisoDiffusedGrid(src, nj, ni);
-				if (ad) { src = ad; m_cachedSalinityGrid = ad; m_cachedSalOwns = true; }
-			}
-			if (plugin->m_settingsSalinity.sharpen) {
-				double** sh = BuildSharpenedGrid(src, nj, ni);
-				if (sh) {
-					if (m_cachedSalOwns) FreeSharpenedGrid(m_cachedSalinityGrid, nj);
-					m_cachedSalinityGrid = sh; m_cachedSalOwns = true;
-					src = sh;
-				}
-			}
-			if (!m_cachedSalinityGrid) { m_cachedSalinityGrid = gui->gridSalinity; m_cachedSalOwns = false; }
-			m_cachedSalNj = nj; m_cachedSalNi = ni;
-		}
-		double** salRenderGrid = (plugin->m_settingsSalinity.animate && animGrid) ? animGrid : m_cachedSalinityGrid;
-		if (plugin->m_settingsSalinity.animate && animGrid) m_bNeedsSalinityTexRebuild = true;
-		RenderGridOverlay(vp, salRenderGrid,
-						  &ncdfOverlayFactory::GetSalinityGraphicColor,
-						  m_glSalinityTexture, m_bHasSalinityTexture, m_bNeedsSalinityTexRebuild,
-						  m_salTexDataDim, m_salTexGLDim);
+		m_salinityOverlay.RenderColorMap(vp, gui, plugin, this, m_useShader, m_currentInterpMode);
+#endif
 	}
 
-	// Salinity isolines (CPU Marching Squares + VBO rendering)
+	// Salinity isolines
 	if (plugin->m_settingsSalinity.showIsoLines && plugin->m_bShowSalinity && gui && gui->gridSalinity && gui->hasSalinity) {
-		RenderSalinityIsoLines(vp);
+		m_salinityOverlay.RenderIsoLines(vp, gui);
 	}
 
 	// Color legend
@@ -1850,7 +1573,7 @@ wxColour ncdfOverlayFactory::GetSeaCurrentGraphicColor(double val_in)
         {0.50,   0, 200,  80}, {0.75, 220, 220,  20}, {1.00, 240, 100,  20},
         {1.50, 220,  20,  20},
     };
-    return InterpolateStops(stops, 7, wxMax(val_in, 0.0), m_currentSmoothColors);
+    return InterpolateStops(stops, 7, wxMax(val_in, 0.0), false);
 }
 
 

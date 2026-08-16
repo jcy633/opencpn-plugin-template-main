@@ -2068,6 +2068,12 @@ void MainDialog::onDCurrentClick( wxCommandEvent& event )
 void MainDialog::onBmpCurrentForceClick(wxCommandEvent& event)
 {
 	pPlugIn->m_bShowCurrentForce = m_checkBoxBmpCurrentForce->GetValue();
+	if (pPlugIn->m_bShowCurrentForce) {
+		m_checkBoxSeaTemp->SetValue(false);
+		pPlugIn->m_bShowSeaTemp = false;
+		m_checkBoxSalinity->SetValue(false);
+		pPlugIn->m_bShowSalinity = false;
+	}
 	RequestRefresh(m_parent);
 }
 
@@ -2080,6 +2086,12 @@ void MainDialog::onParticlesClick(wxCommandEvent& event)
 void MainDialog::onSeaTempClick(wxCommandEvent& event)
 {
 	pPlugIn->m_bShowSeaTemp = m_checkBoxSeaTemp->GetValue();
+	if (pPlugIn->m_bShowSeaTemp) {
+		m_checkBoxBmpCurrentForce->SetValue(false);
+		pPlugIn->m_bShowCurrentForce = false;
+		m_checkBoxSalinity->SetValue(false);
+		pPlugIn->m_bShowSalinity = false;
+	}
 	RequestRefresh(m_parent);
 }
 
@@ -2102,6 +2114,12 @@ void MainDialog::onIsoSalClick(wxCommandEvent& event)
 void MainDialog::onSalinityClick(wxCommandEvent& event)
 {
 	pPlugIn->m_bShowSalinity = m_checkBoxSalinity->GetValue();
+	if (pPlugIn->m_bShowSalinity) {
+		m_checkBoxBmpCurrentForce->SetValue(false);
+		pPlugIn->m_bShowCurrentForce = false;
+		m_checkBoxSeaTemp->SetValue(false);
+		pPlugIn->m_bShowSeaTemp = false;
+	}
 	RequestRefresh(m_parent);
 }
 
