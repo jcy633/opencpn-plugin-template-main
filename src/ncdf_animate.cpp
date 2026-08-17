@@ -70,7 +70,7 @@ void ncdfAnimate::Cleanup() {
 // Compute displacement map (CPU, one-time)
 //===================================================================
 bool ncdfAnimate::ComputeDisplacementMap() {
-    if (!m_gui || !m_gui->gridu || !m_gui->gridv) return false;
+    if (!m_gui || !m_gui->myMessage.hasCurrent()) return false;
     int ni = m_gui->myMessage.lonLength;
     int nj = m_gui->myMessage.latLength;
     if (ni < 3 || nj < 3) return false;
@@ -82,22 +82,22 @@ bool ncdfAnimate::ComputeDisplacementMap() {
     if (!AllocateGrid(m_dispX, nj, ni)) return false;
     if (!AllocateGrid(m_dispY, nj, ni)) { FreeGrid(m_dispX, nj); return false; }
 
-    double** gu = m_gui->gridu;
-    double** gv = m_gui->gridv;
-
     // Find max velocity
     double vMax = 0;
     for (int j = 0; j < nj; j++)
-        for (int i = 0; i < ni; i++)
-            if (gu[j] && gv[j] && gu[j][i] != ncdf_NOTDEF && gv[j][i] != ncdf_NOTDEF)
-                vMax = fmax(vMax, sqrt(gu[j][i]*gu[j][i] + gv[j][i]*gv[j][i]));
+        for (int i = 0; i < ni; i++) {
+            double u = m_gui->myMessage.getU(i, j);
+            double v = m_gui->myMessage.getV(i, j);
+            if (u != ncdf_NOTDEF && v != ncdf_NOTDEF)
+                vMax = fmax(vMax, sqrt(u*u + v*v));
+        }
     if (vMax < 1e-10) vMax = 1.0;
 
     for (int j = 1; j < nj - 1; j++) {
         for (int i = 1; i < ni - 1; i++) {
             m_dispX[j][i] = 0; m_dispY[j][i] = 0;
-            if (!gu[j] || !gv[j]) continue;
-            double u = gu[j][i], v = gv[j][i];
+            double u = m_gui->myMessage.getU(i, j);
+            double v = m_gui->myMessage.getV(i, j);
             if (u == ncdf_NOTDEF || v == ncdf_NOTDEF) continue;
             double mag = sqrt(u*u + v*v);
             if (mag < 0.001) continue;
@@ -112,14 +112,14 @@ bool ncdfAnimate::ComputeDisplacementMap() {
             double mx = i + k1x*0.5, my = j + k1y*0.5;
             int mi = (int)mx, mj = (int)my;
             double k2x = k1x, k2y = k1y;
-            if (mi >= 0 && mi < ni-1 && mj >= 0 && mj < nj-1 && gu[mj] && gv[mj]) {
+            if (mi >= 0 && mi < ni-1 && mj >= 0 && mj < nj-1) {
                 int mi1 = (mi+1 < ni) ? mi+1 : mi;
                 int mj1 = (mj+1 < nj) ? mj+1 : mj;
                 double fu = mx - mi, fv = my - mj;
-                double su = (1-fu)*(1-fv)*gu[mj][mi] + fu*(1-fv)*gu[mj][mi1]
-                          + (1-fu)*fv*gu[mj1][mi] + fu*fv*gu[mj1][mi1];
-                double sv = (1-fu)*(1-fv)*gv[mj][mi] + fu*(1-fv)*gv[mj][mi1]
-                          + (1-fu)*fv*gv[mj1][mi] + fu*fv*gv[mj1][mi1];
+                double su = (1-fu)*(1-fv)*m_gui->myMessage.getU(mi, mj) + fu*(1-fv)*m_gui->myMessage.getU(mi1, mj)
+                          + (1-fu)*fv*m_gui->myMessage.getU(mi, mj1) + fu*fv*m_gui->myMessage.getU(mi1, mj1);
+                double sv = (1-fu)*(1-fv)*m_gui->myMessage.getV(mi, mj) + fu*(1-fv)*m_gui->myMessage.getV(mi1, mj)
+                          + (1-fu)*fv*m_gui->myMessage.getV(mi, mj1) + fu*fv*m_gui->myMessage.getV(mi1, mj1);
                 if (su != ncdf_NOTDEF && sv != ncdf_NOTDEF) {
                     double sm = sqrt(su*su + sv*sv);
                     if (sm > 0.001) {
@@ -214,10 +214,54 @@ void ncdfAnimate::ComputeAdvectedGrid() {
 double** ncdfAnimate::GetAdvectedGrid() {
     // Determine source grid from current display
     double** src = NULL;
-    if (m_plugin->m_bShowCurrentForce && m_gui && m_gui->gridMag) src = m_gui->gridMag;
-    else if (m_plugin->m_bShowSeaTemp && m_gui && m_gui->gridSST) src = m_gui->gridSST;
-    else if (m_plugin->m_bShowSalinity && m_gui && m_gui->gridSalinity) src = m_gui->gridSalinity;
-    if (!src) return NULL;
+    // Use ucurr/vcurr for current animation (compute speed on-the-fly)
+    if (m_plugin->m_bShowCurrentForce && m_gui && m_gui->myMessage.hasCurrent()) {
+        int ni = m_gui->myMessage.lonLength;
+        int nj = m_gui->myMessage.latLength;
+        if (!m_advectedGrid || m_advW != ni || m_advH != nj) {
+            FreeGrid(m_advectedGrid, m_advH);
+            if (!AllocateGrid(m_advectedGrid, nj, ni)) return NULL;
+            m_advW = ni; m_advH = nj;
+        }
+        // Compute speed from u/v and use as source
+        for (int j = 0; j < nj; j++)
+            for (int i = 0; i < ni; i++) {
+                double u = m_gui->myMessage.getU(i, j), v = m_gui->myMessage.getV(i, j);
+                if (u == ncdf_NOTDEF || v == ncdf_NOTDEF || u != u || v != v)
+                    m_advectedGrid[j][i] = ncdf_NOTDEF;
+                else
+                    m_advectedGrid[j][i] = sqrt(u * u + v * v);
+            }
+        return m_advectedGrid;
+    }
+    // For SST/Salinity animation, build temporary 2D grid from flat vector
+    else if (m_plugin->m_bShowSeaTemp && m_gui && m_gui->myMessage.hasSSTData()) {
+        int ni = m_gui->myMessage.lonLength;
+        int nj = m_gui->myMessage.latLength;
+        if (!m_advectedGrid || m_advW != ni || m_advH != nj) {
+            FreeGrid(m_advectedGrid, m_advH);
+            if (!AllocateGrid(m_advectedGrid, nj, ni)) return NULL;
+            m_advW = ni; m_advH = nj;
+        }
+        for (int j = 0; j < nj; j++)
+            for (int i = 0; i < ni; i++)
+                m_advectedGrid[j][i] = m_gui->myMessage.getSST(i, j);
+        return m_advectedGrid;
+    }
+    else if (m_plugin->m_bShowSalinity && m_gui && m_gui->myMessage.hasSalData()) {
+        int ni = m_gui->myMessage.lonLength;
+        int nj = m_gui->myMessage.latLength;
+        if (!m_advectedGrid || m_advW != ni || m_advH != nj) {
+            FreeGrid(m_advectedGrid, m_advH);
+            if (!AllocateGrid(m_advectedGrid, nj, ni)) return NULL;
+            m_advW = ni; m_advH = nj;
+        }
+        for (int j = 0; j < nj; j++)
+            for (int i = 0; i < ni; i++)
+                m_advectedGrid[j][i] = m_gui->myMessage.getSal(i, j);
+        return m_advectedGrid;
+    }
+    return NULL;
 
     int ni = m_gui->myMessage.lonLength;
     int nj = m_gui->myMessage.latLength;

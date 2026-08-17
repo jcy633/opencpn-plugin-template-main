@@ -45,24 +45,18 @@ static void FillGrid(double **grid, int ni, int nj)
 ncdfReader::ncdfReader(MainDialog *md)
 {
 	gui = md;
-	ncdfMessage1.data = NULL;
-	ncdfMessage1.bmpMask = NULL;
-	ncdfData1 = NULL;
-
 	isReading = false;
 }
 
 ncdfReader::~ncdfReader()
 {
-	if(ncdfData1)
-		delete ncdfData1;
 }
 
 void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 {
-	bool hasCurrent = (dataMessage.ucurr && dataMessage.vcurr);
-	bool hasSST = (dataMessage.sst != NULL) || dataMessage.hasSeaTemp;
-	bool hasSal = (dataMessage.salinity != NULL) || dataMessage.hasSalinity;
+	bool hasCurrent = dataMessage.hasCurrent();
+	bool hasSST = dataMessage.hasSSTData();
+	bool hasSal = dataMessage.hasSalData();
 
 	if (!hasCurrent && !hasSST && !hasSal) {
 		return;
@@ -72,148 +66,15 @@ void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 		(int)dataMessage.noPointsMeridian, (int)dataMessage.noPointsParallel,
 		dataMessage.numberOfPoints, (int)hasCurrent, (int)hasSST, (int)hasSal);
 
-	// Save OLD grid pointers BEFORE overwriting (atomic swap pattern)
-	double **oldGridu = gui->gridu;
-	double **oldGridv = gui->gridv;
-	double **oldGridMag = gui->gridMag;
-	double **oldGridSST = gui->gridSST;
-	double **oldGridSalinity = gui->gridSalinity;
-	wxUint32 oldMeridian = gui->myMessage.noPointsMeridian;
-	gui->gridu = NULL;
-	gui->gridv = NULL;
-	gui->gridMag = NULL;
-	gui->gridSST = NULL;
-	gui->gridSalinity = NULL;
-
-	// Free old coordinate arrays before assignment
+	// Free old coordinate arrays before deep copy
 	if (gui->myMessage.latValues) { free(gui->myMessage.latValues); gui->myMessage.latValues = NULL; }
 	if (gui->myMessage.lonValues) { free(gui->myMessage.lonValues); gui->myMessage.lonValues = NULL; }
 	if (gui->myMessage.timeValues) { free(gui->myMessage.timeValues); gui->myMessage.timeValues = NULL; }
 
-	gui->myMessage = dataMessage;
+	gui->myMessage = dataMessage;  // deep copy (vectors auto-manage ucurr/vcurr/sst/salinity)
 	ncdfLog("[ncdf] readncdfFile: myMessage copied\n");
 
-	// Build new current grids (old grids already NULL, no cleanup needed)
-	if (hasCurrent) {
-		gui->gridu = new double*[dataMessage.noPointsMeridian];
-		for (wxUint32 i = 0; i < dataMessage.noPointsMeridian; ++i) {
-			gui->gridu[i] = new double[dataMessage.noPointsParallel];
-		}
-		int c = 0;
-		for (wxUint32 i = 0; i < dataMessage.noPointsMeridian; i++) {
-			for (wxUint32 j = 0; j < dataMessage.noPointsParallel; j++) {
-				gui->gridu[i][j] = dataMessage.ucurr[c];
-				c++;
-			}
-		}
-		ncdfLog("[ncdf] readncdfFile: gridu built\n");
-
-		gui->gridv = new double*[dataMessage.noPointsMeridian];
-		for (wxUint32 i = 0; i < dataMessage.noPointsMeridian; ++i) {
-			gui->gridv[i] = new double[dataMessage.noPointsParallel];
-		}
-		c = 0;
-		for (wxUint32 i = 0; i < dataMessage.noPointsMeridian; i++) {
-			for (wxUint32 j = 0; j < dataMessage.noPointsParallel; j++) {
-				gui->gridv[i][j] = dataMessage.vcurr[c];
-				c++;
-			}
-		}
-		ncdfLog("[ncdf] readncdfFile: gridv built\n");
-
-		// GRIB pattern: FillGrid after building grids
-		FillGrid(gui->gridu, dataMessage.noPointsParallel, dataMessage.noPointsMeridian);
-		FillGrid(gui->gridv, dataMessage.noPointsParallel, dataMessage.noPointsMeridian);
-		ncdfLog("[ncdf] readncdfFile: gridu/gridv FillGrid done\n");
-
-		// Build magnitude grid: sqrt(u² + v²)
-		gui->gridMag = new double*[dataMessage.noPointsMeridian];
-		for (wxUint32 i = 0; i < dataMessage.noPointsMeridian; ++i) {
-			gui->gridMag[i] = new double[dataMessage.noPointsParallel];
-			for (wxUint32 j = 0; j < dataMessage.noPointsParallel; ++j) {
-				double u = gui->gridu[i][j], v = gui->gridv[i][j];
-				gui->gridMag[i][j] = (u != ncdf_NOTDEF && v != ncdf_NOTDEF) ? sqrt(u*u + v*v) : ncdf_NOTDEF;
-			}
-		}
-		ncdfLog("[ncdf] readncdfFile: gridMag built\n");
-	}
-
-	// Build new SST grid
-	gui->hasSeaTemp = hasSST;
-	if (hasSST && dataMessage.sst) {
-		gui->gridSST = new double*[dataMessage.noPointsMeridian];
-		for (wxUint32 i = 0; i < dataMessage.noPointsMeridian; ++i) {
-			gui->gridSST[i] = new double[dataMessage.noPointsParallel];
-		}
-		int c_sst = 0;
-		for (wxUint32 i = 0; i < dataMessage.noPointsMeridian; i++) {
-			for (wxUint32 j = 0; j < dataMessage.noPointsParallel; j++) {
-				gui->gridSST[i][j] = dataMessage.sst[c_sst];
-				c_sst++;
-			}
-		}
-		ncdfLog("[ncdf] readncdfFile: gridSST built\n");
-
-		// GRIB pattern: FillGrid after building SST grid
-		FillGrid(gui->gridSST, dataMessage.noPointsParallel, dataMessage.noPointsMeridian);
-		// Diagnostic: count valid vs missing cells
-		int sst_valid = 0, sst_missing = 0;
-		for (wxUint32 i = 0; i < dataMessage.noPointsMeridian; i++)
-			for (wxUint32 j = 0; j < dataMessage.noPointsParallel; j++)
-				if (gui->gridSST[i][j] != ncdf_NOTDEF) sst_valid++; else sst_missing++;
-		ncdfLog("[ncdf] readncdfFile: gridSST FillGrid done, valid=%d missing=%d\n", sst_valid, sst_missing);
-	}
-
-	// Build new salinity grid
-	gui->hasSalinity = hasSal;
-	ncdfLog("[ncdf] readncdfFile: salinity check: salinity=%p hasSalinity=%d hasSal=%d\n",
-		(void*)dataMessage.salinity, (int)dataMessage.hasSalinity, (int)hasSal);
-	if (hasSal && dataMessage.salinity) {
-		gui->gridSalinity = new double*[dataMessage.noPointsMeridian];
-		for (wxUint32 i = 0; i < dataMessage.noPointsMeridian; ++i) {
-			gui->gridSalinity[i] = new double[dataMessage.noPointsParallel];
-		}
-		int c_sal = 0;
-		for (wxUint32 i = 0; i < dataMessage.noPointsMeridian; i++) {
-			for (wxUint32 j = 0; j < dataMessage.noPointsParallel; j++) {
-				gui->gridSalinity[i][j] = dataMessage.salinity[c_sal];
-				c_sal++;
-			}
-		}
-		ncdfLog("[ncdf] readncdfFile: gridSalinity built\n");
-
-		// GRIB pattern: FillGrid after building salinity grid
-		FillGrid(gui->gridSalinity, dataMessage.noPointsParallel, dataMessage.noPointsMeridian);
-		// Diagnostic: count valid vs missing cells
-		int sal_valid = 0, sal_missing = 0;
-		for (wxUint32 i = 0; i < dataMessage.noPointsMeridian; i++)
-			for (wxUint32 j = 0; j < dataMessage.noPointsParallel; j++)
-				if (gui->gridSalinity[i][j] != ncdf_NOTDEF) sal_valid++; else sal_missing++;
-		ncdfLog("[ncdf] readncdfFile: gridSalinity FillGrid done, valid=%d missing=%d\n", sal_valid, sal_missing);
-		ncdfLog("[ncdf] readncdfFile: gridSalinity FillGrid done\n");
-	}
-
-	// Free OLD grids AFTER new ones are built (atomic swap complete)
-	if (oldGridu) {
-		for (wxUint32 i = 0; i < oldMeridian; ++i) delete[] oldGridu[i];
-		delete[] oldGridu;
-	}
-	if (oldGridv) {
-		for (wxUint32 i = 0; i < oldMeridian; ++i) delete[] oldGridv[i];
-		delete[] oldGridv;
-	}
-	if (oldGridMag) {
-		for (wxUint32 i = 0; i < oldMeridian; ++i) delete[] oldGridMag[i];
-		delete[] oldGridMag;
-	}
-	if (oldGridSST) {
-		for (wxUint32 i = 0; i < oldMeridian; ++i) delete[] oldGridSST[i];
-		delete[] oldGridSST;
-	}
-	if (oldGridSalinity) {
-		for (wxUint32 i = 0; i < oldMeridian; ++i) delete[] oldGridSalinity[i];
-		delete[] oldGridSalinity;
-	}
+	// hasSeaTemp/hasSalinity are now in myMessage (set by deep copy)
 
 	wxDateTime ddt;
 	ddt = dataMessage.dataDateTime;

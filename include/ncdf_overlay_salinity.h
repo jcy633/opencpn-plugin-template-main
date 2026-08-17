@@ -38,6 +38,9 @@ struct SalinityOverlay {
     int cachedNj, cachedNi;
     bool cachedOwns;
 
+    // Cached data range (computed during rebuild, not every frame)
+    float cachedDataMin, cachedDataMax;
+
     // Isolines
     bool needsIsoRebuild;
     std::vector<ncdfIsoSeg> isoSegments;

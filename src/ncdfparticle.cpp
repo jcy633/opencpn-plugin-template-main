@@ -42,7 +42,7 @@ void ncdfOverlayFactory::ClearParticles() {
 
 void ncdfOverlayFactory::RenderParticles(PlugIn_ViewPort *vp)
 {
-    if (!gui || !gui->gridu || !gui->gridv) return;
+    if (!gui || !gui->myMessage.hasCurrent()) return;
     int ni = gui->myMessage.lonLength;
     int nj = gui->myMessage.latLength;
     if (ni <= 1 || nj <= 1) return;
@@ -103,8 +103,9 @@ void ncdfOverlayFactory::RenderParticles(PlugIn_ViewPort *vp)
         if (++it.m_HistoryPos >= history_size) it.m_HistoryPos = 0;
         Particle::ParticleNode &n = it.m_History[it.m_HistoryPos];
         float(&p)[2] = n.m_Pos;
-        double vx = gui->myMessage.getInterpolatedValue(gui->myMessage, gui->gridu, pp[0], pp[1], true);
-        double vy = gui->myMessage.getInterpolatedValue(gui->myMessage, gui->gridv, pp[0], pp[1], true);
+        double vx, vy;
+        if (!gui->myMessage.getInterpolatedUV(gui->myMessage, pp[0], pp[1], vx, vy))
+            { vx = vy = ncdf_NOTDEF; }
         double vkn = 0, ang;
         if (vx != ncdf_NOTDEF && vy != ncdf_NOTDEF && isfinite(vx) && isfinite(vy)) {
             double mag = sqrt(vx * vx + vy * vy);
@@ -171,8 +172,9 @@ void ncdfOverlayFactory::RenderParticles(PlugIn_ViewPort *vp)
             double rlat, rlon;
             GetCanvasLLPix(vp, rp, &rlat, &rlon);
             p[0] = (float)rlon; p[1] = (float)rlat;
-            double vx = gui->myMessage.getInterpolatedValue(gui->myMessage, gui->gridu, p[0], p[1], true);
-            double vy = gui->myMessage.getInterpolatedValue(gui->myMessage, gui->gridv, p[0], p[1], true);
+            double vx, vy;
+            if (!gui->myMessage.getInterpolatedUV(gui->myMessage, p[0], p[1], vx, vy))
+                { vx = vy = ncdf_NOTDEF; }
             if (vx != ncdf_NOTDEF && vy != ncdf_NOTDEF && isfinite(vx) && isfinite(vy)) {
                 double mag = sqrt(vx * vx + vy * vy);
                 if (mag < 0.3) continue;  // Skip below 0.3 m/s
@@ -200,8 +202,9 @@ void ncdfOverlayFactory::RenderParticles(PlugIn_ViewPort *vp)
         // Pre-fill history with fake updates so trail is visible immediately
         float fakePos[2] = {p[0], p[1]};
         for (int h = 1; h < history_size && h < MAX_PARTICLE_HISTORY; h++) {
-            double fakeVx = gui->myMessage.getInterpolatedValue(gui->myMessage, gui->gridu, fakePos[0], fakePos[1], true);
-            double fakeVy = gui->myMessage.getInterpolatedValue(gui->myMessage, gui->gridv, fakePos[0], fakePos[1], true);
+            double fakeVx, fakeVy;
+            if (!gui->myMessage.getInterpolatedUV(gui->myMessage, fakePos[0], fakePos[1], fakeVx, fakeVy))
+                { fakeVx = fakeVy = ncdf_NOTDEF; }
             if (fakeVx != ncdf_NOTDEF && fakeVy != ncdf_NOTDEF && isfinite(fakeVx) && isfinite(fakeVy)) {
                 double fakeMag = sqrt(fakeVx*fakeVx + fakeVy*fakeVy);
                 double fakeAng = atan2(fakeVx, fakeVy) * 180.0 / PI;

@@ -15,6 +15,7 @@ void SeaTempOverlay::Init() {
     lutID = 0; hasLUT = false;
     uploadBuf = NULL; uploadBufSize = 0;
     cachedGrid = NULL; cachedNj = cachedNi = 0; cachedOwns = false;
+    cachedDataMin = 0; cachedDataMax = 1;
     needsIsoRebuild = true;
     isoSegments.clear();
 }
@@ -49,7 +50,7 @@ wxColour SeaTempOverlay::GetColor(double temp_c) {
 
 bool SeaTempOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_pi *plugin,
                                      ncdfOverlayFactory *factory, bool useShader, int interpMode) {
-    if (!gui || !gui->gridSST || !gui->hasSeaTemp) return false;
+    if (!gui || !gui->myMessage.hasSSTData()) return false;
     int ni = gui->myMessage.lonLength;
     int nj = gui->myMessage.latLength;
     if (ni < 2 || nj < 2) return false;
@@ -58,17 +59,36 @@ bool SeaTempOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
     if (needsRebuild || !cachedGrid) {
         if (cachedOwns) { for (int j = 0; j < cachedNj; j++) delete[] cachedGrid[j]; delete[] cachedGrid; }
         cachedGrid = NULL; cachedOwns = false;
-        double** src = gui->gridSST;
+        // Build 2D grid from flat SST vector
+        double** src = new double*[nj];
+        for (int j = 0; j < nj; j++) {
+            src[j] = new double[ni];
+            for (int i = 0; i < ni; i++) src[j][i] = gui->myMessage.getSST(i, j);
+        }
+        cachedGrid = src; cachedOwns = true;
         if (plugin->m_settingsSeaTemp.anisoDiffusion) {
             double** ad = ncdfOverlayFactory::BuildAnisoDiffusedGrid(src, nj, ni);
-            if (ad) { src = ad; cachedGrid = ad; cachedOwns = true; }
+            if (ad) { for (int j = 0; j < nj; j++) delete[] src[j]; delete[] src; cachedGrid = ad; }
         }
         if (plugin->m_settingsSeaTemp.sharpen) {
-            double** sh = ncdfOverlayFactory::BuildSharpenedGrid(src, nj, ni);
-            if (sh) { if (cachedOwns) { for (int j=0;j<cachedNj;j++) delete[] cachedGrid[j]; delete[] cachedGrid; } cachedGrid = sh; cachedOwns = true; src = sh; }
+            double** sh = ncdfOverlayFactory::BuildSharpenedGrid(cachedGrid, nj, ni);
+            if (sh) { if (cachedOwns) { for (int j=0;j<cachedNj;j++) delete[] cachedGrid[j]; delete[] cachedGrid; } cachedGrid = sh; cachedOwns = true; }
         }
-        if (!cachedGrid) { cachedGrid = gui->gridSST; cachedOwns = false; }
         cachedNj = nj; cachedNi = ni;
+
+        // Cache data range during rebuild (not every frame)
+        if (cachedGrid) {
+            double dMin = 1e30, dMax = -1e30;
+            for (int jj = 0; jj < nj; jj++)
+                for (int ii = 0; ii < ni; ii++) {
+                    double v = cachedGrid[jj][ii];
+                    if (v != ncdf_NOTDEF && v == v && isfinite(v)) {
+                        if (v < dMin) dMin = v; if (v > dMax) dMax = v;
+                    }
+                }
+            cachedDataMin = (dMin < dMax) ? (float)dMin : 0;
+            cachedDataMax = (dMin < dMax) ? (float)dMax : 1;
+        }
     }
 
     ncdfOverlayFactory::RenderSettings settings;
@@ -79,17 +99,9 @@ bool SeaTempOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
     settings.slopeShading = plugin->m_settingsSeaTemp.slopeShading;
     settings.slopeMode = 1;  // SST temperature segments
 
-    if (settings.slopeShading && gui->gridSST) {
-        double dMin = 1e30, dMax = -1e30;
-        for (int jj = 0; jj < nj; jj++)
-            for (int ii = 0; ii < ni; ii++) {
-                double v = gui->gridSST[jj][ii];
-                if (v != ncdf_NOTDEF && v == v && isfinite(v)) {
-                    if (v < dMin) dMin = v; if (v > dMax) dMax = v;
-                }
-            }
-        settings.dataMin = (float)dMin;
-        settings.dataMax = (float)dMax;
+    if (settings.slopeShading) {
+        settings.dataMin = cachedDataMin;
+        settings.dataMax = cachedDataMax;
     } else {
         settings.dataMin = 0; settings.dataMax = 1;
     }
@@ -104,15 +116,23 @@ bool SeaTempOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
 }
 
 void SeaTempOverlay::RenderIsoLines(PlugIn_ViewPort *vp, MainDialog *gui) {
-    if (!gui || !vp || !gui->gridSST) return;
+    if (!gui || !vp || !gui->myMessage.hasSSTData()) return;
     int ni = gui->myMessage.lonLength;
     int nj = gui->myMessage.latLength;
     double tlat = wxMax(gui->myMessage.firstGridPointLat, gui->myMessage.lastGridPointLat);
     double blat = wxMin(gui->myMessage.firstGridPointLat, gui->myMessage.lastGridPointLat);
     double tlon = wxMin(gui->myMessage.firstGridPointLong, gui->myMessage.lastGridPointLong);
     double blon = wxMax(gui->myMessage.firstGridPointLong, gui->myMessage.lastGridPointLong);
-    ncdfOverlayFactory::DrawIsoLines(vp, gui->gridSST, ni, nj,
+    // Build temporary 2D grid for isoline renderer
+    double** tmpGrid = new double*[nj];
+    for (int j = 0; j < nj; j++) {
+        tmpGrid[j] = new double[ni];
+        for (int i = 0; i < ni; i++) tmpGrid[j][i] = gui->myMessage.getSST(i, j);
+    }
+    ncdfOverlayFactory::DrawIsoLines(vp, tmpGrid, ni, nj,
                  needsIsoRebuild, isoSegments,
                  tlat, tlon, blat, blon,
                  gui->myMessage.jDirectionIncr);
+    for (int j = 0; j < nj; j++) delete[] tmpGrid[j];
+    delete[] tmpGrid;
 }

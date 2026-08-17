@@ -25,7 +25,7 @@ bool PointInLLBox(PlugIn_ViewPort *vp, double x, double y)
 
 void ncdfOverlayFactory::RenderncdfCurrent()
 {
-    if (!gui || !gui->gridu || !gui->gridv) return;
+    if (!gui || !gui->myMessage.hasCurrent()) return;
     int ni = gui->myMessage.lonLength;
     int nj = gui->myMessage.latLength;
     if (ni < 2 || nj < 2) return;
@@ -70,8 +70,9 @@ void ncdfOverlayFactory::RenderncdfCurrent()
             double nlon = lon;
             while (nlon > 180.0) nlon -= 360.0;
             while (nlon < -180.0) nlon += 360.0;
-            double vx = gui->myMessage.getInterpolatedValue(gui->myMessage, gui->gridu, nlon, lat, true);
-            double vy = gui->myMessage.getInterpolatedValue(gui->myMessage, gui->gridv, nlon, lat, true);
+            double vx, vy;
+            if (!gui->myMessage.getInterpolatedUV(gui->myMessage, nlon, lat, vx, vy))
+                continue;
             if (vx == ncdf_NOTDEF || vy == ncdf_NOTDEF || !isfinite(vx) || !isfinite(vy)) continue;
             double mag = sqrt(vx * vx + vy * vy);
             if (mag < 0.01) continue;
@@ -130,7 +131,7 @@ bool ncdfOverlayFactory::RenderncdfCurrentBmp()
 					  }
 
 					  //    This could take a while....
-			      if (gui->myMessage.ucurr == NULL || gui->myMessage.vcurr == NULL){
+			      if (gui->myMessage.ucurr.empty() || gui->myMessage.vcurr.empty()){
 					  return false;
 				  }
                               wxImage gr_image(width, height);
@@ -154,8 +155,8 @@ bool ncdfOverlayFactory::RenderncdfCurrentBmp()
                                           GetCanvasLLPix( vp, p, &lat, &lon);
 
 					                if(!PointInLLBox(vp, lon, lat) && !PointInLLBox(vp, lon-360.0, lat)) continue;
-									double vx = gui->myMessage.getInterpolatedValue(gui->myMessage, gui->gridu, lon, lat, true);
-									double vy = gui->myMessage.getInterpolatedValue(gui->myMessage, gui->gridv, lon, lat, true);
+									double vx = gui->myMessage.getInterpolatedValue(gui->myMessage, gui->myMessage.ucurr.data(), lon, lat, true);
+									double vy = gui->myMessage.getInterpolatedValue(gui->myMessage, gui->myMessage.vcurr.data(), lon, lat, true);
 
                                           if ((vx != ncdf_NOTDEF) && (vy != ncdf_NOTDEF))
                                           {

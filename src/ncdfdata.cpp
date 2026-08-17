@@ -30,644 +30,164 @@
 #include "ncdfdata.h"
 #include "ncdf_reader.h"
 
-ncdfData::ncdfData(ncdfReader *r)
+
+double ncdfDataMessage::getInterpolatedValue(const ncdfDataMessage& msg, const double* data,
+                                            double px, double py, bool numericalInterpolation) const
 {
-    this->reader = r;
-    hash = new wxHashTable(wxKEY_INTEGER);    
-}
-
-ncdfData::~ncdfData()
-{
-  deleteAllRecords();
-  hash->DeleteContents(true);
-}
-
-void ncdfData::deleteAllRecords()
-{
-	wxHashTable_Node *node;
-
-	hash->BeginFind();
-	while( (node = hash->Next()) )
-	{ 
-		double **d = (double**) node->GetData();
-
-		delete []d[0];
-		delete []d;
-	}
-}
-
-void ncdfData::addRecord(ncdfMessage* message)
-{
-	this->message = message;
-	long field = -1;
-	wxDouble* data;
-
-	if(message->discipline == 0)		//METEOROLOGICAL
-	{
-		if(message->paramCategory == 2 && message->paramNo == 0) 	// WindDirection
-			field = WINDDIR;
-		if(message->paramCategory == 2 && message->paramNo == 1) 	// WindForce
-			field = WIND;       
-		if(message->paramCategory == 0 && message->paramNo == 0) 	// Temperature
-			field = TEMP;
-		if(message->paramCategory == 3 && message->paramNo == 0) 	// Pressure
-			field = PRESSURE; 
-		if(message->paramCategory == 6 && message->paramNo == 1) 	// Clouds
-			field = CLOUD; 
-		if(message->paramCategory == 2 && message->paramNo == 22) // Gusts
-			field = GUST;   
-		//      if(message->paramCategory == 6 && message->paramNo == 1) 	// Rain
-		//	field = RAIN;       
-	}
-
-	if(message->discipline == 10)		// Oceanographical
-	{    
-		if(message->paramCategory == 0 && message->paramNo == 3) 		// WaveHeight
-			field = WAVEHIGHT;
-		if(message->paramCategory == 0 && message->paramNo == 4) 		// WaveDirection
-			field = WAVEDIR; 
-		if((message->paramCategory == 0 && message->paramNo == 8 && message->scaledValueSurface1==1) ||
-			(message->paramCategory == 0 && message->paramNo == 8))	// SwellMin
-			field = SWELL; 
-		if(message->paramCategory == 0 && message->paramNo == 8 && message->scaledValueSurface1==2) 		// SwellMin
-			field = SWELLMAX;      
-		if(message->paramCategory == 1 && message->paramNo == 2) 		// CurrentU
-			field = CURRENTU;   
-		if(message->paramCategory == 1 && message->paramNo == 3) 		// CurrentV
-			field = CURRENTV;             
-	} 
-
-	if(field != -1)
-	{
-		data =(wxDouble *)calloc(message->noSectors ? message->noSectors : 1,sizeof(wxDouble));
-		for(unsigned int i = 0; i < message->noSectors; i++)
-		{
-			switch(field)
-			{
-			case TEMP:	data[i] = message->data[i]-273.15;
-				break;
-			case PRESSURE:data[i] = message->data[i]/100;
-				break;
-			default:	data[i] = message->data[i];
-				break;
-			}
-		}  
-
-		int y = message->noPointsMeridian, x =message->noPointsParallel;
-		double** grid = new double* [y];
-		grid[0] = new double [y*x];
-		for (int i = 1; i < y; ++i)
-			grid[i] = grid[i-1] + x;
-
-		unsigned int count = 0;
-		int bit = 7;
-		unsigned int index;
-		index = 0;
-
-		for(unsigned int lat = 0; lat < message->noPointsMeridian; lat++)
-		{
-			for(unsigned int lon = 0; lon < message->noPointsParallel; lon++)
-			{
-				if(message->bmpMask)
-				{
-					if(isInBmpMask(&index,&bit))
-					{
-						grid[lat][lon] = data[count++];
-					}
-					else
-						grid[lat][lon] = ncdf_NOTDEF;
-
-					bit--;
-				}
-				else
-				{
-					grid[lat][lon] = data[count++];
-				}
-			}
-		}
-
-		index = 0; bit = 7;
-/*		for(unsigned int lat = 0; lat < message->noPointsMeridian;)
-		{
-			for(unsigned int lon = 0; lon < message->noPointsParallel; )
-			{
-				if(isInBmpMask(&index,&bit))
-				{
-					if(lat+2 < message->noPointsMeridian) 
-					{
-						if(grid[lat+1][lon] == ncdf_NOTDEF && grid[lat+2][lon] != ncdf_NOTDEF)
-						{
-							grid[lat+1][lon] = grid[lat][lon];// + grid[lat+2][lon])/2;
-							//grid[lat+1][lon+1] = (grid[lat][lon] + grid[lat+2][lon])/2;
-						}
-					}	      
-					if(lon+2 < message->noPointsParallel && grid[lat][lon+2] != ncdf_NOTDEF) 
-					{
-						if(grid[lat][lon+1] == ncdf_NOTDEF)
-						{
-							grid[lat][lon+1] = grid[lat][lon];// + grid[lat][lon+2])/2;
-						}		
-					}
-				}
-				bit--;
-
-				if(lon + 1 == message->noPointsParallel || lat + 1 == message->noPointsMeridian) { index++; break; } 
-				grid[lat][lon+1]   = grid[lat][lon];
-				grid[lat+1][lon]   = grid[lat][lon];
-				grid[lat+1][lon+1] = grid[lat][lon];
-				lon += 2;
-				bit--;
-			}
-			bit--;	  
-			lat += 2;
-		}
-*/
-/*		unsigned int lat = 0, lon = 0;
-		if(message->bmpMask)
-		{
-			for(count = 0; count < message->bmpSize*8; count++)
-			{
-				if(isInBmpMask(&index,&bit))
-				{
-					grid[lat][lon+1]   = grid[lat][lon];
-					grid[lat+1][lon]   = grid[lat][lon];
-					grid[lat+1][lon+1] = grid[lat][lon];
-				}
-
-				bit--;
-				lon++;
-				if(lon == message->noPointsParallel) { lat++; lon = 0; }
-				if(lat == message->noPointsMeridian) break;
-*/				
-				unsigned int lat = 0, lon = 0;
-				if(message->bmpMask)
-				{
-					for(count = 0; count < (unsigned int)message->bmpSize*8; count++)
-					{
-						if(isInBmpMask(&index,&bit))
-						{
-							if( lon+2 < message->noPointsParallel )
-								if(grid[lat][lon+2] != ncdf_NOTDEF && grid[lat][lon] != ncdf_NOTDEF && grid[lat][lon+1] == ncdf_NOTDEF)
-									grid[lat][lon+1]  = (grid[lat][lon] + grid[lat][lon+2])/2;
-						}
-						bit--;
-						lon++;
-						if(lon == message->noPointsParallel) { lat++; lon = 0; }
-					//	if(count > 120000)
-						//	wxMessageBox(wxString::Format(_T("%d %d %d %f %f %f"),count,lat,lon,grid[lat][lon],grid[lat][lon+1],grid[lat][lon+1]));
-						if(lat == message->noPointsMeridian) break;
-					}
-					for(count = 0,index = 0,bit=7,lat=0,lon=0; count < (unsigned int)(message->bmpSize*8); count++)
-					{
-	//					if(isInBmpMask(&index,&bit))
-	//					{
-							if( lat+2 < message->noPointsMeridian )
-								if(grid[lat+2][lon] != ncdf_NOTDEF && grid[lat][lon] != ncdf_NOTDEF && grid[lat+1][lon] == ncdf_NOTDEF )
-									grid[lat+1][lon]  =  (grid[lat][lon] + grid[lat+2][lon])/2;
-	//					}
-
-	//					bit--;
-					//		if(count < 100)
-						//		wxMessageBox(wxString::Format(_T("%d %f %f %f\n"),count,lat,lon,grid[lat][lon]));
-						lon++;
-						if(lon == message->noPointsParallel) { lat++; lon = 0; }
-						if(lat == message->noPointsMeridian) break;
-					}      
-				}
-
-				if(!hash->Get(field))
-					hash->Put(field,(wxObject*)grid); 
-				if(data != NULL)
-					free(data);      
-			}
-		}
-	
-	
-
-bool ncdfData::isInBmpMask(unsigned int *index, int* bit)
-{
-   if(*bit < 0) 
-    { *bit = 7; *index = *index+1; }
-    
-   if(message->bmpMask[*index] & (1 << *bit)) 
-   {
-	 //wxLogMessage(_T("%d %d %d"),*index,*bit,1);
-     return true;
-   }
-   else
-   {
-	// wxLogMessage(_T("%d %d %d"),*index,*bit,0);
-     return false;
-   }
-}
-
-
-double ncdfData::getInterpolatedValue(double** grid, double px, double py, bool numericalInterpolation) const
-{
-	double val;
-
-	//   if (!isPointInMap(px,py)) return ncdf_NOTDEF;
-	if (!isPointInMap(px, py)) {
-		px += 360.0;               // tour du monde à droite ?
-		if (!isPointInMap(px, py)) {
-			px -= 2 * 360.0;              // tour du monde à gauche ?
-			if (!isPointInMap(px, py)) {
-				return ncdf_NOTDEF;
-			}
+	if (!data) return ncdf_NOTDEF;
+	if (!isPointInMap(msg, px, py)) {
+		px += 360.0;
+		if (!isPointInMap(msg, px, py)) {
+			px -= 2 * 360.0;
+			if (!isPointInMap(msg, px, py)) return ncdf_NOTDEF;
 		}
 	}
 
-	// Normalize longitude to data range for grid index calculation
-	double dataEnd = message->lastGridPointLong + message->iDirectionIncr;
+	double dataEnd = msg.lastGridPointLong + msg.iDirectionIncr;
 	while (px > dataEnd) px -= 360.0;
-	while (px < message->firstGridPointLong) px += 360.0;
+	while (px < msg.firstGridPointLong) px += 360.0;
 
-	double pi, pj;     // coord. in grid unit
-	pi = (px - message->firstGridPointLong) / message->iDirectionIncr;//(px-Lo1)/Di;
-	pj = (py - message->firstGridPointLat) / message->jDirectionIncr;//(py-La1)/Dj;
+	if (fabs(msg.iDirectionIncr) < 1e-10 || fabs(msg.jDirectionIncr) < 1e-10)
+		return ncdf_NOTDEF;
+	double pi = (px - msg.firstGridPointLong) / msg.iDirectionIncr;
+	double pj = (py - msg.firstGridPointLat) / msg.jDirectionIncr;
 
-	// 00 10      point is in a square
-	// 01 11
-	int i0 = (int)pi;  // point 00
+	int i0 = (int)pi;
 	int j0 = (int)pj;
-
-	// distances to 00
 	double dx = pi - i0;
 	double dy = pj - j0;
 
-	// i0 = message->noPointsParallel-2-i0;  // long
-	// j0 = message->noPointsMeridian-2-j0;  // lat;
-
-	bool h00, h01, h10, h11;
-	int nbval = 0;     // how many values in grid ?
-	int ni = message->noPointsParallel;
-	int nj = message->noPointsMeridian;
-
-	// Handle longitude wrapping for global data (GRIB pattern)
+	int ni = msg.noPointsParallel;
+	int nj = msg.noPointsMeridian;
 	int i1 = i0 + 1;
-	double lonRange = fabs(message->lastGridPointLong - message->firstGridPointLong);
+	double lonRange = fabs(msg.lastGridPointLong - msg.firstGridPointLong);
 	if (i1 >= ni) {
-		i1 = (lonRange + fabs(message->iDirectionIncr) >= 360) ? 0 : i0;
+		i1 = (lonRange + fabs(msg.iDirectionIncr) >= 360) ? 0 : i0;
 	}
 
-	if ((h00 = hasValue(grid, nj, ni, i0, j0)))
-		nbval++;
-	if ((h10 = hasValue(grid, nj, ni, i1, j0)))
-		nbval++;
-	if ((h01 = hasValue(grid, nj, ni, i0, j0 + 1)))
-		nbval++;
-	if ((h11 = hasValue(grid, nj, ni, i1, j0 + 1)))
-		nbval++;
+	// Bilinear interpolation from flat array [j * ni + i]
+	auto valAt = [&](int ii, int jj) -> double {
+		if (ii < 0 || ii >= ni || jj < 0 || jj >= nj) return ncdf_NOTDEF;
+		return data[jj * ni + ii];
+	};
 
-	if (nbval <3) {
-		return ncdf_NOTDEF;
-	}
-	//printf("nbval=%i h00=%i h10=%i h01=%i h11=%i\n",nbval,h00,h10,h01,h11);
+	double v00 = valAt(i0, j0);
+	double v10 = valAt(i1, j0);
+	double v01 = valAt(i0, j0 + 1);
+	double v11 = valAt(i1, j0 + 1);
 
+	// Count valid neighbors
+	int nbval = 0;
+	if (v00 != ncdf_NOTDEF) nbval++;
+	if (v10 != ncdf_NOTDEF) nbval++;
+	if (v01 != ncdf_NOTDEF) nbval++;
+	if (v11 != ncdf_NOTDEF) nbval++;
 
-	if (!numericalInterpolation)
-	{
-		if (dx < 0.5) {
-			if (dy < 0.5)
-				val = grid[j0][i0];
-			else
-				val = grid[j0 + 1][i0];
+	if (nbval == 0) return ncdf_NOTDEF;
+	if (nbval < 4 && numericalInterpolation) {
+		// Fall back to nearest neighbor
+		double minDist = 1e10;
+		double bestVal = ncdf_NOTDEF;
+		struct { double v; double dx; double dy; } pts[] = {
+			{v00, dx, dy}, {v10, 1-dx, dy}, {v01, dx, 1-dy}, {v11, 1-dx, 1-dy}
+		};
+		for (auto& p : pts) {
+			if (p.v != ncdf_NOTDEF) {
+				double d = p.dx * p.dx + p.dy * p.dy;
+				if (d < minDist) { minDist = d; bestVal = p.v; }
+			}
 		}
-		else {
-			if (dy < 0.5)
-				val = grid[j0][i1];
-			else
-				val = grid[j0 + 1][i1];
-		}
-		//		printf("%i %i %f\n",j0,i0,val);
-		return val;
+		return bestVal;
 	}
 
-	dx = (3.0 - 2.0*dx)*dx*dx;   // pseudo hermite interpolation
-	dy = (3.0 - 2.0*dy)*dy*dy;
-
-	double xa, xb, xc, kx, ky;
-	// Triangle :
-	//   xa  xb
-	//   xc
-	// kx = distance(xa,x)
-	// ky = distance(xa,y)
-	if (nbval == 4)
-	{
-		double x00 = grid[j0][i0];		// x01 x11
-		double x01 = grid[j0 + 1][i0];		// x00 x10
-		double x10 = grid[j0][i1];
-		double x11 = grid[j0 + 1][i1];
-		if (x10 - x11 > 90) x11 += 360.0;
-		else if (x11 - x10 > 90) x10 += 360.0;
-		if (x00 - x01 > 90) x01 += 360.0;
-		else if (x01 - x00 > 90) x00 += 360.0;
-		if (x00 - x10 > 90) x10 += 360.0;
-		else if (x10 - x00 > 90) x00 += 360.0;
-		if (x01 - x11 > 90) x11 += 360.0;
-		else if (x11 - x01 > 90) x01 += 360.0;
-
-		double x1 = (1.0 - dx)*x00 + dx*x10;
-		double x2 = (1.0 - dx)*x01 + dx*x11;
-
-		val = (1.0 - dy)*x1 + dy*x2;
-		/*	printf("j0=%i i0=%i dx=%f dy=%f\nx00=%f x01=%f\nx10=%f x11=%f\n x1=%f x2=%f\nval=%f\n",j0,i0,dx,dy,x00,x01,x10,x11,x1,x2,val);
-		printf("1-dx=%f * x00(%f)=%f\n",1.0-dx,x00,(1.0-dx)*x00);
-		printf("dx(%f) * x10(%f)=%f\n",dx,x10,dx*x10);
-		printf("1-dy=%f * x1(%f) = %f\n",1-dy,x1,(1-dy)*x1);
-		printf("dy(%f) * x2(%f)=%f\n\ndx+dy=%f\nval=%f\n\n",dy,x2,dy*x2,dx+dy,val);
-		*/
-		//printf("dx=%f dy=%f lat=%f lon=%f\n",dx,dy,px,py);
-		return val;
-	}
-	else {
-		return ncdf_NOTDEF;
-		// here nbval==3, check the corner without data
-		// 00 10      point is in a square
-		// 01 11	        
-		if (!h00) {
-			printf("! h00  %f %f %i %i\n", dx, dy, j0, i0);
-			xa = grid[j0][i0 + 1];     // A = point 11        |
-			xb = grid[j0][i0];     // B = point 01	   --
-			xc = grid[j0 + 1][i0 + 1];   // C = point 10
-			kx = 1 - dx;
-			ky = 1 - dy;
-
-		}
-		else if (!h01) {
-			printf("! h01  %f %f\n", dx, dy);
-			xa = grid[j0 + 1][i0];     // A = point 10	    --
-			xb = grid[j0 + 1][i0 + 1];   // B = point 11	      |
-			xc = grid[j0][i0];     // C = point 00
-			kx = dy;
-			ky = 1 - dx;
-		}
-		else if (!h10) {
-			printf("! h10  %f %f\n", dx, dy);
-			xa = grid[j0][i0 + 1];     // A = point 01      |
-			xb = grid[j0][i0];       // B = point 00       --
-			xc = grid[j0 + 1][i0 + 1];     // C = point 11
-			kx = 1 - dy;
-			ky = dx;
-		}
-		else {
-			printf("! h11  %f %f\n", dx, dy);
-			xa = grid[j0][i0];    // A = point 00	      --
-			xb = grid[j0 + 1][i0];    // B = point 10         |
-			xc = grid[j0][i0 + 1];  // C = point 01
-			kx = dx;
-			ky = dy;
-		}
-	}
-	double k = kx + ky;
-	if (k<0 || k>1) {
-		val = ncdf_NOTDEF;
-	}
-	else if (k == 0) {
-		val = xa;
-	}
-	else {
-		// axes interpolation
-		double vx = k*xb + (1 - k)*xa;
-		double vy = k*xc + (1 - k)*xa;
-		// diagonal interpolation
-		double k2 = kx / k;
-		val = k2*vx + (1 - k2)*vy;
-	}
-	//  printf("ret %f\n",val);
-	return val;
+	// Bilinear interpolation
+	return v00 * (1-dx) * (1-dy) + v10 * dx * (1-dy)
+	     + v01 * (1-dx) * dy + v11 * dx * dy;
 }
 
-bool ncdfData::isPointInMap(double x, double y) const
+// Joint UV interpolation with Hermite smoothing (GRIB pattern)
+// One boundary check, one index calculation for both components
+bool ncdfDataMessage::getInterpolatedUV(const ncdfDataMessage& msg, double px, double py,
+                                        double &uOut, double &vOut) const
 {
-	return isXInMap(x) && isYInMap(y);
-	/*    if (Dj < 0)
-	return x>=Lo1 && y<=La1 && x<=Lo1+(Ni-1)*Di && y>=La1+(Nj-1)*Dj;
-	else
-	return x>=Lo1 && y>=La1 && x<=Lo1+(Ni-1)*Di && y<=La1+(Nj-1)*Dj;*/
-}
+	if (!msg.hasCurrent()) return false;
 
-bool ncdfData::isXInMap(double x) const
-{
-	wxDouble lastlon;
+	// Single boundary check for both components
+	if (!isPointInMap(msg, px, py)) {
+		px += 360.0;
+		if (!isPointInMap(msg, px, py)) {
+			px -= 2 * 360.0;
+			if (!isPointInMap(msg, px, py)) return false;
+		}
+	}
 
-	if (message->firstGridPointLong > 180. && message->lastGridPointLong < 180.0)
-		lastlon = message->lastGridPointLong + 360;  else lastlon = message->lastGridPointLong;
+	double dataEnd = msg.lastGridPointLong + msg.iDirectionIncr;
+	while (px > dataEnd) px -= 360.0;
+	while (px < msg.firstGridPointLong) px += 360.0;
 
-	if (message->iDirectionIncr > 0)
-		return x >= message->firstGridPointLong && x <= lastlon;
-	else
-		return x >= lastlon && x <= message->firstGridPointLong;
-}
-
-bool ncdfData::isYInMap(double y) const
-{
-	if (message->jDirectionIncr < 0)
-		return y <= message->firstGridPointLat && y >= message->lastGridPointLat;
-	else
-		return y >= message->firstGridPointLat && y <= message->lastGridPointLat;
-}
-
-bool ncdfData::hasValue(double** grid, wxUint32 nolat, wxUint32 nolon, unsigned int indexlon, unsigned int indexlat) const
-{
-	if ((indexlat >= 0 && indexlat < nolat) && (indexlon >= 0 && indexlon < nolon))
-		if (grid[indexlat][indexlon] != ncdf_NOTDEF)
-			return true;
-		else
-			return false;
-	else
+	if (fabs(msg.iDirectionIncr) < 1e-10 || fabs(msg.jDirectionIncr) < 1e-10)
 		return false;
+
+	// Single index calculation
+	double pi = (px - msg.firstGridPointLong) / msg.iDirectionIncr;
+	double pj = (py - msg.firstGridPointLat) / msg.jDirectionIncr;
+	int i0 = (int)pi, j0 = (int)pj;
+	int i1 = i0 + 1, j1 = j0 + 1;
+
+	int ni = msg.noPointsParallel, nj = msg.noPointsMeridian;
+	if (i0 < 0 || j0 < 0 || i0 >= ni || j0 >= nj) return false;
+	double lonRange = fabs(msg.lastGridPointLong - msg.firstGridPointLong);
+	if (i1 >= ni) i1 = (lonRange + fabs(msg.iDirectionIncr) >= 360) ? 0 : i0;
+	if (j1 >= nj) j1 = j0;
+
+	// Read 4 corners for both U and V (8 reads, not 16)
+	double dx = pi - i0, dy = pj - j0;
+	const double* uArr = msg.ucurr.data();
+	const double* vArr = msg.vcurr.data();
+	int r0 = j0 * ni, r1 = j1 * ni;
+	double u00 = uArr[r0 + i0], u10 = uArr[r0 + i1];
+	double u01 = uArr[r1 + i0], u11 = uArr[r1 + i1];
+	double v00 = vArr[r0 + i0], v10 = vArr[r0 + i1];
+	double v01 = vArr[r1 + i0], v11 = vArr[r1 + i1];
+
+	// Count valid corners
+	int nbval = 0;
+	if (u00 != ncdf_NOTDEF && v00 != ncdf_NOTDEF) nbval++;
+	if (u10 != ncdf_NOTDEF && v10 != ncdf_NOTDEF) nbval++;
+	if (u01 != ncdf_NOTDEF && v01 != ncdf_NOTDEF) nbval++;
+	if (u11 != ncdf_NOTDEF && v11 != ncdf_NOTDEF) nbval++;
+
+	if (nbval == 0) return false;
+
+	// Pseudo-Hermite smoothing (GRIB pattern)
+	dx = (3.0 - 2.0 * dx) * dx * dx;
+	dy = (3.0 - 2.0 * dy) * dy * dy;
+
+	if (nbval == 4) {
+		uOut = u00 * (1-dx) * (1-dy) + u10 * dx * (1-dy)
+		     + u01 * (1-dx) * dy + u11 * dx * dy;
+		vOut = v00 * (1-dx) * (1-dy) + v10 * dx * (1-dy)
+		     + v01 * (1-dx) * dy + v11 * dx * dy;
+		return true;
+	}
+
+	// Partial: nearest valid corner
+	struct { double u, v, d; } pts[] = {
+		{u00, v00, dx*dx + dy*dy},
+		{u10, v10, (1-dx)*(1-dx) + dy*dy},
+		{u01, v01, dx*dx + (1-dy)*(1-dy)},
+		{u11, v11, (1-dx)*(1-dx) + (1-dy)*(1-dy)}
+	};
+	double minD = 1e10;
+	bool found = false;
+	for (auto& p : pts) {
+		if (p.u != ncdf_NOTDEF && p.v != ncdf_NOTDEF && p.d < minD) {
+			minD = p.d; uOut = p.u; vOut = p.v; found = true;
+		}
+	}
+	return found;
 }
 
-
-
-double ncdfDataMessage::getInterpolatedValue(const ncdfDataMessage& g2message, double** grid, double px, double py, bool numericalInterpolation) const
-{
-	double val;
-
-	//   if (!isPointInMap(px,py)) return ncdf_NOTDEF;
-	if (!isPointInMap(g2message, px, py)) {
-		px += 360.0;               // tour du monde à droite ?
-		if (!isPointInMap(g2message, px, py)) {
-			px -= 2 * 360.0;              // tour du monde à gauche ?
-			if (!isPointInMap(g2message, px, py)) {
-				return ncdf_NOTDEF;
-			}
-		}
-	}
-
-	// Normalize longitude to data range for grid index calculation
-	// Fixes: [0,360] data + negative query (e.g., -175° → 185°)
-	//        [-180,180] data + >180 query (e.g., 185° → -175°)
-	double dataEnd = g2message.lastGridPointLong + g2message.iDirectionIncr;
-	while (px > dataEnd) px -= 360.0;
-	while (px < g2message.firstGridPointLong) px += 360.0;
-
-	double pi, pj;     // coord. in grid unit
-	if (fabs(g2message.iDirectionIncr) < 1e-10 || fabs(g2message.jDirectionIncr) < 1e-10)
-		return ncdf_NOTDEF;
-	pi = (px - g2message.firstGridPointLong) / g2message.iDirectionIncr;//(px-Lo1)/Di;
-	pj = (py - g2message.firstGridPointLat) / g2message.jDirectionIncr;//(py-La1)/Dj;
-
-   
-	//wxString t;
-	//t.Printf(_T("%9.6f"), pj);
-	//wxMessageBox(t);
-
-
-	// 00 10      point is in a square
-	// 01 11
-	int i0 = (int)pi;  // point 00
-	int j0 = (int)pj;
-
-	// distances to 00
-	double dx = pi - i0;
-	double dy = pj - j0;
-
-	// i0 = message->noPointsParallel-2-i0;  // long
-	// j0 = message->noPointsMeridian-2-j0;  // lat;
-
-	bool h00, h01, h10, h11;
-	int nbval = 0;     // how many values in grid ?
-	int ni = g2message.noPointsParallel;
-	int nj = g2message.noPointsMeridian;
-
-	// Handle longitude wrapping for global data (GRIB pattern)
-	int i1 = i0 + 1;
-	double lonRange = fabs(g2message.lastGridPointLong - g2message.firstGridPointLong);
-	if (i1 >= ni) {
-		i1 = (lonRange + fabs(g2message.iDirectionIncr) >= 360) ? 0 : i0;
-	}
-
-	if ((h00 = hasValue(grid, nj, ni, i0, j0)))
-		nbval++;
-	if ((h10 = hasValue(grid, nj, ni, i1, j0)))
-		nbval++;
-	if ((h01 = hasValue(grid, nj, ni, i0, j0 + 1)))
-		nbval++;
-	if ((h11 = hasValue(grid, nj, ni, i1, j0 + 1)))
-		nbval++;
-
-	if (nbval <3) {
-		return ncdf_NOTDEF;
-	}
-	//printf("nbval=%i h00=%i h10=%i h01=%i h11=%i\n",nbval,h00,h10,h01,h11);
-
-
-	if (!numericalInterpolation)
-	{
-		if (dx < 0.5) {
-			if (dy < 0.5)
-				val = grid[j0][i0];
-			else
-				val = grid[j0 + 1][i0];
-		}
-		else {
-			if (dy < 0.5)
-				val = grid[j0][i1];
-			else
-				val = grid[j0 + 1][i1];
-		}
-		//		printf("%i %i %f\n",j0,i0,val);
-
-		return val;
-	}
-
-	dx = (3.0 - 2.0*dx)*dx*dx;   // pseudo hermite interpolation
-	dy = (3.0 - 2.0*dy)*dy*dy;
-
-	double xa, xb, xc, kx, ky;
-	// Triangle :
-	//   xa  xb
-	//   xc
-	// kx = distance(xa,x)
-	// ky = distance(xa,y)
-	if (nbval == 4)
-	{
-		double x00 = grid[j0][i0];		// x01 x11
-		double x01 = grid[j0 + 1][i0];		// x00 x10
-		double x10 = grid[j0][i1];
-		double x11 = grid[j0 + 1][i1];
-		if (x10 - x11 > 90) x11 += 360.0;
-		else if (x11 - x10 > 90) x10 += 360.0;
-		if (x00 - x01 > 90) x01 += 360.0;
-		else if (x01 - x00 > 90) x00 += 360.0;
-		if (x00 - x10 > 90) x10 += 360.0;
-		else if (x10 - x00 > 90) x00 += 360.0;
-		if (x01 - x11 > 90) x11 += 360.0;
-		else if (x11 - x01 > 90) x01 += 360.0;
-
-		double x1 = (1.0 - dx)*x00 + dx*x10;
-		double x2 = (1.0 - dx)*x01 + dx*x11;
-
-		val = (1.0 - dy)*x1 + dy*x2;
-		/*	printf("j0=%i i0=%i dx=%f dy=%f\nx00=%f x01=%f\nx10=%f x11=%f\n x1=%f x2=%f\nval=%f\n",j0,i0,dx,dy,x00,x01,x10,x11,x1,x2,val);
-		printf("1-dx=%f * x00(%f)=%f\n",1.0-dx,x00,(1.0-dx)*x00);
-		printf("dx(%f) * x10(%f)=%f\n",dx,x10,dx*x10);
-		printf("1-dy=%f * x1(%f) = %f\n",1-dy,x1,(1-dy)*x1);
-		printf("dy(%f) * x2(%f)=%f\n\ndx+dy=%f\nval=%f\n\n",dy,x2,dy*x2,dx+dy,val);
-		*/
-		//printf("dx=%f dy=%f lat=%f lon=%f\n",dx,dy,px,py);
-		
-		return val;
-	}
-	else {
-		return ncdf_NOTDEF;
-		// here nbval==3, check the corner without data
-		// 00 10      point is in a square
-		// 01 11	        
-		if (!h00) {
-			printf("! h00  %f %f %i %i\n", dx, dy, j0, i0);
-			xa = grid[j0][i0 + 1];     // A = point 11        |
-			xb = grid[j0][i0];     // B = point 01	   --
-			xc = grid[j0 + 1][i0 + 1];   // C = point 10
-			kx = 1 - dx;
-			ky = 1 - dy;
-
-		}
-		else if (!h01) {
-			printf("! h01  %f %f\n", dx, dy);
-			xa = grid[j0 + 1][i0];     // A = point 10	    --
-			xb = grid[j0 + 1][i0 + 1];   // B = point 11	      |
-			xc = grid[j0][i0];     // C = point 00
-			kx = dy;
-			ky = 1 - dx;
-		}
-		else if (!h10) {
-			printf("! h10  %f %f\n", dx, dy);
-			xa = grid[j0][i0 + 1];     // A = point 01      |
-			xb = grid[j0][i0];       // B = point 00       --
-			xc = grid[j0 + 1][i0 + 1];     // C = point 11
-			kx = 1 - dy;
-			ky = dx;
-		}
-		else {
-			printf("! h11  %f %f\n", dx, dy);
-			xa = grid[j0][i0];    // A = point 00	      --
-			xb = grid[j0 + 1][i0];    // B = point 10         |
-			xc = grid[j0][i0 + 1];  // C = point 01
-			kx = dx;
-			ky = dy;
-		}
-	}
-	double k = kx + ky;
-	if (k<0 || k>1) {
-		val = ncdf_NOTDEF;
-	}
-	else if (k == 0) {
-		val = xa;
-	}
-	else {
-		// axes interpolation
-		double vx = k*xb + (1 - k)*xa;
-		double vy = k*xc + (1 - k)*xa;
-		// diagonal interpolation
-		double k2 = kx / k;
-		val = k2*vx + (1 - k2)*vy;
-	}
-	//  printf("ret %f\n",val);
-	return val;
-}
 
 bool ncdfDataMessage::isPointInMap(const ncdfDataMessage& g2message, double x, double y) const
 {
@@ -705,14 +225,4 @@ bool ncdfDataMessage::isYInMap(const ncdfDataMessage& g2message, double y) const
 		return y >= g2message.firstGridPointLat && y <= g2message.lastGridPointLat;
 }
 
-bool ncdfDataMessage::hasValue(double** grid, wxUint32 nolat, wxUint32 nolon, unsigned int indexlon, unsigned int indexlat) const
-{
-	if ((indexlat >= 0 && indexlat < nolat) && (indexlon >= 0 && indexlon < nolon))
-		if (grid[indexlat][indexlon] != ncdf_NOTDEF)
-			return true;
-		else
-			return false;
-	else
-		return false;
-}
 

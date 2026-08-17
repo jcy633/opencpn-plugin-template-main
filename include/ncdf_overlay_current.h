@@ -34,6 +34,9 @@ struct CurrentOverlay {
     int cachedNj, cachedNi;
     bool cachedOwns;
 
+    // Cached data range (computed during rebuild, not every frame)
+    float cachedDataMin, cachedDataMax;
+
     // Vorticity grid for slope shading
     double **cachedVorticity;
     int vortNj, vortNi;

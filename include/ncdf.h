@@ -86,13 +86,6 @@ public:
 	double *my_vcurr = 0;
 	int treeMinutes[96];
 
-	double** gridu;
-	double** gridv;
-	double** gridMag;     // Pre-computed magnitude: sqrt(gridu² + gridv²)
-	double** gridSST;
-	bool hasSeaTemp;
-	double** gridSalinity;
-	bool hasSalinity;
 	bool m_fileHasCurrent = false;   // File contains u/v ocean current data
 	bool m_fileHasSeaTemp = false;   // File contains SST data
 	bool m_fileHasSalinity = false;  // File contains salinity data

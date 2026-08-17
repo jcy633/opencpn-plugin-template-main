@@ -15,6 +15,7 @@ void CurrentOverlay::Init() {
     lutID = 0; hasLUT = false;
     uploadBuf = NULL; uploadBufSize = 0;
     cachedGrid = NULL; cachedNj = cachedNi = 0; cachedOwns = false;
+    cachedDataMin = 0; cachedDataMax = 1;
     cachedVorticity = NULL; vortNj = vortNi = 0;
     vortTexture = 0; hasVortTexture = false;
     slopeSource = 0;
@@ -56,16 +57,30 @@ wxColour CurrentOverlay::GetColor(double val_in) {
 
 bool CurrentOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_pi *plugin,
                                      ncdfOverlayFactory *factory, bool useShader, int interpMode) {
-    if (!gui || !gui->gridu || !gui->gridv || !gui->gridMag) return false;
+    if (!gui || !gui->myMessage.hasCurrent()) return false;
     int ni = gui->myMessage.lonLength;
     int nj = gui->myMessage.latLength;
     if (ni < 2 || nj < 2) return false;
 
-    // Build cached grid if needed
+    // Compute speed grid on-the-fly from u/v (NaN-safe)
+    // Also serves as cached grid for aniso diffusion / sharpening
     if (needsRebuild || !cachedGrid) {
         if (cachedOwns) { for (int j = 0; j < cachedNj; j++) delete[] cachedGrid[j]; delete[] cachedGrid; }
         cachedGrid = NULL; cachedOwns = false;
-        double** src = gui->gridMag;
+
+        // Build speed grid: sqrt(u² + v²), NaN if either component is invalid
+        double** speedGrid = new double*[nj];
+        for (int j = 0; j < nj; j++) {
+            speedGrid[j] = new double[ni];
+            for (int i = 0; i < ni; i++) {
+                double u = gui->myMessage.getU(i, j), v = gui->myMessage.getV(i, j);
+                if (u == ncdf_NOTDEF || v == ncdf_NOTDEF || u != u || v != v)
+                    speedGrid[j][i] = ncdf_NOTDEF;
+                else
+                    speedGrid[j][i] = sqrt(u * u + v * v);
+            }
+        }
+        double** src = speedGrid;
         if (plugin->m_settingsCurrent.anisoDiffusion) {
             double** ad = ncdfOverlayFactory::BuildAnisoDiffusedGrid(src, nj, ni);
             if (ad) { src = ad; cachedGrid = ad; cachedOwns = true; }
@@ -74,17 +89,39 @@ bool CurrentOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
             double** sh = ncdfOverlayFactory::BuildSharpenedGrid(src, nj, ni);
             if (sh) { if (cachedOwns) { for (int j=0;j<cachedNj;j++) delete[] cachedGrid[j]; delete[] cachedGrid; } cachedGrid = sh; cachedOwns = true; src = sh; }
         }
-        if (!cachedGrid) { cachedGrid = gui->gridMag; cachedOwns = false; }
+        if (!cachedGrid) { cachedGrid = speedGrid; cachedOwns = true; }
         cachedNj = nj; cachedNi = ni;
+
+        // Cache data range during rebuild (not every frame)
+        if (cachedGrid) {
+            double dMin = 1e30, dMax = -1e30;
+            for (int jj = 0; jj < nj; jj++)
+                for (int ii = 0; ii < ni; ii++) {
+                    double v = cachedGrid[jj][ii];
+                    if (v != ncdf_NOTDEF && v == v && isfinite(v)) {
+                        if (v < dMin) dMin = v; if (v > dMax) dMax = v;
+                    }
+                }
+            cachedDataMin = (dMin < dMax) ? (float)dMin : 0;
+            cachedDataMax = (dMin < dMax) ? (float)dMax : 1;
+        }
     }
 
     // Slope shading (vorticity)
     double** slopeGrid = NULL;
     slopeSource = glTexture;
-    if (plugin->m_settingsCurrent.slopeShading && gui->gridu && gui->gridv) {
+    if (plugin->m_settingsCurrent.slopeShading && gui->myMessage.hasCurrent()) {
         if (needsRebuild || !cachedVorticity) {
             if (cachedVorticity) { for (int j=0;j<vortNj;j++) delete[] cachedVorticity[j]; delete[] cachedVorticity; }
-            cachedVorticity = ncdfOverlayFactory::BuildVorticityGrid(gui->gridu, gui->gridv, nj, ni);
+            // Build temporary 2D grids for vorticity computation
+            double** tmpU = new double*[nj], **tmpV = new double*[nj];
+            for (int j = 0; j < nj; j++) {
+                tmpU[j] = new double[ni]; tmpV[j] = new double[ni];
+                for (int i = 0; i < ni; i++) { tmpU[j][i] = gui->myMessage.getU(i, j); tmpV[j][i] = gui->myMessage.getV(i, j); }
+            }
+            cachedVorticity = ncdfOverlayFactory::BuildVorticityGrid(tmpU, tmpV, nj, ni);
+            for (int j = 0; j < nj; j++) { delete[] tmpU[j]; delete[] tmpV[j]; }
+            delete[] tmpU; delete[] tmpV;
             vortNj = nj; vortNi = ni;
         }
         slopeGrid = cachedVorticity;
@@ -100,18 +137,10 @@ bool CurrentOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
     settings.slopeShading = plugin->m_settingsCurrent.slopeShading;
     settings.slopeMode = 0;  // continuous gradient for current
 
-    // Compute data range for slope shading
-    if (settings.slopeShading && gui->gridMag) {
-        double dMin = 1e30, dMax = -1e30;
-        for (int jj = 0; jj < nj; jj++)
-            for (int ii = 0; ii < ni; ii++) {
-                double v = gui->gridMag[jj][ii];
-                if (v != ncdf_NOTDEF && v == v && isfinite(v)) {
-                    if (v < dMin) dMin = v; if (v > dMax) dMax = v;
-                }
-            }
-        settings.dataMin = (float)dMin;
-        settings.dataMax = (float)dMax;
+    // Use cached data range for slope shading (computed during rebuild)
+    if (settings.slopeShading) {
+        settings.dataMin = cachedDataMin;
+        settings.dataMax = cachedDataMax;
     } else {
         settings.dataMin = 0; settings.dataMax = 1;
     }

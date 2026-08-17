@@ -8,6 +8,8 @@
 #include "ncdfdata.h"
 #include "shader/ncdf_shader.h"
 
+extern void ncdfLog(const char* format, ...);
+
 #ifndef PI
 #define PI 3.14159265
 #endif
@@ -62,26 +64,34 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
     int nj = gui->myMessage.latLength;
     if (ni < 2 || nj < 2) return;
 
+    ncdfLog("[ncdf] RenderGridOverlay: ni=%d nj=%d needsRebuild=%d hasTex=%d\n",
+        ni, nj, (int)needsRebuild, (int)hasTex);
+
     int tw = 0, th = 0;
 
     if (!m_pdc) {
 #ifdef ocpnUSE_GL
-        // Lazy texture rebuild (flagged by setData, safe in GL context)
+        // Compute expected texture dimensions
+        double lonMin = tlon, lonMax = blon;
+        double gridSpacingLon = (lonMax - lonMin) / (ni - 1);
+        bool repeat = (lonMax - lonMin + gridSpacingLon >= 360);
+        int borderH = repeat ? 0 : 1;
+        int extraCol = repeat ? 1 : 0;
+        int expectedTw = ni + 2 * borderH + extraCol;
+        int expectedTh = nj + 2;
+
+        // Fill texture data only when data changed or first creation
+        bool dataChanged = needsRebuild;
         if (needsRebuild) {
-            if (texID) { glDeleteTextures(1, &texID); texID = 0; }
-            hasTex = false;
+            if (hasTex && texID && (glDim[0] != expectedTw || glDim[1] != expectedTh)) {
+                glDeleteTextures(1, &texID); texID = 0;
+                hasTex = false;
+            }
             needsRebuild = false;
         }
 
-        // Create texture once per data change (GRIB pattern)
-        if (!hasTex) {
-            double lonMin = tlon, lonMax = blon;
-            double gridSpacingLon = (lonMax - lonMin) / (ni - 1);
-            bool repeat = (lonMax - lonMin + gridSpacingLon >= 360);
-
-            int borderH = repeat ? 0 : 1;
-            int extraCol = repeat ? 1 : 0;
-            tw = ni + 2 * borderH + extraCol; th = nj + 2;
+        if (!hasTex || dataChanged) {
+        tw = expectedTw; th = expectedTh;
             int _bufSize = tw * th * 4;
             if (!uploadBuf || uploadBufSize < _bufSize) {
                 if (uploadBuf) free(uploadBuf);
@@ -128,11 +138,7 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
                     }
                 }
 
-                // Color LUT (256 entries)
-                if (hasLUT && lutID) {
-                    glDeleteTextures(1, &lutID);
-                    lutID = 0; hasLUT = false;
-                }
+                // Color LUT (256 entries) — create once, update with glTexSubImage2D
                 unsigned char lutData[256 * 4];
                 for (int k = 0; k < 256; k++) {
                     double val = dMin + (k / 255.0) * dRange;
@@ -140,14 +146,20 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
                     lutData[k*4] = c.Red(); lutData[k*4+1] = c.Green();
                     lutData[k*4+2] = c.Blue(); lutData[k*4+3] = 255;
                 }
-                glGenTextures(1, &lutID);
-                glBindTexture(GL_TEXTURE_2D, lutID);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                if (!hasLUT || !lutID) {
+                    glGenTextures(1, &lutID);
+                    glBindTexture(GL_TEXTURE_2D, lutID);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
                 glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 256, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, lutData);
-                hasLUT = true;
+                    hasLUT = true;
+                } else {
+                    // Update existing LUT
+                    glBindTexture(GL_TEXTURE_2D, lutID);
+                    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, 1, GL_RGBA, GL_UNSIGNED_BYTE, lutData);
+                }
 
             } else {
                 // --- Fixed-function path: colored RGBA texture ---
@@ -224,19 +236,24 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
                 }
             }
 
-            glGenTextures(1, &texID);
-            glBindTexture(GL_TEXTURE_2D, texID);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, repeat ? GL_REPEAT : GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            GLenum filter = settings.useShader ? GL_NEAREST : GL_LINEAR;
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, tw, th, 0, GL_RGBA, GL_UNSIGNED_BYTE, texData);
-
-            hasTex = true;
-            dataDim[0] = tw; dataDim[1] = th;
-            glDim[0] = tw;   glDim[1] = th;
-        }
+            if (!hasTex) {
+                // First time: create texture
+                glGenTextures(1, &texID);
+                glBindTexture(GL_TEXTURE_2D, texID);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, repeat ? GL_REPEAT : GL_CLAMP_TO_EDGE);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, tw, th, 0, GL_RGBA, GL_UNSIGNED_BYTE, texData);
+                hasTex = true;
+                dataDim[0] = tw; dataDim[1] = th;
+                glDim[0] = tw;   glDim[1] = th;
+            } else {
+                // Update existing texture data (no GPU realloc, no OOM)
+                glBindTexture(GL_TEXTURE_2D, texID);
+                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, tw, th, GL_RGBA, GL_UNSIGNED_BYTE, texData);
+            }
+        }  // end if (!hasTex || dataChanged)
 
         // Draw tiled texture (GRIB pattern)
         if (hasTex && texID) {
@@ -251,6 +268,7 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
             double clon = (lon_min + lon_max) / 2;
 
             bool repeat = (lon_max - lon_min + lonstep >= 360);
+            double lon_range = lon_max - lon_min;
 
             // Tile grid for non-linear projection handling
             double pw = vp->view_scale_ppm * 1e6 / pow(2, fabs(vp->clat) / 25);
@@ -259,6 +277,8 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
             int ys = (int)ceil(vp->pix_height / pw);
             if (vp->rotation == 0) xs = 1;
             if (xs < 2) xs = 2; if (ys < 2) ys = 2;
+            // Global data needs more tiles to avoid degenerate texture coords
+            if (repeat && xs < 4) xs = 4;
             if (xs > 16) xs = 16; if (ys > 16) ys = 16;
             int gridW = xs + 1, gridH = ys + 1;
 
@@ -272,7 +292,12 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
                     double lat, lon;
                     wxPoint pt((int)px, (int)py);
                     GetCanvasLLPix(vp, pt, &lat, &lon);
-                    if (!repeat) {
+                    if (repeat) {
+                        // Wrap longitude into data range for GL_REPEAT
+                        double d = fmod(lon - lon_min, lon_range);
+                        if (d < 0) d += lon_range;
+                        lon = lon_min + d;
+                    } else {
                         if (clon - lon > 180) lon += 360;
                         else if (lon - clon > 180) lon -= 360;
                     }

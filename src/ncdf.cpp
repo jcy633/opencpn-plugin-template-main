@@ -73,13 +73,6 @@ MainDialog::MainDialog(wxWindow *parent) : ncdfDialog( parent ), m_isTreeUpdatin
 
 	log_window_m = NULL;
 	m_lastSelectedTimeIndex = -1;
-	gridu = NULL;
-	gridv = NULL;
-	gridMag = NULL;
-	gridSST = NULL;
-	gridSalinity = NULL;
-	hasSeaTemp = false;
-	hasSalinity = false;
 
 	// Hide all data checkboxes by default (shown when data is loaded)
 	m_checkBoxDCurrent->Hide();
@@ -128,31 +121,6 @@ MainDialog::~MainDialog()
 		delete log_window_m;
 	
 	ncdfLog("[ncdf] ~MainDialog: log_window_m deleted\n");
-	
-	if (gridu) {
-		for (wxUint32 i = 0; i < myMessage.noPointsMeridian; ++i) {
-			delete[] gridu[i];
-		}
-		delete[] gridu;
-	}
-	if (gridv) {
-		for (wxUint32 i = 0; i < myMessage.noPointsMeridian; ++i) {
-			delete[] gridv[i];
-		}
-		delete[] gridv;
-	}
-	if (gridMag) {
-		for (wxUint32 i = 0; i < myMessage.noPointsMeridian; ++i) {
-			delete[] gridMag[i];
-		}
-		delete[] gridMag;
-	}
-	if (gridSST) {
-		for (wxUint32 i = 0; i < myMessage.noPointsMeridian; ++i) {
-			delete[] gridSST[i];
-		}
-		delete[] gridSST;
-	}
 
 	delete my_ncdfReader;
 	
@@ -187,9 +155,6 @@ void MainDialog::setPlugIn(ncdf_pi *p)
   m_checkBoxSCurveCurr->SetValue(pPlugIn->m_settingsCurrent.sCurve);
   m_checkBoxSlopeCurr->SetValue(pPlugIn->m_settingsCurrent.slopeShading);
   m_checkBoxLICCurr->SetValue(pPlugIn->m_settingsCurrent.licFlow);
-  m_checkBoxAnimate->SetValue(pPlugIn->m_settingsCurrent.animate);
-  m_checkBoxAnimateSST->SetValue(pPlugIn->m_settingsSeaTemp.animate);
-  m_checkBoxAnimateSal->SetValue(pPlugIn->m_settingsSalinity.animate);
   m_choiceInterpSST->SetSelection(pPlugIn->m_settingsSeaTemp.interpMode);
   m_checkBoxSmoothSST->SetValue(pPlugIn->m_settingsSeaTemp.smoothColors);
   m_checkBoxSharpenSST->SetValue(pPlugIn->m_settingsSeaTemp.sharpen);
@@ -218,12 +183,12 @@ void MainDialog::UpdateTrackingControls()
 {
    this->m_textCtrlCurrentDir->Clear();
    this->m_textCtrlCurrentForce->Clear();
-   if (gridu && gridv) printCurrentData();
+   if (myMessage.hasCurrent()) printCurrentData();
 
    // SST temperature at cursor position — show when SST data is available
    m_textCtrlSeaTemp->Clear();
-   if (gridSST && hasSeaTemp) {
-       double temp = myMessage.getInterpolatedValue(myMessage, gridSST, m_cursor_lon, m_cursor_lat, true);
+   if (myMessage.hasSSTData()) {
+       double temp = myMessage.getInterpolatedValue(myMessage, myMessage.sst.data(), m_cursor_lon, m_cursor_lat, true);
        if (temp != ncdf_NOTDEF && !isnan(temp) && isfinite(temp)) {
            wxString t = wxString::Format(_T("%.1f"), temp) + wxString::FromUTF8("\xc2\xb0") + _T("C");
            m_textCtrlSeaTemp->SetValue(t);
@@ -234,8 +199,8 @@ void MainDialog::UpdateTrackingControls()
 
    // Salinity at cursor position — show when salinity data is available
    m_textCtrlSalinity->Clear();
-   if (gridSalinity && hasSalinity) {
-       double sal = myMessage.getInterpolatedValue(myMessage, gridSalinity, m_cursor_lon, m_cursor_lat, true);
+   if (myMessage.hasSalData()) {
+       double sal = myMessage.getInterpolatedValue(myMessage, myMessage.salinity.data(), m_cursor_lon, m_cursor_lat, true);
        if (sal != ncdf_NOTDEF && !isnan(sal) && isfinite(sal)) {
            wxString t = wxString::Format(_T("%.1f"), sal) + wxString::FromUTF8("\xe2\x80\xb0");
            m_textCtrlSalinity->SetValue(t);
@@ -247,13 +212,13 @@ void MainDialog::UpdateTrackingControls()
 
 void MainDialog::printCurrentData()
 {
-	  if (!gridu || !gridv) return;
+	  if (!myMessage.hasCurrent()) return;
 	  wxString t;
       double cDir;
       double cForce;
 
-      cDir = myMessage.getInterpolatedValue(myMessage, gridu, m_cursor_lon, m_cursor_lat, true);
-	  cForce = myMessage.getInterpolatedValue(myMessage, gridv, m_cursor_lon, m_cursor_lat, true);
+      cDir = myMessage.getInterpolatedValue(myMessage, myMessage.ucurr.data(), m_cursor_lon, m_cursor_lat, true);
+	  cForce = myMessage.getInterpolatedValue(myMessage, myMessage.vcurr.data(), m_cursor_lon, m_cursor_lat, true);
 
 			if ((cDir != ncdf_NOTDEF) && (cForce != ncdf_NOTDEF))
 			{
@@ -270,13 +235,13 @@ void MainDialog::printCurrentData()
 CurrentData MainDialog::getCurrentData(double lat, double lon)
 {
 	CurrentData result = {0, 0};
-	if (!gridu || !gridv) return result;
+	if (!myMessage.hasCurrent()) return result;
 	wxString t;
 	double cDir;
 	double cForce;
 
-	cDir = myMessage.getInterpolatedValue(myMessage, gridu, lon, lat, true);
-	cForce = myMessage.getInterpolatedValue(myMessage, gridv, lon, lat, true);
+	cDir = myMessage.getInterpolatedValue(myMessage, myMessage.ucurr.data(), lon, lat, true);
+	cForce = myMessage.getInterpolatedValue(myMessage, myMessage.vcurr.data(), lon, lat, true);
 
 	if ((cDir != ncdf_NOTDEF) && (cForce != ncdf_NOTDEF))
 	{
@@ -1168,41 +1133,15 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 		return false;
 	}
 	
-	// Free existing SST data before reallocating (prevents leak on repeated calls)
-	if (dataMessage.sst) {
-		free(dataMessage.sst);
-		dataMessage.sst = NULL;
-	}
+	// Clear existing data (vectors auto-free memory)
+	dataMessage.sst.clear();
 	dataMessage.hasSeaTemp = false;
-
-	// Free existing salinity data before reallocating
-	if (dataMessage.salinity) {
-		free(dataMessage.salinity);
-		dataMessage.salinity = NULL;
-	}
+	dataMessage.salinity.clear();
 	dataMessage.hasSalinity = false;
-
-	ncdfLog("[ncdf] readTimeStepData: freeing existing data\n");
-	if (dataMessage.ucurr) {
-		ncdfLog("[ncdf] readTimeStepData: freeing ucurr=%p\n", dataMessage.ucurr);
-		free(dataMessage.ucurr);
-		dataMessage.ucurr = NULL;
-	}
-	if (dataMessage.vcurr) {
-		ncdfLog("[ncdf] readTimeStepData: freeing vcurr=%p\n", dataMessage.vcurr);
-		free(dataMessage.vcurr);
-		dataMessage.vcurr = NULL;
-	}
-	if (dataMessage.uvlats) {
-		ncdfLog("[ncdf] readTimeStepData: freeing uvlats=%p\n", dataMessage.uvlats);
-		free(dataMessage.uvlats);
-		dataMessage.uvlats = NULL;
-	}
-	if (dataMessage.uvlons) {
-		ncdfLog("[ncdf] readTimeStepData: freeing uvlons=%p\n", dataMessage.uvlons);
-		free(dataMessage.uvlons);
-		dataMessage.uvlons = NULL;
-	}
+	ncdfLog("[ncdf] readTimeStepData: clearing existing data\n");
+	dataMessage.ucurr.clear();
+	dataMessage.vcurr.clear();
+	// uvlats/uvlons removed — getInterpolatedValue uses flat arrays directly
 
 	int ncid;
 	int retval;
@@ -1392,64 +1331,16 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 
 	// ncid and filename are freed at the end of the function (after SST read)
 
-	dataMessage.ucurr = (double*)calloc(nbr_uv, sizeof(double));
-	if (!dataMessage.ucurr) {
-		free(u_vals);
-		free(v_vals);
-		nc_close(ncid);
-		delete[] filename;
-		return false;
-	}
+	dataMessage.ucurr.resize(nbr_uv, ncdf_NOTDEF);
+	dataMessage.vcurr.resize(nbr_uv, ncdf_NOTDEF);
 
-	dataMessage.vcurr = (double*)calloc(nbr_uv, sizeof(double));
-	if (!dataMessage.vcurr) {
-		free(dataMessage.ucurr);
-		dataMessage.ucurr = NULL;
-		free(u_vals);
-		free(v_vals);
-		nc_close(ncid);
-		delete[] filename;
-		return false;
-	}
-	
-	dataMessage.uvlats = (double*)calloc(nbr_uv, sizeof(double));
-	if (!dataMessage.uvlats) {
-		free(dataMessage.vcurr); dataMessage.vcurr = NULL;
-		free(dataMessage.ucurr); dataMessage.ucurr = NULL;
-		free(u_vals);
-		free(v_vals);
-		nc_close(ncid);
-		delete[] filename;
-		return false;
-	}
-
-	dataMessage.uvlons = (double*)calloc(nbr_uv, sizeof(double));
-	if (!dataMessage.uvlons) {
-		free(dataMessage.uvlats); dataMessage.uvlats = NULL;
-		free(dataMessage.vcurr); dataMessage.vcurr = NULL;
-		free(dataMessage.ucurr); dataMessage.ucurr = NULL;
-		free(u_vals);
-		free(v_vals);
-		nc_close(ncid);
-		delete[] filename;
-		return false;
-	}
-	
-	// 
 	size_t count_records = 0;
 	if (lat_before_lon) {
 		for (size_t j = 0; j < dataMessage.latLength; j++) {
 			for (size_t k = 0; k < dataMessage.lonLength; k++) {
 				if (u_vals[count_records] != fill_value_u && v_vals[count_records] != fill_value_v) {
-					dataMessage.uvlats[count_records] = dataMessage.latValues[j];
-					dataMessage.uvlons[count_records] = dataMessage.lonValues[k];
 					dataMessage.ucurr[count_records] = (double)u_vals[count_records];
 					dataMessage.vcurr[count_records] = (double)v_vals[count_records];
-				} else {
-					dataMessage.uvlats[count_records] = ncdf_NOTDEF;
-					dataMessage.uvlons[count_records] = ncdf_NOTDEF;
-					dataMessage.ucurr[count_records] = ncdf_NOTDEF;
-					dataMessage.vcurr[count_records] = ncdf_NOTDEF;
 				}
 				count_records++;
 			}
@@ -1458,15 +1349,8 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 		for (size_t k = 0; k < dataMessage.lonLength; k++) {
 			for (size_t j = 0; j < dataMessage.latLength; j++) {
 				if (u_vals[count_records] != fill_value_u && v_vals[count_records] != fill_value_v) {
-					dataMessage.uvlats[count_records] = dataMessage.latValues[j];
-					dataMessage.uvlons[count_records] = dataMessage.lonValues[k];
 					dataMessage.ucurr[count_records] = (double)u_vals[count_records];
 					dataMessage.vcurr[count_records] = (double)v_vals[count_records];
-				} else {
-					dataMessage.uvlats[count_records] = ncdf_NOTDEF;
-					dataMessage.uvlons[count_records] = ncdf_NOTDEF;
-					dataMessage.ucurr[count_records] = ncdf_NOTDEF;
-					dataMessage.vcurr[count_records] = ncdf_NOTDEF;
 				}
 				count_records++;
 			}
@@ -1524,7 +1408,7 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 				float sst_fill = -32767.0f;
 				nc_get_att_float(ncid, sst_varid_local, "_FillValue", &sst_fill);
 
-				dataMessage.sst = (double*)calloc(nbr_uv, sizeof(double));
+				dataMessage.sst.resize(nbr_uv, ncdf_NOTDEF);
 				for (size_t k = 0; k < nbr_uv; k++) {
 					double val = (double)sst_vals[k];
 					// Kelvin: typical 271~308K; Celsius: typical -2~35°C
@@ -1583,7 +1467,7 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 				float sal_fill = -32767.0f;
 				nc_get_att_float(ncid, sal_varid_local, "_FillValue", &sal_fill);
 
-				dataMessage.salinity = (double*)calloc(nbr_uv, sizeof(double));
+				dataMessage.salinity.resize(nbr_uv, ncdf_NOTDEF);
 				for (size_t k = 0; k < nbr_uv; k++) {
 					double val = (double)sal_vals[k];
 					if (!isnan(val) && isfinite(val) && val != sal_fill && val > 0.0 && val < 100.0) {
@@ -1677,36 +1561,8 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 	        return;
 	    }
 
-	    // Clean up old grids (atomic swap: save old, set NULL, nc_get will rebuild via readncdfFile)
-	    wxUint32 oldMeridian = myMessage.noPointsMeridian;
-	    double **oldGridu = gridu; gridu = NULL;
-	    double **oldGridv = gridv; gridv = NULL;
-	    double **oldGridMag = gridMag; gridMag = NULL;
-	    double **oldGridSST = gridSST; gridSST = NULL;
-	    double **oldGridSalinity = gridSalinity; gridSalinity = NULL;
-	    hasSeaTemp = false;
-	    hasSalinity = false;
-	    // Free old grids after setting pointers to NULL (prevents stale access)
-	    if (oldGridu) {
-	        for (wxUint32 i = 0; i < oldMeridian; ++i) delete[] oldGridu[i];
-	        delete[] oldGridu;
-	    }
-	    if (oldGridv) {
-	        for (wxUint32 i = 0; i < oldMeridian; ++i) delete[] oldGridv[i];
-	        delete[] oldGridv;
-	    }
-	    if (oldGridMag) {
-	        for (wxUint32 i = 0; i < oldMeridian; ++i) delete[] oldGridMag[i];
-	        delete[] oldGridMag;
-	    }
-	    if (oldGridSST) {
-	        for (wxUint32 i = 0; i < oldMeridian; ++i) delete[] oldGridSST[i];
-	        delete[] oldGridSST;
-	    }
-	    if (oldGridSalinity) {
-	        for (wxUint32 i = 0; i < oldMeridian; ++i) delete[] oldGridSalinity[i];
-	        delete[] oldGridSalinity;
-	    }
+	    // Clean up old data before loading new file
+	    myMessage.clear();
 	    m_lastSelectedTimeIndex = -1;
 	    pPlugIn->GetncdfOverlayFactory()->reset();
 
@@ -1781,29 +1637,8 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 				m_lastSelectedTimeIndex = -1;
 				m_choiceTime->Clear();
 
-				// Clean up old grids before loading new file (GRIB pattern: reset on file change)
-				if (gridu) {
-					for (wxUint32 i = 0; i < myMessage.noPointsMeridian; ++i) delete[] gridu[i];
-					delete[] gridu; gridu = NULL;
-				}
-				if (gridv) {
-					for (wxUint32 i = 0; i < myMessage.noPointsMeridian; ++i) delete[] gridv[i];
-					delete[] gridv; gridv = NULL;
-				}
-				if (gridMag) {
-					for (wxUint32 i = 0; i < myMessage.noPointsMeridian; ++i) delete[] gridMag[i];
-					delete[] gridMag; gridMag = NULL;
-				}
-				if (gridSST) {
-					for (wxUint32 i = 0; i < myMessage.noPointsMeridian; ++i) delete[] gridSST[i];
-					delete[] gridSST; gridSST = NULL;
-				}
-				if (gridSalinity) {
-					for (wxUint32 i = 0; i < myMessage.noPointsMeridian; ++i) delete[] gridSalinity[i];
-					delete[] gridSalinity; gridSalinity = NULL;
-				}
-				hasSeaTemp = false;
-				hasSalinity = false;
+				// Clean up old data before loading new file
+				myMessage.clear();
 				pPlugIn->GetncdfOverlayFactory()->reset();
 
 				int ret = nc_get(fileName);
@@ -1894,7 +1729,7 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 
 		if (readTimeStepData(myData)) {
 			ncdfLog("[ncdf] onTreeSelectionChanged: readTimeStepData OK, hasSeaTemp=%d sst=%p\n",
-				(int)myData.hasSeaTemp, (void*)myData.sst);
+				(int)myData.hasSeaTemp, (void*)myData.sst.data());
 			ncdfLog("[ncdf] onTreeSelectionChanged: calling readncdfFile...\n");
 			this->my_ncdfReader->readncdfFile(myData);
 			ncdfLog("[ncdf] onTreeSelectionChanged: readncdfFile returned\n");
@@ -1977,8 +1812,22 @@ void MainDialog::onTimeChange(wxCommandEvent& event){
         m_sTimeline->SetValue(selectedIndex);
         m_isTreeUpdating = false;
 
-        readTimeStepData(myData);
+        ncdfLog("[ncdf] onTimeChange: idx=%d, ucurr.size=%zu, vcurr.size=%zu, latLen=%d, lonLen=%d\n",
+            selectedIndex, myData.ucurr.size(), myData.vcurr.size(),
+            (int)myData.latLength, (int)myData.lonLength);
+        bool readOk = readTimeStepData(myData);
+        ncdfLog("[ncdf] onTimeChange: readTimeStepData=%d, ucurr.size=%zu, vcurr.size=%zu\n",
+            (int)readOk, myData.ucurr.size(), myData.vcurr.size());
+        if (!readOk) {
+            ncdfLog("[ncdf] onTimeChange: readTimeStepData FAILED for idx=%d\n", selectedIndex);
+            return;
+        }
         my_ncdfReader->readncdfFile(myData);
+        ncdfLog("[ncdf] onTimeChange: ucurr.size=%zu vcurr.size=%zu ni=%d nj=%d ready=%d needsRebuild=%d\n",
+            myMessage.ucurr.size(), myMessage.vcurr.size(),
+            (int)myMessage.lonLength, (int)myMessage.latLength,
+            (int)pPlugIn->GetncdfOverlayFactory()->isReadyToRender(),
+            (int)pPlugIn->GetncdfOverlayFactory()->m_currentOverlay.needsRebuild);
         RequestRefresh(m_parent);
     }
 }
@@ -2045,8 +1894,22 @@ void MainDialog::OnTimeline(wxScrollEvent& event)
         }
         m_isTreeUpdating = false;
 
-        readTimeStepData(myData);
+        ncdfLog("[ncdf] OnTimeline: idx=%d, ucurr.size=%zu, vcurr.size=%zu, latLen=%d, lonLen=%d\n",
+            selectedIndex, myData.ucurr.size(), myData.vcurr.size(),
+            (int)myData.latLength, (int)myData.lonLength);
+        bool readOk = readTimeStepData(myData);
+        ncdfLog("[ncdf] OnTimeline: readTimeStepData=%d, ucurr.size=%zu, vcurr.size=%zu\n",
+            (int)readOk, myData.ucurr.size(), myData.vcurr.size());
+        if (!readOk) {
+            ncdfLog("[ncdf] OnTimeline: readTimeStepData FAILED for idx=%d\n", selectedIndex);
+            return;
+        }
         my_ncdfReader->readncdfFile(myData);
+        ncdfLog("[ncdf] OnTimeline: ucurr.size=%zu vcurr.size=%zu ni=%d nj=%d ready=%d needsRebuild=%d\n",
+            myMessage.ucurr.size(), myMessage.vcurr.size(),
+            (int)myMessage.lonLength, (int)myMessage.latLength,
+            (int)pPlugIn->GetncdfOverlayFactory()->isReadyToRender(),
+            (int)pPlugIn->GetncdfOverlayFactory()->m_currentOverlay.needsRebuild);
         RequestRefresh(m_parent);
     }
 }
@@ -2068,12 +1931,6 @@ void MainDialog::onDCurrentClick( wxCommandEvent& event )
 void MainDialog::onBmpCurrentForceClick(wxCommandEvent& event)
 {
 	pPlugIn->m_bShowCurrentForce = m_checkBoxBmpCurrentForce->GetValue();
-	if (pPlugIn->m_bShowCurrentForce) {
-		m_checkBoxSeaTemp->SetValue(false);
-		pPlugIn->m_bShowSeaTemp = false;
-		m_checkBoxSalinity->SetValue(false);
-		pPlugIn->m_bShowSalinity = false;
-	}
 	RequestRefresh(m_parent);
 }
 
@@ -2086,12 +1943,6 @@ void MainDialog::onParticlesClick(wxCommandEvent& event)
 void MainDialog::onSeaTempClick(wxCommandEvent& event)
 {
 	pPlugIn->m_bShowSeaTemp = m_checkBoxSeaTemp->GetValue();
-	if (pPlugIn->m_bShowSeaTemp) {
-		m_checkBoxBmpCurrentForce->SetValue(false);
-		pPlugIn->m_bShowCurrentForce = false;
-		m_checkBoxSalinity->SetValue(false);
-		pPlugIn->m_bShowSalinity = false;
-	}
 	RequestRefresh(m_parent);
 }
 
@@ -2114,12 +1965,6 @@ void MainDialog::onIsoSalClick(wxCommandEvent& event)
 void MainDialog::onSalinityClick(wxCommandEvent& event)
 {
 	pPlugIn->m_bShowSalinity = m_checkBoxSalinity->GetValue();
-	if (pPlugIn->m_bShowSalinity) {
-		m_checkBoxBmpCurrentForce->SetValue(false);
-		pPlugIn->m_bShowCurrentForce = false;
-		m_checkBoxSeaTemp->SetValue(false);
-		pPlugIn->m_bShowSeaTemp = false;
-	}
 	RequestRefresh(m_parent);
 }
 
@@ -2178,37 +2023,6 @@ void MainDialog::onLICCurrClick(wxCommandEvent& event)
 	pPlugIn->m_settingsCurrent.licFlow = m_checkBoxLICCurr->GetValue();
 	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
 	if (pof) pof->SetBicubicMode(true);
-	RequestRefresh(m_parent);
-}
-void MainDialog::onAnimateClick(wxCommandEvent& event)
-{
-	pPlugIn->m_settingsCurrent.animate = m_checkBoxAnimate->GetValue();
-	// Invalidate displacement map to force recomputation
-	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
-	if (pof) {
-		pof->DeleteDispTexture();
-		pof->SetBicubicMode(true);
-	}
-	RequestRefresh(m_parent);
-}
-void MainDialog::onAnimateSSTClick(wxCommandEvent& event)
-{
-	pPlugIn->m_settingsSeaTemp.animate = m_checkBoxAnimateSST->GetValue();
-	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
-	if (pof) {
-		pof->DeleteDispTexture();
-		pof->SetBicubicMode(true);
-	}
-	RequestRefresh(m_parent);
-}
-void MainDialog::onAnimateSalClick(wxCommandEvent& event)
-{
-	pPlugIn->m_settingsSalinity.animate = m_checkBoxAnimateSal->GetValue();
-	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
-	if (pof) {
-		pof->DeleteDispTexture();
-		pof->SetBicubicMode(true);
-	}
 	RequestRefresh(m_parent);
 }
 void MainDialog::onInterpSSTChange(wxCommandEvent& event)
@@ -2471,3 +2285,7 @@ void MainDialog::BuildHelpPage(){
 	// Download page replaced by Settings page - no-op
 }
 
+
+void MainDialog::onAnimateSSTClick(wxCommandEvent& event) { event.Skip(); }
+void MainDialog::onAnimateSalClick(wxCommandEvent& event) { event.Skip(); }
+void MainDialog::onAnimateClick(wxCommandEvent& event) { event.Skip(); }

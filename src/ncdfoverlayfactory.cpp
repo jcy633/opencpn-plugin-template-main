@@ -226,12 +226,12 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 
     // Guard: must have valid gui and at least one grid
     if (!gui) return false;
-    bool hasCurrentGrid = (gui->gridu && gui->gridv);
-    bool hasSSTGrid = (gui->gridSST && gui->hasSeaTemp);
-    bool hasSalinityGrid = (gui->gridSalinity && gui->hasSalinity);
+    bool hasCurrentGrid = gui->myMessage.hasCurrent();
+    bool hasSSTGrid = gui->myMessage.hasSSTData();
+    bool hasSalinityGrid = gui->myMessage.hasSalData();
     if (!hasCurrentGrid && !hasSSTGrid && !hasSalinityGrid) {
         static int s_nullDbg = 0;
-        if (s_nullDbg < 5) { wxLogMessage(_T("[render] SKIP: gridu=%p gridv=%p gridSST=%p gridSal=%p"), (void*)gui->gridu, (void*)gui->gridv, (void*)gui->gridSST, (void*)gui->gridSalinity); s_nullDbg++; }
+        if (s_nullDbg < 5) { wxLogMessage(_T("[render] SKIP: ucurr.size=%zu vcurr.size=%zu sst.size=%zu sal.size=%zu"), gui->myMessage.ucurr.size(), gui->myMessage.vcurr.size(), gui->myMessage.sst.size(), gui->myMessage.salinity.size()); s_nullDbg++; }
         return false;
     }
     if (gui->myMessage.lonLength < 2 || gui->myMessage.latLength < 2) return false;
@@ -269,7 +269,7 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 
     static int s_frameDbg = 0;
     if (s_frameDbg < 5) {
-        wxLogMessage(_T("[render] frame %d gridu=%p gridv=%p gridSST=%p gridSal=%p"), s_frameDbg, (void*)gui->gridu, (void*)gui->gridv, (void*)gui->gridSST, (void*)gui->gridSalinity);
+        wxLogMessage(_T("[render] frame %d ucurr.size=%zu vcurr.size=%zu sst.size=%zu sal.size=%zu"), s_frameDbg, gui->myMessage.ucurr.size(), gui->myMessage.vcurr.size(), gui->myMessage.sst.size(), gui->myMessage.salinity.size());
         s_frameDbg++;
     }
     
@@ -290,9 +290,9 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 
 	static int s_renderDbg = 0;
 	if (s_renderDbg < 10) {
-		wxLogMessage(_T("[render] ready=%d gui=%p gridu=%p ni=%d showF=%d showD=%d showP=%d"),
+		wxLogMessage(_T("[render] ready=%d gui=%p ucurr.size=%zu ni=%d showF=%d showD=%d showP=%d"),
 			(int)m_bReadyToRender, gui,
-			gui ? (void*)gui->gridu : nullptr,
+			gui ? gui->myMessage.ucurr.size() : (size_t)0,
 			gui ? (int)gui->myMessage.lonLength : 0,
 			plugin ? (int)plugin->m_bShowCurrentForce : -1,
 			plugin ? (int)plugin->m_bShowCurrentDir : -1,
@@ -301,7 +301,7 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 	}
 
 	// Current color map overlay (delegated to per-type overlay)
-	if(plugin->m_bShowCurrentForce && gui->gridu && gui->gridv && !m_pdc) {
+	if(plugin->m_bShowCurrentForce && gui->myMessage.hasCurrent() && !m_pdc) {
 #ifdef ocpnUSE_GL
 	      glDisable(GL_TEXTURE_2D);
 	      glBindTexture(GL_TEXTURE_2D, 0);
@@ -311,19 +311,8 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 	      m_currentSCurve = plugin->m_settingsCurrent.sCurve;
 	      m_currentSlopeShading = plugin->m_settingsCurrent.slopeShading;
 	      m_currentSlopeMode = 0;
-	      if (m_currentSlopeShading && gui->gridMag) {
-	          int c_ni = gui->myMessage.lonLength, c_nj = gui->myMessage.latLength;
-	          double dMin = 1e30, dMax = -1e30;
-	          for (int jj = 0; jj < c_nj; jj++)
-	              for (int ii = 0; ii < c_ni; ii++) {
-	                  double v = gui->gridMag[jj][ii];
-	                  if (v != ncdf_NOTDEF && v == v && isfinite(v)) {
-	                      if (v < dMin) dMin = v; if (v > dMax) dMax = v;
-	                  }
-	              }
-	          m_currentDataMin = (float)dMin;
-	          m_currentDataMax = (float)dMax;
-	      }
+	      m_currentDataMin = m_currentOverlay.cachedDataMin;
+	      m_currentDataMax = m_currentOverlay.cachedDataMax;
 	      m_currentOverlay.RenderColorMap(vp, gui, plugin, this, m_useShader, m_currentInterpMode);
 #endif
 	}
@@ -342,7 +331,7 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 	}
 
 	// Sea temperature color map overlay
-	if (plugin->m_bShowSeaTemp && gui && gui->gridSST && gui->hasSeaTemp && !m_pdc) {
+	if (plugin->m_bShowSeaTemp && gui && gui->myMessage.hasSSTData() && !m_pdc) {
 #ifdef ocpnUSE_GL
 		m_useShader = s_shaderOk && (plugin->m_settingsSeaTemp.interpMode >= 1);
 		m_currentInterpMode = plugin->m_settingsSeaTemp.interpMode;
@@ -350,30 +339,19 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 		m_currentSCurve = plugin->m_settingsSeaTemp.sCurve;
 		m_currentSlopeShading = plugin->m_settingsSeaTemp.slopeShading;
 		m_currentSlopeMode = 1;
-		if (m_currentSlopeShading && gui->gridSST) {
-			int sni = gui->myMessage.lonLength, snj = gui->myMessage.latLength;
-			double dMin = 1e30, dMax = -1e30;
-			for (int jj = 0; jj < snj; jj++)
-				for (int ii = 0; ii < sni; ii++) {
-					double v = gui->gridSST[jj][ii];
-					if (v != ncdf_NOTDEF && v == v && isfinite(v)) {
-						if (v < dMin) dMin = v; if (v > dMax) dMax = v;
-					}
-				}
-			m_currentDataMin = (float)dMin;
-			m_currentDataMax = (float)dMax;
-		}
+		m_currentDataMin = m_seaTempOverlay.cachedDataMin;
+		m_currentDataMax = m_seaTempOverlay.cachedDataMax;
 		m_seaTempOverlay.RenderColorMap(vp, gui, plugin, this, m_useShader, m_currentInterpMode);
 #endif
 	}
 
 	// Sea temperature isolines
-	if (plugin->m_bShowSeaTempIso && gui && gui->gridSST && gui->hasSeaTemp) {
+	if (plugin->m_bShowSeaTempIso && gui && gui->myMessage.hasSSTData()) {
 		m_seaTempOverlay.RenderIsoLines(vp, gui);
 	}
 
 	// Salinity color map overlay
-	if (plugin->m_bShowSalinity && gui && gui->gridSalinity && gui->hasSalinity && !m_pdc) {
+	if (plugin->m_bShowSalinity && gui && gui->myMessage.hasSalData() && !m_pdc) {
 #ifdef ocpnUSE_GL
 		m_useShader = s_shaderOk && (plugin->m_settingsSalinity.interpMode >= 1);
 		m_currentInterpMode = plugin->m_settingsSalinity.interpMode;
@@ -381,25 +359,14 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 		m_currentSCurve = plugin->m_settingsSalinity.sCurve;
 		m_currentSlopeShading = plugin->m_settingsSalinity.slopeShading;
 		m_currentSlopeMode = 0;
-		if (m_currentSlopeShading && gui->gridSalinity) {
-			int sni = gui->myMessage.lonLength, snj = gui->myMessage.latLength;
-			double dMin = 1e30, dMax = -1e30;
-			for (int jj = 0; jj < snj; jj++)
-				for (int ii = 0; ii < sni; ii++) {
-					double v = gui->gridSalinity[jj][ii];
-					if (v != ncdf_NOTDEF && v == v && isfinite(v)) {
-						if (v < dMin) dMin = v; if (v > dMax) dMax = v;
-					}
-				}
-			m_currentDataMin = (float)dMin;
-			m_currentDataMax = (float)dMax;
-		}
+		m_currentDataMin = m_salinityOverlay.cachedDataMin;
+		m_currentDataMax = m_salinityOverlay.cachedDataMax;
 		m_salinityOverlay.RenderColorMap(vp, gui, plugin, this, m_useShader, m_currentInterpMode);
 #endif
 	}
 
 	// Salinity isolines
-	if (plugin->m_settingsSalinity.showIsoLines && plugin->m_bShowSalinity && gui && gui->gridSalinity && gui->hasSalinity) {
+	if (plugin->m_settingsSalinity.showIsoLines && plugin->m_bShowSalinity && gui && gui->myMessage.hasSalData()) {
 		m_salinityOverlay.RenderIsoLines(vp, gui);
 	}
 
@@ -422,13 +389,13 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 			{0.50, 0, 200, 80}, {0.75, 220, 220, 20}, {1.00, 240, 100, 20},
 			{1.50, 220, 20, 20}
 		};
-		if (plugin->m_bShowSeaTemp && gui && gui->hasSeaTemp) {
+		if (plugin->m_bShowSeaTemp && gui && gui->myMessage.hasSSTData()) {
 			m_legend.SetData(tempStops, 9, "\xC2\xB0" "C", "Sea Temperature");
 			m_legend.Draw((int)vp->pix_width, (int)vp->pix_height);
-		} else if (plugin->m_bShowSalinity && gui && gui->hasSalinity) {
+		} else if (plugin->m_bShowSalinity && gui && gui->myMessage.hasSalData()) {
 			m_legend.SetData(salStops, 14, "PSU", "Salinity");
 			m_legend.Draw((int)vp->pix_width, (int)vp->pix_height);
-		} else if (plugin->m_bShowCurrentForce && gui && gui->gridMag) {
+		} else if (plugin->m_bShowCurrentForce && gui && gui->myMessage.hasCurrent()) {
 			m_legend.SetData(currStops, 7, "m/s", "Current Speed");
 			m_legend.Draw((int)vp->pix_width, (int)vp->pix_height);
 		}
@@ -1434,7 +1401,7 @@ void ncdfOverlayFactory::DeleteLICTexture()
 
 void ncdfOverlayFactory::BuildLICTexture(int ni, int nj)
 {
-    if (!gui || !gui->gridu || !gui->gridv || ni < 3 || nj < 3) return;
+    if (!gui || !gui->myMessage.hasCurrent() || ni < 3 || nj < 3) return;
 
     // Generate float noise field (padded)
     const int STEPS = 40;
@@ -1450,15 +1417,16 @@ void ncdfOverlayFactory::BuildLICTexture(int ni, int nj)
     unsigned char* licData = new(std::nothrow) unsigned char[ni * nj * 4];
     if (!licData) { delete[] noiseField; return; }
 
-    double** uGrid = gui->gridu;
-    double** vGrid = gui->gridv;
+    // Access vector field directly from message (no intermediate grid needed)
 
     // Normalize vector field to [-1, 1] texture space
     double maxSpeed = 0;
     for (int j = 0; j < nj; j++)
         for (int i = 0; i < ni; i++) {
-            if (uGrid[j][i] == ncdf_NOTDEF || vGrid[j][i] == ncdf_NOTDEF) continue;
-            double sp = sqrt(uGrid[j][i]*uGrid[j][i] + vGrid[j][i]*vGrid[j][i]);
+            double uval = gui->myMessage.getU(i, j);
+            double vval = gui->myMessage.getV(i, j);
+            if (uval == ncdf_NOTDEF || vval == ncdf_NOTDEF) continue;
+            double sp = sqrt(uval*uval + vval*vval);
             if (maxSpeed < sp) maxSpeed = sp;
         }
     if (maxSpeed < 1e-10) maxSpeed = 1.0;
@@ -1486,10 +1454,10 @@ void ncdfOverlayFactory::BuildLICTexture(int ni, int nj)
         int xi = (int)px, yi = (int)py;
         if (xi < 0 || xi >= ni - 1 || yi < 0 || yi >= nj - 1) return false;
         float fx = px - xi, fy = py - yi;
-        double uu = (1-fx)*(1-fy)*uGrid[yi][xi] + fx*(1-fy)*uGrid[yi][xi+1]
-                   + (1-fx)*fy*uGrid[yi+1][xi] + fx*fy*uGrid[yi+1][xi+1];
-        double vv = (1-fx)*(1-fy)*vGrid[yi][xi] + fx*(1-fy)*vGrid[yi][xi+1]
-                   + (1-fx)*fy*vGrid[yi+1][xi] + fx*fy*vGrid[yi+1][xi+1];
+        double uu = (1-fx)*(1-fy)*gui->myMessage.getU(xi, yi) + fx*(1-fy)*gui->myMessage.getU(xi+1, yi)
+                   + (1-fx)*fy*gui->myMessage.getU(xi, yi+1) + fx*fy*gui->myMessage.getU(xi+1, yi+1);
+        double vv = (1-fx)*(1-fy)*gui->myMessage.getV(xi, yi) + fx*(1-fy)*gui->myMessage.getV(xi+1, yi)
+                   + (1-fx)*fy*gui->myMessage.getV(xi, yi+1) + fx*fy*gui->myMessage.getV(xi+1, yi+1);
         if (uu == ncdf_NOTDEF || vv == ncdf_NOTDEF) return false;
         outU = (float)(uu / maxSpeed);
         outV = (float)(vv / maxSpeed);
@@ -1501,7 +1469,7 @@ void ncdfOverlayFactory::BuildLICTexture(int ni, int nj)
             int off = (j * ni + i) * 4;
 
             // Land: white (no modulation)
-            if (uGrid[j][i] == ncdf_NOTDEF || vGrid[j][i] == ncdf_NOTDEF) {
+            if (gui->myMessage.getU(i, j) == ncdf_NOTDEF || gui->myMessage.getV(i, j) == ncdf_NOTDEF) {
                 licData[off] = licData[off+1] = licData[off+2] = 255;
                 licData[off+3] = 255;
                 continue;

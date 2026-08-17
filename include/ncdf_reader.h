@@ -2,28 +2,37 @@
 #define ncdfREADER_H
 
 #include <wx/wx.h>
+#include <vector>
+#include <cstring>
+
+#ifndef ncdf_NOTDEF
+#define ncdf_NOTDEF -999999999
+#endif
 
 class MainDialog;
 class ncdfData;
-class ncdfDataMessage;
 
 class ncdfDataMessage
 {
 public:
-	ncdfDataMessage() : ucurr(NULL), vcurr(NULL), uvlats(NULL), uvlons(NULL),
-		sst(NULL), hasSeaTemp(false),
-		salinity(NULL), hasSalinity(false),
-		latValues(NULL), lonValues(NULL), timeValues(NULL), /*depthValues(NULL),*/
-		timeIndex(-1), /*depthIndex(0),*/ timeValid(false) {}
+	ncdfDataMessage() :
+		hasSeaTemp(false), hasSalinity(false),
+		latValues(NULL), lonValues(NULL), timeValues(NULL),
+		timeIndex(-1), timeValid(false),
+		numberOfPoints(0), minutesAfterStart(0),
+		noPointsParallel(0), noPointsMeridian(0),
+		firstGridPointLat(0), firstGridPointLong(0),
+		lastGridPointLat(0), lastGridPointLong(0),
+		iDirectionIncr(0), jDirectionIncr(0),
+		latLength(0), lonLength(0), timeLength(0) {}
 
 	ncdfDataMessage(const ncdfDataMessage& other) :
-		ucurr(NULL), vcurr(NULL), uvlats(NULL), uvlons(NULL),
-		sst(NULL), hasSeaTemp(false),
-		salinity(NULL), hasSalinity(false),
-		latValues(NULL), lonValues(NULL), timeValues(NULL), timeIndex(-1) {
+		hasSeaTemp(false), hasSalinity(false),
+		latValues(NULL), lonValues(NULL), timeValues(NULL),
+		timeIndex(-1) {
 		copyFrom(other);
 	}
-	
+
 	ncdfDataMessage& operator=(const ncdfDataMessage& other) {
 		if (this != &other) {
 			clear();
@@ -31,49 +40,48 @@ public:
 		}
 		return *this;
 	}
-	
+
 	~ncdfDataMessage() {
-		freeAll();
+		clear();
 	}
 
 	void clear() {
-		if (ucurr) { free(ucurr); ucurr = NULL; }
-		if (vcurr) { free(vcurr); vcurr = NULL; }
-		if (uvlats) { free(uvlats); uvlats = NULL; }
-		if (uvlons) { free(uvlons); uvlons = NULL; }
-		if (sst) { free(sst); sst = NULL; }
-		if (salinity) { free(salinity); salinity = NULL; }
-		// Note: latValues, lonValues, timeValues are NOT freed here.
-		// clear() is used for reassignment (operator=) where copyFrom()
-		// will immediately overwrite these pointers. The destructor calls
-		// freeAll() to properly release all memory including coordinates.
-	}
-
-	// Free everything including coordinate arrays (used by destructor)
-	void freeAll() {
-		clear();
+		ucurr.clear(); vcurr.clear();
+		sst.clear(); salinity.clear();
 		if (latValues) { free(latValues); latValues = NULL; }
 		if (lonValues) { free(lonValues); lonValues = NULL; }
 		if (timeValues) { free(timeValues); timeValues = NULL; }
 	}
-	
+
+	// Direct grid access — no intermediate 2D array needed
+	double getU(int i, int j) const {
+		if (ucurr.empty() || j < 0 || j >= (int)latLength || i < 0 || i >= (int)lonLength) return ncdf_NOTDEF;
+		return ucurr[j * lonLength + i];
+	}
+	double getV(int i, int j) const {
+		if (vcurr.empty() || j < 0 || j >= (int)latLength || i < 0 || i >= (int)lonLength) return ncdf_NOTDEF;
+		return vcurr[j * lonLength + i];
+	}
+	double getSST(int i, int j) const {
+		if (sst.empty() || j < 0 || j >= (int)latLength || i < 0 || i >= (int)lonLength) return ncdf_NOTDEF;
+		return sst[j * lonLength + i];
+	}
+	double getSal(int i, int j) const {
+		if (salinity.empty() || j < 0 || j >= (int)latLength || i < 0 || i >= (int)lonLength) return ncdf_NOTDEF;
+		return salinity[j * lonLength + i];
+	}
+
+	// Check if data type has valid data
+	bool hasCurrent() const { return !ucurr.empty() && !vcurr.empty(); }
+	bool hasSSTData() const { return !sst.empty() && hasSeaTemp; }
+	bool hasSalData() const { return !salinity.empty() && hasSalinity; }
+
 private:
 	void copyFrom(const ncdfDataMessage& other) {
 		latLength = other.latLength;
 		lonLength = other.lonLength;
 		timeLength = other.timeLength;
-		
-		version = other.version;
-		length = other.length;
-		discipline = other.discipline;
-		masterTableVersion = other.masterTableVersion;
-		localTableVersion = other.localTableVersion;
-		referenceTime = other.referenceTime;
-		dt = other.dt;
-		productionState = other.productionState;
-		dataType = other.dataType;
-		templateNo3 = other.templateNo3;
-		noSectors = other.noSectors;
+
 		noPointsParallel = other.noPointsParallel;
 		noPointsMeridian = other.noPointsMeridian;
 		firstGridPointLat = other.firstGridPointLat;
@@ -82,37 +90,15 @@ private:
 		lastGridPointLong = other.lastGridPointLong;
 		iDirectionIncr = other.iDirectionIncr;
 		jDirectionIncr = other.jDirectionIncr;
-		resCompFlag = other.resCompFlag;
-		scanMode = other.scanMode;
-		templateNo4 = other.templateNo4;
-		paramCategory = other.paramCategory;
-		paramNo = other.paramNo;
-		typeOfProcess = other.typeOfProcess;
-		hoursAfterRefTime = other.hoursAfterRefTime;
-		minutesAfterRefTime = other.minutesAfterRefTime;
-		indicatorTimeRange = other.indicatorTimeRange;
-		forcastTimeUnits = other.forcastTimeUnits;
-		templateNo5 = other.templateNo5;
-		referenceVal = other.referenceVal;
-		binaryScaleFacor = other.binaryScaleFacor;
-		decimalScaleFactor = other.decimalScaleFactor;
-		noBits = other.noBits;
-		typeOrgFieldValues = other.typeOrgFieldValues;
-		scaledValueSurface1 = other.scaledValueSurface1;
-		compressionType = other.compressionType;
-		compressionRatio = other.compressionRatio;
-		bmpMask = NULL;
-		bmpSize = 0;
-		data = NULL;
+
 		dataDateTime = other.dataDateTime;
 		minutesAfterStart = other.minutesAfterStart;
 		numberOfPoints = other.numberOfPoints;
 		fileName = other.fileName;
 		timeIndex = other.timeIndex;
 		timeValid = other.timeValid;
-		/*depthIndex = other.depthIndex;
-		depthLength = other.depthLength;*/
-		
+
+		// Coordinate arrays (deep copy, raw pointer)
 		if (other.latValues) {
 			latValues = (wxDouble*)calloc(latLength, sizeof(wxDouble));
 			memcpy(latValues, other.latValues, latLength * sizeof(wxDouble));
@@ -125,168 +111,63 @@ private:
 			timeValues = (double*)calloc(timeLength, sizeof(double));
 			memcpy(timeValues, other.timeValues, timeLength * sizeof(double));
 		}
-		/*if (other.depthValues) {
-			depthValues = (wxDouble*)calloc(depthLength, sizeof(wxDouble));
-			memcpy(depthValues, other.depthValues, depthLength * sizeof(wxDouble));
-		}*/
-		
-		size_t nbr_uv = latLength * lonLength;
-		if (other.ucurr) {
-			ucurr = (double*)calloc(nbr_uv, sizeof(double));
-			memcpy(ucurr, other.ucurr, nbr_uv * sizeof(double));
-		}
-		if (other.vcurr) {
-			vcurr = (double*)calloc(nbr_uv, sizeof(double));
-			memcpy(vcurr, other.vcurr, nbr_uv * sizeof(double));
-		}
-		if (other.uvlats) {
-			uvlats = (double*)calloc(nbr_uv, sizeof(double));
-			memcpy(uvlats, other.uvlats, nbr_uv * sizeof(double));
-		}
-		if (other.uvlons) {
-			uvlons = (double*)calloc(nbr_uv, sizeof(double));
-			memcpy(uvlons, other.uvlons, nbr_uv * sizeof(double));
-		}
-		if (other.sst) {
-			sst = (double*)calloc(nbr_uv, sizeof(double));
-			memcpy(sst, other.sst, nbr_uv * sizeof(double));
-		}
+
+		// Data arrays — vector assignment = deep copy, automatic memory management
+		ucurr = other.ucurr;
+		vcurr = other.vcurr;
+		sst = other.sst;
 		hasSeaTemp = other.hasSeaTemp;
-		if (other.salinity) {
-			salinity = (double*)calloc(nbr_uv, sizeof(double));
-			memcpy(salinity, other.salinity, nbr_uv * sizeof(double));
-		}
+		salinity = other.salinity;
 		hasSalinity = other.hasSalinity;
 	}
-	
+
 public:
-	double getInterpolatedValue(const ncdfDataMessage& g2message, double** grid, double px, double py, bool numericalInterpolation) const;
+	// Bilinear interpolation from flat array
+	double getInterpolatedValue(const ncdfDataMessage& msg, const double* data,
+	                            double px, double py, bool numericalInterpolation) const;
+
+	// Joint UV interpolation — one boundary check, one index calc, Hermite smoothing
+	bool getInterpolatedUV(const ncdfDataMessage& msg, double px, double py,
+	                       double &uOut, double &vOut) const;
+
 	bool isPointInMap(const ncdfDataMessage& g2message, double x, double y) const;
 	bool isXInMap(const ncdfDataMessage& g2message, double x) const;
 	bool isYInMap(const ncdfDataMessage& g2message, double y) const;
-	bool hasValue(double** grid, wxUint32 nolat, wxUint32 nolon, unsigned int indexlon, unsigned int indexlat) const;
+
 	bool		timeValid;
-	wxUint8		version;
-	wxUint64 	length;
-	wxUint8		discipline;
-	wxUint8		masterTableVersion;
-	wxUint8		localTableVersion;
-	wxUint8  	referenceTime;
-	wxDateTime	dt;
-	wxUint8		productionState;
-	wxUint8		dataType;
-	wxUint16	templateNo3;
-	wxUint32	noSectors;
+
+	// Grid geometry
 	wxUint32	noPointsParallel;
 	wxUint32	noPointsMeridian;
 	wxDouble	firstGridPointLat;
 	wxDouble	firstGridPointLong;
 	wxDouble	lastGridPointLat;
 	wxDouble	lastGridPointLong;
-	wxDouble	iDirectionIncr; // i = parallel
-	wxDouble	jDirectionIncr; // j = Meridian;
-	wxUint8		resCompFlag;
-	wxUint8		scanMode;
-	wxUint16	templateNo4;
-	wxUint8		paramCategory;
-	wxUint8		paramNo;
-	wxUint8		typeOfProcess;
-	wxUint16	hoursAfterRefTime;
-	wxUint8		minutesAfterRefTime;
-	wxUint8		indicatorTimeRange;
-	wxUint32	forcastTimeUnits;
-	wxUint16	templateNo5;
-	wxFloat32	referenceVal;
-	wxUint16	binaryScaleFacor;
-	wxUint16	decimalScaleFactor;
-	wxUint8		noBits;
-	wxUint8		typeOrgFieldValues;
-	wxUint32	scaledValueSurface1;
-	wxUint8		compressionType;
-	wxUint8		compressionRatio;
-	wxInt8*		bmpMask;
-	wxInt32		bmpSize;
-	wxDouble*	data;
-	wxDouble*    ucurr;
-	wxDouble*    vcurr;
+	wxDouble	iDirectionIncr; // longitude step
+	wxDouble	jDirectionIncr; // latitude step
+
+	// Data arrays — vector for automatic memory management
+	std::vector<double> ucurr;
+	std::vector<double> vcurr;
+	std::vector<double> sst;
+	bool hasSeaTemp;
+	std::vector<double> salinity;
+	bool hasSalinity;
+
 	wxDateTime  dataDateTime;
 	int			minutesAfterStart;
-	wxDouble* uvlats;
-	wxDouble* uvlons;
-	wxDouble* sst;
-	bool hasSeaTemp;
-	wxDouble* salinity;
-	bool hasSalinity;
 	int			numberOfPoints;
 	wxString   fileName;
-	
+
 	wxDouble* latValues;
 	wxDouble* lonValues;
 	double* timeValues;
-	wxDouble* depthValues;
 	size_t latLength;
 	size_t lonLength;
 	size_t timeLength;
-	size_t depthLength;
 	int timeIndex;
-	int depthIndex;
 };
 
-
-struct message
-{
-	wxUint8		version;
-	wxUint64 	length;
-	wxUint8		discipline;
-	// end Sector 0
-	wxUint8		masterTableVersion;
-	wxUint8		localTableVersion;
-	wxUint8  	referenceTime;
-	wxDateTime	dt;
-	wxUint8		productionState;
-	wxUint8		dataType;
-	// end Secstor 1
-	wxUint16	templateNo3;
-	wxUint32	noSectors;
-	wxUint32	noPointsParallel;
-	wxUint32	noPointsMeridian;
-	wxDouble	firstGridPointLat;
-	wxDouble	firstGridPointLong;
-	wxDouble	lastGridPointLat;
-	wxDouble	lastGridPointLong;
-	wxDouble	iDirectionIncr; // i = parallel
-	wxDouble	jDirectionIncr; // j = Meridian;
-	wxUint8		resCompFlag;
-	wxUint8		scanMode;
-	// end Secstor 3
-	wxUint16	templateNo4;
-	wxUint8		paramCategory;
-	wxUint8		paramNo;
-	wxUint8		typeOfProcess;
-	wxUint16	hoursAfterRefTime;
-	wxUint8		minutesAfterRefTime;
-	wxUint8		indicatorTimeRange;
-	wxUint32	forcastTimeUnits;
-	// end Secstor 4
-	wxUint16	templateNo5;
-	wxFloat32	referenceVal;
-	wxUint16	binaryScaleFacor;
-	wxUint16	decimalScaleFactor;
-	wxUint8		noBits;
-	wxUint8		typeOrgFieldValues;
-	wxUint32	scaledValueSurface1;
-	wxUint8		compressionType;
-	wxUint8		compressionRatio;
-	// end Secstor 5
-	wxInt8*		bmpMask;
-	wxInt32		bmpSize;
-	// end Secstor 6
-	wxDouble*	data;
-	wxDouble    ucurr;
-	wxDouble    vcurr;
-	// end Sector 7
-};
-typedef struct message ncdfMessage;
 
 class ncdfReader {
 
@@ -296,18 +177,11 @@ public:
 
 	void readncdfFile(const ncdfDataMessage& dataMessage);
 
-
-	ncdfData *ncdfData1;
-	ncdfMessage ncdfMessage1;
-	ncdfDataMessage ncdf2DataMessage;
 	bool isReading;
 	bool gotData = false;
 
-
 private:
 	MainDialog *gui;
-	double **gridu;
-	double **gridv;
 };
 
 #endif // ncdfREADER_H
