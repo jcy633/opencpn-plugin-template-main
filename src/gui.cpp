@@ -6,6 +6,7 @@
 ///////////////////////////////////////////////////////////////////////////
 
 #include "gui.h"
+#include "folder.xpm"
 
 ///////////////////////////////////////////////////////////////////////////
 
@@ -39,12 +40,9 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 
 	bSizer2->Add( m_textCtrlDir, 0, wxALL, 5 );
 
-	m_fileButton = new wxBitmapButton( m_panel1, wxID_ANY, wxNullBitmap, wxDefaultPosition, wxDefaultSize, wxBU_AUTODRAW|0 );
+	m_fileButton = new wxBitmapButton( m_panel1, wxID_ANY, wxBitmap(openfile), wxDefaultPosition, wxDefaultSize, wxBU_AUTODRAW|0 );
 
 	bSizer2->Add( m_fileButton, 0, wxALL, 5 );
-
-	m_bpSettings = new wxBitmapButton( m_panel1, wxID_ANY, wxNullBitmap, wxDefaultPosition, wxDefaultSize, wxBU_AUTODRAW|0 );
-	bSizer2->Add( m_bpSettings, 0, wxALL, 5 );
 
 
 	fgSizer1->Add( bSizer2, 0, wxEXPAND, 5 );
@@ -80,13 +78,13 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 
 	bSizer5->Add( 24, 0, 1, wxEXPAND, 5 );
 
-	m_bpPrev = new wxBitmapButton( m_panel1, wxID_ANY, wxNullBitmap, wxDefaultPosition, wxDefaultSize, wxBU_AUTODRAW|0 );
+	m_bpPrev = new wxBitmapButton( m_panel1, wxID_ANY, wxBitmap(prev1), wxDefaultPosition, wxDefaultSize, wxBU_AUTODRAW|0 );
 	bSizer5->Add( m_bpPrev, 0, wxALL, 5 );
 
-	m_bpNext = new wxBitmapButton( m_panel1, wxID_ANY, wxNullBitmap, wxDefaultPosition, wxDefaultSize, wxBU_AUTODRAW|0 );
+	m_bpNext = new wxBitmapButton( m_panel1, wxID_ANY, wxBitmap(next1), wxDefaultPosition, wxDefaultSize, wxBU_AUTODRAW|0 );
 	bSizer5->Add( m_bpNext, 0, wxALL, 5 );
 
-	m_bpPlay = new wxBitmapButton( m_panel1, wxID_ANY, wxNullBitmap, wxDefaultPosition, wxDefaultSize, wxBU_AUTODRAW|0 );
+	m_bpPlay = new wxBitmapButton( m_panel1, wxID_ANY, wxBitmap(play), wxDefaultPosition, wxDefaultSize, wxBU_AUTODRAW|0 );
 	bSizer5->Add( m_bpPlay, 0, wxALL|wxALIGN_CENTER_VERTICAL, 5 );
 
 	m_sTimeline = new wxSlider( m_panel1, wxID_ANY, 0, 0, 10, wxDefaultPosition, wxSize(200, -1), wxSL_HORIZONTAL );
@@ -105,105 +103,60 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	fgSizer2 = new wxFlexGridSizer( 5, 1, 0, 0 );
 	fgSizer2->SetFlexibleDirection( wxBOTH );
 	fgSizer2->SetNonFlexibleGrowMode( wxFLEX_GROWMODE_SPECIFIED );
+	// --- Data overlay rows (aligned grid layout) ---
+	// All three rows: [indent 24px] [checkbox] [label 80px] [value 75px] [unit 30px]
 
-	// Row 1: Current checkbox + direction display
-	wxBoxSizer* bSizer11;
-	bSizer11 = new wxBoxSizer( wxHORIZONTAL );
+	// Row 1: Current color map
+	wxFlexGridSizer* bSizerCurrent;
+	bSizerCurrent = new wxFlexGridSizer( 1, 5, 0, 0 );
+	bSizerCurrent->Add( 24, 0, 0, wxEXPAND, 0 );
+	m_checkBoxBmpCurrentForce = new wxCheckBox( m_panel1, wxID_ANY, wxEmptyString );
+	bSizerCurrent->Add( m_checkBoxBmpCurrentForce, 0, wxALL|wxALIGN_CENTER_VERTICAL, 0 );
+	m_staticText40 = new wxStaticText( m_panel1, wxID_ANY, _("Current") );
+	m_staticText40->SetMinSize( wxSize( 80,-1 ) );
+	bSizerCurrent->Add( m_staticText40, 0, wxALIGN_CENTER_VERTICAL|wxALL, 0 );
+	m_textCtrlCurrentForce = new wxTextCtrl( m_panel1, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize( 75,-1 ), wxTE_READONLY|wxTE_CENTRE );
+	bSizerCurrent->Add( m_textCtrlCurrentForce, 0, wxALL|wxALIGN_CENTER_VERTICAL, 0 );
+	m_staticText41 = new wxStaticText( m_panel1, wxID_ANY, _("m/s") );
+	m_staticText41->SetMinSize( wxSize( 30,-1 ) );
+	bSizerCurrent->Add( m_staticText41, 0, wxALL|wxALIGN_CENTER_VERTICAL, 2 );
+	fgSizer2->Add( bSizerCurrent, 0, 0, 5 );
 
-	bSizer11->Add( 24, 0, 0, wxEXPAND, 5 );
-
-	m_checkBoxDCurrent = new wxCheckBox( m_panel1, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, 0 );
-	bSizer11->Add( m_checkBoxDCurrent, 0, wxALL|wxALIGN_CENTER_VERTICAL, 0 );
-
-	m_staticText333 = new wxStaticText( m_panel1, wxID_ANY, _("Current"), wxDefaultPosition, wxDefaultSize, 0 );
-	m_staticText333->Wrap( -1 );
-	m_staticText333->SetMinSize( wxSize( 75,-1 ) );
-	bSizer11->Add( m_staticText333, 0, wxALIGN_CENTER_VERTICAL|wxALL, 0 );
-
-	m_textCtrlCurrentDir = new wxTextCtrl( m_panel1, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize( 75,-1 ), wxTE_READONLY|wxTE_RIGHT );
-	bSizer11->Add( m_textCtrlCurrentDir, 0, wxALL, 0 );
-
-	m_staticText341 = new wxStaticText( m_panel1, wxID_ANY, _("Deg"), wxDefaultPosition, wxDefaultSize, 0 );
-	m_staticText341->Wrap( -1 );
-	bSizer11->Add( m_staticText341, 0, wxALL|wxALIGN_CENTER_VERTICAL, 2 );
-
-	fgSizer2->Add( bSizer11, 0, 0, 5 );
-
-	// Row 2: Force checkbox + force display
-	wxBoxSizer* bSizer14;
-	bSizer14 = new wxBoxSizer( wxHORIZONTAL );
-
-	bSizer14->Add( 24, 0, 0, wxEXPAND, 0 );
-
-	m_checkBoxBmpCurrentForce = new wxCheckBox( m_panel1, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, 0 );
-	bSizer14->Add( m_checkBoxBmpCurrentForce, 0, wxALL|wxALIGN_CENTER_VERTICAL, 0 );
-
-	m_staticText40 = new wxStaticText( m_panel1, wxID_ANY, _("Force"), wxDefaultPosition, wxDefaultSize, 0 );
-	m_staticText40->Wrap( -1 );
-	m_staticText40->SetMinSize( wxSize( 75,-1 ) );
-	bSizer14->Add( m_staticText40, 0, wxALIGN_CENTER_VERTICAL|wxALL, 0 );
-
-	m_textCtrlCurrentForce = new wxTextCtrl( m_panel1, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize( 75,-1 ), wxTE_READONLY|wxTE_RIGHT );
-	bSizer14->Add( m_textCtrlCurrentForce, 0, wxALL, 0 );
-
-	m_staticText41 = new wxStaticText( m_panel1, wxID_ANY, _("kts"), wxDefaultPosition, wxDefaultSize, 0 );
-	m_staticText41->Wrap( -1 );
-	bSizer14->Add( m_staticText41, 0, wxALL|wxALIGN_CENTER_VERTICAL, 2 );
-
-	fgSizer2->Add( bSizer14, 0, 0, 5 );
-
-	// Row 3: Numbers checkbox (hidden - feature removed)
-	m_checkBoxNumbers = new wxCheckBox( m_panel1, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, 0 );
-	m_staticTextNumbers = new wxStaticText( m_panel1, wxID_ANY, _("Numbers"), wxDefaultPosition, wxDefaultSize, 0 );
-	m_checkBoxNumbers->Hide();
-	m_staticTextNumbers->Hide();
-
-	// Row 4: Particles checkbox
-	wxBoxSizer* bSizerPart;
-	bSizerPart = new wxBoxSizer( wxHORIZONTAL );
-
-	bSizerPart->Add( 24, 0, 0, wxEXPAND, 0 );
-
-	m_checkBoxParticles = new wxCheckBox( m_panel1, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, 0 );
-	bSizerPart->Add( m_checkBoxParticles, 0, wxALL|wxALIGN_CENTER_VERTICAL, 0 );
-
-	m_staticTextParticles = new wxStaticText( m_panel1, wxID_ANY, _("Particles"), wxDefaultPosition, wxDefaultSize, 0 );
-	m_staticTextParticles->Wrap( -1 );
-	bSizerPart->Add( m_staticTextParticles, 0, wxALIGN_CENTER_VERTICAL|wxALL, 0 );
-
-	fgSizer2->Add( bSizerPart, 0, 0, 5 );
-
-	// Sea Temperature overlay (hidden by default)
+	// Row 2: Sea Temperature
 	wxFlexGridSizer* bSizerSeaTemp;
-	bSizerSeaTemp = new wxFlexGridSizer( 1, 4, 0, 0 );
-	bSizerSeaTemp->SetFlexibleDirection( wxBOTH );
-	bSizerSeaTemp->SetNonFlexibleGrowMode( wxFLEX_GROWMODE_SPECIFIED );
+	bSizerSeaTemp = new wxFlexGridSizer( 1, 5, 0, 0 );
 	bSizerSeaTemp->Add( 24, 0, 0, wxEXPAND, 0 );
-	m_checkBoxSeaTemp = new wxCheckBox( m_panel1, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, 0 );
+	m_checkBoxSeaTemp = new wxCheckBox( m_panel1, wxID_ANY, wxEmptyString );
 	bSizerSeaTemp->Add( m_checkBoxSeaTemp, 0, wxALL|wxALIGN_CENTER_VERTICAL, 0 );
-	m_staticTextSeaTemp = new wxStaticText( m_panel1, wxID_ANY, _("Sea Temp"), wxDefaultPosition, wxDefaultSize, 0 );
-	m_staticTextSeaTemp->Wrap( -1 );
+	m_staticTextSeaTemp = new wxStaticText( m_panel1, wxID_ANY, _("Sea Temp") );
+	m_staticTextSeaTemp->SetMinSize( wxSize( 80,-1 ) );
 	bSizerSeaTemp->Add( m_staticTextSeaTemp, 0, wxALIGN_CENTER_VERTICAL|wxALL, 0 );
-	m_textCtrlSeaTemp = new wxTextCtrl( m_panel1, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize( 75,-1 ), wxTE_READONLY|wxTE_RIGHT );
+	m_textCtrlSeaTemp = new wxTextCtrl( m_panel1, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize( 75,-1 ), wxTE_READONLY|wxTE_CENTRE );
 	bSizerSeaTemp->Add( m_textCtrlSeaTemp, 0, wxALL|wxALIGN_CENTER_VERTICAL, 0 );
-	m_staticTextSeaTempUnit = new wxStaticText( m_panel1, wxID_ANY, _("\xc2\xb0""C"), wxDefaultPosition, wxDefaultSize, 0 );
-	m_staticTextSeaTempUnit->Wrap( -1 );
+	m_staticTextSeaTempUnit = new wxStaticText( m_panel1, wxID_ANY, wxString::FromUTF8("\xc2\xb0""C") );
+	m_staticTextSeaTempUnit->SetMinSize( wxSize( 30,-1 ) );
 	bSizerSeaTemp->Add( m_staticTextSeaTempUnit, 0, wxALL|wxALIGN_CENTER_VERTICAL, 2 );
 	fgSizer2->Add( bSizerSeaTemp, 0, 0, 5 );
 
-	// Salinity overlay (hidden by default)
+	// Row 3: Salinity
 	wxFlexGridSizer* bSizerSalinity;
 	bSizerSalinity = new wxFlexGridSizer( 1, 4, 0, 0 );
-	bSizerSalinity->SetFlexibleDirection( wxBOTH );
-	bSizerSalinity->SetNonFlexibleGrowMode( wxFLEX_GROWMODE_SPECIFIED );
 	bSizerSalinity->Add( 24, 0, 0, wxEXPAND, 0 );
-	m_checkBoxSalinity = new wxCheckBox( m_panel1, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, 0 );
+	m_checkBoxSalinity = new wxCheckBox( m_panel1, wxID_ANY, wxEmptyString );
 	bSizerSalinity->Add( m_checkBoxSalinity, 0, wxALL|wxALIGN_CENTER_VERTICAL, 0 );
-	m_staticTextSalinity = new wxStaticText( m_panel1, wxID_ANY, _("Salinity"), wxDefaultPosition, wxDefaultSize, 0 );
-	m_staticTextSalinity->Wrap( -1 );
+	m_staticTextSalinity = new wxStaticText( m_panel1, wxID_ANY, _("Salinity") );
+	m_staticTextSalinity->SetMinSize( wxSize( 80,-1 ) );
 	bSizerSalinity->Add( m_staticTextSalinity, 0, wxALIGN_CENTER_VERTICAL|wxALL, 0 );
-	m_textCtrlSalinity = new wxTextCtrl( m_panel1, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize( 75,-1 ), wxTE_READONLY|wxTE_RIGHT );
+	m_textCtrlSalinity = new wxTextCtrl( m_panel1, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize( 75,-1 ), wxTE_READONLY|wxTE_CENTRE );
 	bSizerSalinity->Add( m_textCtrlSalinity, 0, wxALL|wxALIGN_CENTER_VERTICAL, 0 );
+	fgSizer2->Add( bSizerSalinity, 0, 0, 5 );
+
+	// Numbers checkbox (hidden - feature removed)
+	m_checkBoxNumbers = new wxCheckBox( m_panel1, wxID_ANY, wxEmptyString );
+	m_staticTextNumbers = new wxStaticText( m_panel1, wxID_ANY, _("Numbers") );
+	m_checkBoxNumbers->Hide();
+	m_staticTextNumbers->Hide();
+
 	fgSizer2->Add( bSizerSalinity, 0, 0, 5 );
 
 
@@ -256,6 +209,13 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	sizerCurr->AddSpacer(0);
 	m_checkBoxAnimate = new wxCheckBox( m_panelCurrSettings, wxID_ANY, _("Flow animation") );
 	sizerCurr->Add( m_checkBoxAnimate, 0, wxALL, 3 );
+	sizerCurr->AddSpacer(0);
+	// Arrow and particle checkboxes (moved from Data panel)
+	m_checkBoxDCurrent = new wxCheckBox( m_panelCurrSettings, wxID_ANY, _("Show direction arrows") );
+	sizerCurr->Add( m_checkBoxDCurrent, 0, wxALL, 3 );
+	sizerCurr->AddSpacer(0);
+	m_checkBoxParticles = new wxCheckBox( m_panelCurrSettings, wxID_ANY, _("Show particles") );
+	sizerCurr->Add( m_checkBoxParticles, 0, wxALL, 3 );
 	m_panelCurrSettings->SetSizer( sizerCurr );
 	m_notebookSettings->AddPage( m_panelCurrSettings, _("Current") );
 

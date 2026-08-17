@@ -75,16 +75,10 @@ MainDialog::MainDialog(wxWindow *parent) : ncdfDialog( parent ), m_isTreeUpdatin
 	m_lastSelectedTimeIndex = -1;
 
 	// Hide all data checkboxes by default (shown when data is loaded)
-	m_checkBoxDCurrent->Hide();
-	m_staticText333->Hide();
-	m_textCtrlCurrentDir->Hide();
-	m_staticText341->Hide();
 	m_checkBoxBmpCurrentForce->Hide();
 	m_staticText40->Hide();
 	m_textCtrlCurrentForce->Hide();
 	m_staticText41->Hide();
-	m_checkBoxParticles->Hide();
-	m_staticTextParticles->Hide();
 	m_checkBoxSeaTemp->Hide();
 	m_staticTextSeaTemp->Hide();
 	m_textCtrlSeaTemp->Hide();
@@ -92,10 +86,6 @@ MainDialog::MainDialog(wxWindow *parent) : ncdfDialog( parent ), m_isTreeUpdatin
 	m_checkBoxSalinity->Hide();
 	m_staticTextSalinity->Hide();
 	m_textCtrlSalinity->Hide();
-
-	m_bpPrev->SetBitmap(wxBitmap(prev1));
-	m_bpNext->SetBitmap(wxBitmap(next1));
-	m_fileButton->SetBitmap(wxBitmap(openfile));
 
 	// Connect prev/next buttons to handlers
 	m_bpPrev->Connect( wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler( MainDialog::onPrev ), NULL, this );
@@ -128,9 +118,12 @@ MainDialog::~MainDialog()
 	
 	pPlugIn->m_choice = m_choiceTime->GetSelection();
 	pPlugIn->m_bShowCurrentDir = m_checkBoxDCurrent->GetValue();
+	pPlugIn->m_bShowCurrentDir = m_checkBoxDCurrent->GetValue();
 	pPlugIn->m_bShowCurrentForce = m_checkBoxBmpCurrentForce->GetValue();
 	pPlugIn->m_bShowParticles = m_checkBoxParticles->GetValue();
-	
+	pPlugIn->m_bShowSeaTemp = m_checkBoxSeaTemp->GetValue();
+	pPlugIn->m_bShowSalinity = m_checkBoxSalinity->GetValue();
+
 	ncdfLog("[ncdf] ~MainDialog: settings saved\n");
 	
 	myDataVector.clear();
@@ -148,6 +141,8 @@ void MainDialog::setPlugIn(ncdf_pi *p)
   m_checkBoxDCurrent->SetValue(pPlugIn->m_bShowCurrentDir);
   m_checkBoxBmpCurrentForce->SetValue(pPlugIn->m_bShowCurrentForce);
   m_checkBoxParticles->SetValue(pPlugIn->m_bShowParticles);
+  m_checkBoxSeaTemp->SetValue(pPlugIn->m_bShowSeaTemp);
+  m_checkBoxSalinity->SetValue(pPlugIn->m_bShowSalinity);
   m_choiceInterpCurr->SetSelection(pPlugIn->m_settingsCurrent.interpMode);
   m_checkBoxSmoothCurr->SetValue(pPlugIn->m_settingsCurrent.smoothColors);
   m_checkBoxSharpenCurr->SetValue(pPlugIn->m_settingsCurrent.sharpen);
@@ -181,7 +176,6 @@ void MainDialog::SetCursorLatLon(double lat, double lon)
 
 void MainDialog::UpdateTrackingControls()
 {
-   this->m_textCtrlCurrentDir->Clear();
    this->m_textCtrlCurrentForce->Clear();
    if (myMessage.hasCurrent()) printCurrentData();
 
@@ -212,7 +206,11 @@ void MainDialog::UpdateTrackingControls()
 
 void MainDialog::printCurrentData()
 {
-	  if (!myMessage.hasCurrent()) return;
+	  m_textCtrlCurrentForce->Clear();
+	  if (!myMessage.hasCurrent()) {
+		m_textCtrlCurrentForce->SetValue(_T("--"));
+		return;
+	  }
 	  wxString t;
       double cDir;
       double cForce;
@@ -220,15 +218,13 @@ void MainDialog::printCurrentData()
       cDir = myMessage.getInterpolatedValue(myMessage, myMessage.ucurr.data(), m_cursor_lon, m_cursor_lat, true);
 	  cForce = myMessage.getInterpolatedValue(myMessage, myMessage.vcurr.data(), m_cursor_lon, m_cursor_lat, true);
 
-			if ((cDir != ncdf_NOTDEF) && (cForce != ncdf_NOTDEF))
+			if ((cDir != ncdf_NOTDEF) && (cForce != ncdf_NOTDEF) && isfinite(cDir) && isfinite(cForce))
 			{
-				double force = sqrt(cDir*cDir + cForce*cForce)*3.6 / 1.852;
-				t.Printf(_T("%3.1f kts"), force);
+				double speed = sqrt(cDir*cDir + cForce*cForce);
+				t.Printf(_T("%.2f m/s"), speed);
 				this->m_textCtrlCurrentForce->SetValue(t);
-				double dir = 90. + (atan2(cForce, -cDir)  * 180. / PI) - 180;
-				if (dir < 0) dir = 360 + dir;
-				t.Printf(_T("%3.1f Deg"), dir);
-				this->m_textCtrlCurrentDir->SetValue(t);
+			} else {
+				this->m_textCtrlCurrentForce->SetValue(_T("--"));
 			}
 }
 
@@ -243,9 +239,9 @@ CurrentData MainDialog::getCurrentData(double lat, double lon)
 	cDir = myMessage.getInterpolatedValue(myMessage, myMessage.ucurr.data(), lon, lat, true);
 	cForce = myMessage.getInterpolatedValue(myMessage, myMessage.vcurr.data(), lon, lat, true);
 
-	if ((cDir != ncdf_NOTDEF) && (cForce != ncdf_NOTDEF))
+	if ((cDir != ncdf_NOTDEF) && (cForce != ncdf_NOTDEF) && isfinite(cDir) && isfinite(cForce))
 	{
-		result.force = sqrt(cDir*cDir + cForce*cForce)*3.6 / 1.852;
+		result.force = sqrt(cDir*cDir + cForce*cForce);  // m/s
 		result.dir = 90. + (atan2(cForce, -cDir)  * 180. / PI) - 180;
 		if (result.dir < 0) result.dir = 360 + result.dir;
 	}
@@ -1586,14 +1582,9 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 		// Show checkboxes based on file-level data availability
 		bool showCurrent = m_fileHasCurrent;
 		bool showSST = m_fileHasSeaTemp;
-		m_checkBoxDCurrent->Show(showCurrent);
-		m_staticText333->Show(showCurrent);
-		m_textCtrlCurrentDir->Show(showCurrent);
 		m_checkBoxBmpCurrentForce->Show(showCurrent);
 		m_staticText40->Show(showCurrent);
 		m_textCtrlCurrentForce->Show(showCurrent);
-		m_checkBoxParticles->Show(showCurrent);
-		m_staticTextParticles->Show(showCurrent);
 		m_checkBoxSeaTemp->Show(showSST);
 		m_staticTextSeaTemp->Show(showSST);
 		m_textCtrlSeaTemp->Show(showSST);
@@ -1606,25 +1597,17 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 			pPlugIn->m_bShowCurrentDir = false;
 			pPlugIn->m_bShowCurrentForce = false;
 			pPlugIn->m_bShowParticles = false;
-		} else {
-			// Auto-enable current rendering when current data is available (GRIB pattern)
-			pPlugIn->m_bShowCurrentDir = true;
-			pPlugIn->m_bShowCurrentForce = true;
-			pPlugIn->m_bShowParticles = true;
-			m_checkBoxDCurrent->SetValue(true);
-			m_checkBoxBmpCurrentForce->SetValue(true);
-			m_checkBoxParticles->SetValue(true);
+			m_checkBoxBmpCurrentForce->SetValue(false);
 		}
+		// When data IS available, keep user's persisted setting (no auto-enable)
 		if (!showSST) {
 			pPlugIn->m_bShowSeaTemp = false;
 			pPlugIn->m_bShowSeaTempIso = false;
+			m_checkBoxSeaTemp->SetValue(false);
 		}
-		if (showSalinity) {
-			// Auto-enable salinity rendering when salinity data is available
-			pPlugIn->m_bShowSalinity = true;
-			m_checkBoxSalinity->SetValue(true);
-		} else {
+		if (!showSalinity) {
 			pPlugIn->m_bShowSalinity = false;
+			m_checkBoxSalinity->SetValue(false);
 		}
 		return;
     }
@@ -1661,14 +1644,9 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 				// Auto-enable rendering for available data types (GRIB pattern)
 				bool showCur = m_fileHasCurrent;
 				bool showSST = m_fileHasSeaTemp;
-				m_checkBoxDCurrent->Show(showCur);
-				m_staticText333->Show(showCur);
-				m_textCtrlCurrentDir->Show(showCur);
 				m_checkBoxBmpCurrentForce->Show(showCur);
 				m_staticText40->Show(showCur);
 				m_textCtrlCurrentForce->Show(showCur);
-				m_checkBoxParticles->Show(showCur);
-				m_staticTextParticles->Show(showCur);
 				m_checkBoxSeaTemp->Show(showSST);
 				m_staticTextSeaTemp->Show(showSST);
 				m_textCtrlSeaTemp->Show(showSST);
@@ -1688,19 +1666,11 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 					pPlugIn->m_bShowCurrentDir = false;
 					pPlugIn->m_bShowCurrentForce = false;
 					pPlugIn->m_bShowParticles = false;
-				} else {
-					pPlugIn->m_bShowCurrentDir = true;
-					pPlugIn->m_bShowCurrentForce = true;
-					pPlugIn->m_bShowParticles = true;
-					m_checkBoxDCurrent->SetValue(true);
-					m_checkBoxBmpCurrentForce->SetValue(true);
-					m_checkBoxParticles->SetValue(true);
+					m_checkBoxBmpCurrentForce->SetValue(false);
 				}
-				if (showSal) {
-					pPlugIn->m_bShowSalinity = true;
-					m_checkBoxSalinity->SetValue(true);
-				} else {
+				if (!showSal) {
 					pPlugIn->m_bShowSalinity = false;
+					m_checkBoxSalinity->SetValue(false);
 				}
 			}
 		}
@@ -1764,14 +1734,9 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 	ncdfLog("[ncdf] onTreeSelectionChanged: showCurrent=%d showSST=%d showSalinity=%d (file-level)\n",
 		(int)showCurrent, (int)showSST, (int)showSalinity);
 	// Current checkboxes: show if file has current data
-	m_checkBoxDCurrent->Show(showCurrent);
-	m_staticText333->Show(showCurrent);
-	m_textCtrlCurrentDir->Show(showCurrent);
 	m_checkBoxBmpCurrentForce->Show(showCurrent);
 	m_staticText40->Show(showCurrent);
 	m_textCtrlCurrentForce->Show(showCurrent);
-	m_checkBoxParticles->Show(showCurrent);
-	m_staticTextParticles->Show(showCurrent);
 	// SST checkboxes: show if file has SST data
 	m_checkBoxSeaTemp->Show(showSST);
 	m_staticTextSeaTemp->Show(showSST);
@@ -1783,21 +1748,21 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 	m_textCtrlSalinity->Show(showSal);
 	// Force layout update
 	Layout();
-	// Disable plugin state for unavailable data types
+	// Disable plugin state for unavailable data types (keep user setting when available)
 	if (!showCurrent) {
 		pPlugIn->m_bShowCurrentDir = false;
 		pPlugIn->m_bShowCurrentForce = false;
 		pPlugIn->m_bShowParticles = false;
+		m_checkBoxBmpCurrentForce->SetValue(false);
 	}
 	if (!showSST) {
 		pPlugIn->m_bShowSeaTemp = false;
 		pPlugIn->m_bShowSeaTempIso = false;
+		m_checkBoxSeaTemp->SetValue(false);
 	}
-	if (showSal) {
-		pPlugIn->m_bShowSalinity = true;
-		m_checkBoxSalinity->SetValue(true);
-	} else {
+	if (!showSalinity) {
 		pPlugIn->m_bShowSalinity = false;
+		m_checkBoxSalinity->SetValue(false);
 	}
 
 	ncdfLog("[ncdf] onTreeSelectionChanged: completed\n");
@@ -1944,7 +1909,15 @@ void MainDialog::onDCurrentClick( wxCommandEvent& event )
 }
 void MainDialog::onBmpCurrentForceClick(wxCommandEvent& event)
 {
-	pPlugIn->m_bShowCurrentForce = m_checkBoxBmpCurrentForce->GetValue();
+	bool checked = m_checkBoxBmpCurrentForce->GetValue();
+	pPlugIn->m_bShowCurrentForce = checked;
+	// Mutual exclusion: uncheck SST and Salinity color maps
+	if (checked) {
+		m_checkBoxSeaTemp->SetValue(false);
+		pPlugIn->m_bShowSeaTemp = false;
+		m_checkBoxSalinity->SetValue(false);
+		pPlugIn->m_bShowSalinity = false;
+	}
 	RequestRefresh(m_parent);
 }
 
@@ -1956,7 +1929,15 @@ void MainDialog::onParticlesClick(wxCommandEvent& event)
 
 void MainDialog::onSeaTempClick(wxCommandEvent& event)
 {
-	pPlugIn->m_bShowSeaTemp = m_checkBoxSeaTemp->GetValue();
+	bool checked = m_checkBoxSeaTemp->GetValue();
+	pPlugIn->m_bShowSeaTemp = checked;
+	// Mutual exclusion: uncheck Current and Salinity color maps
+	if (checked) {
+		m_checkBoxBmpCurrentForce->SetValue(false);
+		pPlugIn->m_bShowCurrentForce = false;
+		m_checkBoxSalinity->SetValue(false);
+		pPlugIn->m_bShowSalinity = false;
+	}
 	RequestRefresh(m_parent);
 }
 
@@ -1978,7 +1959,15 @@ void MainDialog::onIsoSalClick(wxCommandEvent& event)
 
 void MainDialog::onSalinityClick(wxCommandEvent& event)
 {
-	pPlugIn->m_bShowSalinity = m_checkBoxSalinity->GetValue();
+	bool checked = m_checkBoxSalinity->GetValue();
+	pPlugIn->m_bShowSalinity = checked;
+	// Mutual exclusion: uncheck Current and SST color maps
+	if (checked) {
+		m_checkBoxBmpCurrentForce->SetValue(false);
+		pPlugIn->m_bShowCurrentForce = false;
+		m_checkBoxSeaTemp->SetValue(false);
+		pPlugIn->m_bShowSeaTemp = false;
+	}
 	RequestRefresh(m_parent);
 }
 

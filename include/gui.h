@@ -98,6 +98,7 @@ class ncdfDialog : public wxDialog
 		wxCheckBox* m_checkBoxSalinity;
 		wxStaticText* m_staticTextSalinity;
 		wxTextCtrl* m_textCtrlSalinity;
+		wxStaticText* m_staticTextSalinityUnit;
 		virtual void onSalinityClick( wxCommandEvent& event ) { event.Skip(); }
 		// Settings page (replaces Download)
 		wxPanel* m_panelSettings;

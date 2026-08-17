@@ -112,13 +112,13 @@ void ncdfOverlayFactory::RenderParticles(PlugIn_ViewPort *vp)
             ang = atan2(vx, vy) * 180.0 / PI;  // atan2(east, north) = bearing
             vkn = mag;
         } else { vkn = 0; ang = 0; }
-        if (it.m_Duration < max_duration - history_size && vkn > 0.3 && vkn < 100) {
-    // GRIB optimization: convert m/s to knots (1 m/s = 1.94 knots)
-    // This makes particles move at the same speed as GRIB
-    double d = vkn * run_count * 1.94;  // Match GRIB's knot-based speed
+        if (it.m_Duration < max_duration - history_size && vkn > 0.15 && vkn < 5.0) {
+    // Speed scaling: vkn is m/s, convert to nm displacement per update
+    // 1 m/s = 1.94 knots, run_count = frames between updates
+    double d = vkn * run_count * 1.94;  // nm displacement
             float angr = (float)(ang / 180.0 * PI);
             float latr = pp[1] * (float)PI / 180.0f;
-            float D = (float)(d / 3443.0);
+            float D = (float)(d / 3443.0);  // radians (Earth radius in nm)
             float sD = sinf(D), cD = cosf(D);
             float sy = sinf(latr), cy = cosf(latr);
             float sa = sinf(angr), ca = cosf(angr);
@@ -186,7 +186,7 @@ void ncdfOverlayFactory::RenderParticles(PlugIn_ViewPort *vp)
                 }
             }
         }
-        if (vkn < 0.3) continue;  // No valid position found
+        if (vkn < 0.15) continue;  // No valid position found (m/s)
         Particle np;
         np.m_Duration = rand() % (max_duration / 2);
         np.m_HistoryPos = 0; np.m_HistorySize = 1;

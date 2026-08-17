@@ -160,7 +160,7 @@ bool ncdfOverlayFactory::RenderncdfCurrentBmp()
 
                                           if ((vx != ncdf_NOTDEF) && (vy != ncdf_NOTDEF))
                                           {
-											    double  vkn = sqrt(vx*vx+vy*vy)*3.6/1.852;
+											    double  vkn = sqrt(vx*vx+vy*vy);  // m/s
 												if (vkn == 0){
 													a = 0;													
 												}else{
