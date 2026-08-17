@@ -104,7 +104,7 @@ public:
       bool              m_bShowSalinity;
       // Per-data-type rendering settings
       struct InterpSettings {
-          int  interpMode;      // 0=linear color, 1=linear scalar, 2=bicubic, 3=monotone bicubic
+          int  interpMode;      // 0=linear scalar, 1=bicubic, 2=monotone bicubic
           bool smoothColors;
           bool sharpen;
           bool anisoDiffusion;  // guided anisotropic diffusion (edge-preserving)

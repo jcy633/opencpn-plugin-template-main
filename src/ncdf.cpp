@@ -382,7 +382,7 @@ void MainDialog::readData(wxTreeItemId itemId) {
             fwprintf(logFile, L"[ncdf] readData: clearing myDataVector[%d]\n", m_lastSelectedTimeIndex);
             fflush(logFile);
         }
-		myDataVector[m_lastSelectedTimeIndex].clear();
+		myDataVector[m_lastSelectedTimeIndex].clearData();
 	}
 	
 	ncdfLog("[ncdf] readData: HELLO_SST_TEST idx=%d, vectorSize=%d\n", idx, (int)myDataVector.size());
@@ -665,6 +665,15 @@ int MainDialog::nc_get(wxString filestr){
 	ncdfLog("[ncdf] nc_get: myDataVector cleared\n");
 
 	m_lastSelectedTimeIndex = -1;
+
+	// Reset cached variable IDs (previous file may have had different variables)
+	m_cached_u_varid = -1;
+	m_cached_v_varid = -1;
+	m_cached_sst_varid = -1;
+	m_cached_sal_varid = -1;
+	m_fileHasCurrent = false;
+	m_fileHasSeaTemp = false;
+	m_fileHasSalinity = false;
 
 	ncdfLog("[ncdf] nc_get: declaring variables...\n");
 	int ncid;
@@ -1125,23 +1134,23 @@ int MainDialog::nc_get(wxString filestr){
 }
 
 bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
-	ncdfLog("[ncdf] readTimeStepData: timeIndex=%d, latLength=%d, lonLength=%d\n", 
-		dataMessage.timeIndex, (int)dataMessage.latLength, (int)dataMessage.lonLength);
-		
+	ncdfLog("[ncdf] readTimeStepData: timeIndex=%d, latLength=%d, lonLength=%d, ucurr.size=%zu\n",
+		dataMessage.timeIndex, (int)dataMessage.latLength, (int)dataMessage.lonLength, dataMessage.ucurr.size());
+
 	if (!dataMessage.latValues || !dataMessage.lonValues) {
 		ncdfLog("[ncdf] readTimeStepData: latValues or lonValues is NULL\n");
 		return false;
 	}
-	
-	// Clear existing data (vectors auto-free memory)
+
+	// Clear stale data and read fresh from nc4 file
+	// Data vectors are empty (first load) — read from nc4 file
+	// Clear any stale data before reading
 	dataMessage.sst.clear();
 	dataMessage.hasSeaTemp = false;
 	dataMessage.salinity.clear();
 	dataMessage.hasSalinity = false;
-	ncdfLog("[ncdf] readTimeStepData: clearing existing data\n");
 	dataMessage.ucurr.clear();
 	dataMessage.vcurr.clear();
-	// uvlats/uvlons removed — getInterpolatedValue uses flat arrays directly
 
 	int ncid;
 	int retval;
@@ -1704,14 +1713,17 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 			ncdfLog("[ncdf] onTreeSelectionChanged: completed\n");
 			return;
 		}
-		
-		// Only clear previous time step's data if switching to a different one
+
+		// Free previous time step's data only (keep coordinate metadata)
 		if (m_lastSelectedTimeIndex >= 0 && m_lastSelectedTimeIndex != idx &&
 		    m_lastSelectedTimeIndex < (int)myDataVector.size()) {
-			myDataVector[m_lastSelectedTimeIndex].clear();
+			myDataVector[m_lastSelectedTimeIndex].clearData();
 		}
 
 		myData = myDataVector[idx];
+		ncdfLog("[ncdf] onTreeSelectionChanged: AFTER COPY idx=%d, ucurr.size=%zu latValues=%p lonValues=%p fileName='%s' timeIndex=%d\n",
+			idx, myData.ucurr.size(), (void*)myData.latValues, (void*)myData.lonValues,
+			(const char*)myData.fileName.mb_str(), myData.timeIndex);
 		m_lastSelectedTimeIndex = idx;
 
 		// Sync slider with tree selection (guard against OnTimeline re-entrancy)
@@ -1728,11 +1740,12 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 		m_staticTextDateTime->SetLabel(timeText);
 
 		if (readTimeStepData(myData)) {
-			ncdfLog("[ncdf] onTreeSelectionChanged: readTimeStepData OK, hasSeaTemp=%d sst=%p\n",
-				(int)myData.hasSeaTemp, (void*)myData.sst.data());
+			ncdfLog("[ncdf] onTreeSelectionChanged: readTimeStepData OK, ucurr.size=%zu vcurr.size=%zu sst.size=%zu hasSeaTemp=%d\n",
+				myData.ucurr.size(), myData.vcurr.size(), myData.sst.size(), (int)myData.hasSeaTemp);
 			ncdfLog("[ncdf] onTreeSelectionChanged: calling readncdfFile...\n");
 			this->my_ncdfReader->readncdfFile(myData);
-			ncdfLog("[ncdf] onTreeSelectionChanged: readncdfFile returned\n");
+			ncdfLog("[ncdf] onTreeSelectionChanged: readncdfFile done, myMessage.ucurr.size=%zu myMessage.sst.size=%zu\n",
+				myMessage.ucurr.size(), myMessage.sst.size());
 			pPlugIn->GetncdfOverlayFactory()->renderSelectionRectangle = false;
 			ncdfLog("[ncdf] onTreeSelectionChanged: requesting refresh\n");
 			RequestRefresh(m_parent);
@@ -1842,8 +1855,9 @@ void MainDialog::OnTimeline(wxScrollEvent& event)
 
     // Only switch time steps within the current file (don't load new files)
     if (selectedIndex >= 0 && selectedIndex < (int)myDataVector.size()) {
+        // Free previous time step's data only (keep coordinate metadata)
         if (m_lastSelectedTimeIndex >= 0 && m_lastSelectedTimeIndex < (int)myDataVector.size()) {
-            myDataVector[m_lastSelectedTimeIndex].clear();
+            myDataVector[m_lastSelectedTimeIndex].clearData();
         }
 
         myData = myDataVector[selectedIndex];

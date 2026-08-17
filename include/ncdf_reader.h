@@ -45,9 +45,17 @@ public:
 		clear();
 	}
 
-	void clear() {
+	// Clear data arrays only (keep coordinate metadata for re-read)
+	void clearData() {
 		ucurr.clear(); vcurr.clear();
 		sst.clear(); salinity.clear();
+		hasSeaTemp = false;
+		hasSalinity = false;
+	}
+
+	// Clear everything including coordinate arrays (for destructor/file switch)
+	void clear() {
+		clearData();
 		if (latValues) { free(latValues); latValues = NULL; }
 		if (lonValues) { free(lonValues); lonValues = NULL; }
 		if (timeValues) { free(timeValues); timeValues = NULL; }

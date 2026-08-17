@@ -305,7 +305,7 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 #ifdef ocpnUSE_GL
 	      glDisable(GL_TEXTURE_2D);
 	      glBindTexture(GL_TEXTURE_2D, 0);
-	      m_useShader = s_shaderOk && (plugin->m_settingsCurrent.interpMode >= 1);
+	      m_useShader = s_shaderOk && (plugin->m_settingsCurrent.interpMode >= 0);
 	      m_currentInterpMode = plugin->m_settingsCurrent.interpMode;
 	      m_currentSmoothColors = plugin->m_settingsCurrent.smoothColors;
 	      m_currentSCurve = plugin->m_settingsCurrent.sCurve;
@@ -333,7 +333,7 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 	// Sea temperature color map overlay
 	if (plugin->m_bShowSeaTemp && gui && gui->myMessage.hasSSTData() && !m_pdc) {
 #ifdef ocpnUSE_GL
-		m_useShader = s_shaderOk && (plugin->m_settingsSeaTemp.interpMode >= 1);
+		m_useShader = s_shaderOk && (plugin->m_settingsSeaTemp.interpMode >= 0);
 		m_currentInterpMode = plugin->m_settingsSeaTemp.interpMode;
 		m_currentSmoothColors = plugin->m_settingsSeaTemp.smoothColors;
 		m_currentSCurve = plugin->m_settingsSeaTemp.sCurve;
@@ -353,7 +353,7 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 	// Salinity color map overlay
 	if (plugin->m_bShowSalinity && gui && gui->myMessage.hasSalData() && !m_pdc) {
 #ifdef ocpnUSE_GL
-		m_useShader = s_shaderOk && (plugin->m_settingsSalinity.interpMode >= 1);
+		m_useShader = s_shaderOk && (plugin->m_settingsSalinity.interpMode >= 0);
 		m_currentInterpMode = plugin->m_settingsSalinity.interpMode;
 		m_currentSmoothColors = plugin->m_settingsSalinity.smoothColors;
 		m_currentSCurve = plugin->m_settingsSalinity.sCurve;

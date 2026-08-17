@@ -223,7 +223,6 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 
 	// Helper lambda to create a settings tab
 	wxArrayString interpChoices;
-	interpChoices.Add(_("Linear (color)"));
 	interpChoices.Add(_("Linear (scalar)"));
 	interpChoices.Add(_("Bicubic"));
 	interpChoices.Add(_("Monotone bicubic"));
