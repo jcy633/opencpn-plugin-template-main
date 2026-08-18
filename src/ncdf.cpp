@@ -31,6 +31,8 @@
 #include "ncdf_reader.h"
 #include "ncdfdata.h"
 #include "ncdf_pi.h"
+#include "ncdfoverlayfactory.h"
+#include "ncdf_animate.h"
 #include <vector>
 
 using namespace std;
@@ -137,6 +139,7 @@ void MainDialog::setPlugIn(ncdf_pi *p)
 {
   this->pPlugIn = p;
   this->m_textCtrlDir->SetValue(pPlugIn->m_ncdf_dir);
+  fillDirTree(pPlugIn->m_ncdf_dir, true, 0);
   m_choiceTime->SetSelection(pPlugIn->m_choice);
   m_checkBoxDCurrent->SetValue(pPlugIn->m_bShowCurrentDir);
   m_checkBoxBmpCurrentForce->SetValue(pPlugIn->m_bShowCurrentForce);
@@ -1632,6 +1635,7 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 				// Clean up old data before loading new file
 				myMessage.clear();
 				pPlugIn->GetncdfOverlayFactory()->reset();
+				pPlugIn->GetncdfOverlayFactory()->m_animate.Cleanup();
 
 				int ret = nc_get(fileName);
 				if (ret != 0) {
@@ -2289,6 +2293,75 @@ void MainDialog::BuildHelpPage(){
 }
 
 
-void MainDialog::onAnimateSSTClick(wxCommandEvent& event) { event.Skip(); }
-void MainDialog::onAnimateSalClick(wxCommandEvent& event) { event.Skip(); }
-void MainDialog::onAnimateClick(wxCommandEvent& event) { event.Skip(); }
+void MainDialog::onAnimateClick(wxCommandEvent& event)
+{
+	bool checked = m_checkBoxAnimate->GetValue();
+	pPlugIn->m_settingsCurrent.animate = checked;
+	if (checked) {
+		m_checkBoxAnimateSST->SetValue(false);
+		pPlugIn->m_settingsSeaTemp.animate = false;
+		m_checkBoxAnimateSal->SetValue(false);
+		pPlugIn->m_settingsSalinity.animate = false;
+	}
+	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
+	if (pof) {
+		if (checked) {
+			pof->m_animate.Init(pPlugIn, this);
+			pof->m_animate.ComputeDisplacementMap();
+			pof->m_animateTimer.Start(100);
+		} else if (!pPlugIn->m_settingsSeaTemp.animate && !pPlugIn->m_settingsSalinity.animate) {
+			pof->m_animateTimer.Stop();
+			pof->m_animate.Cleanup();
+		}
+		pof->SetBicubicMode(true);
+	}
+	RequestRefresh(m_parent);
+}
+void MainDialog::onAnimateSSTClick(wxCommandEvent& event)
+{
+	bool checked = m_checkBoxAnimateSST->GetValue();
+	pPlugIn->m_settingsSeaTemp.animate = checked;
+	if (checked) {
+		m_checkBoxAnimate->SetValue(false);
+		pPlugIn->m_settingsCurrent.animate = false;
+		m_checkBoxAnimateSal->SetValue(false);
+		pPlugIn->m_settingsSalinity.animate = false;
+	}
+	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
+	if (pof) {
+		if (checked) {
+			pof->m_animate.Init(pPlugIn, this);
+			pof->m_animate.ComputeDisplacementMap();
+			pof->m_animateTimer.Start(100);
+		} else if (!pPlugIn->m_settingsCurrent.animate && !pPlugIn->m_settingsSalinity.animate) {
+			pof->m_animateTimer.Stop();
+			pof->m_animate.Cleanup();
+		}
+		pof->SetBicubicMode(true);
+	}
+	RequestRefresh(m_parent);
+}
+void MainDialog::onAnimateSalClick(wxCommandEvent& event)
+{
+	bool checked = m_checkBoxAnimateSal->GetValue();
+	pPlugIn->m_settingsSalinity.animate = checked;
+	if (checked) {
+		m_checkBoxAnimate->SetValue(false);
+		pPlugIn->m_settingsCurrent.animate = false;
+		m_checkBoxAnimateSST->SetValue(false);
+		pPlugIn->m_settingsSeaTemp.animate = false;
+	}
+	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
+	if (pof) {
+		if (checked) {
+			pof->m_animate.Init(pPlugIn, this);
+			pof->m_animate.ComputeDisplacementMap();
+			pof->m_animateTimer.Start(100);
+		} else if (!pPlugIn->m_settingsCurrent.animate && !pPlugIn->m_settingsSeaTemp.animate) {
+			pof->m_animateTimer.Stop();
+			pof->m_animate.Cleanup();
+		}
+		pof->SetBicubicMode(true);
+	}
+	RequestRefresh(m_parent);
+}

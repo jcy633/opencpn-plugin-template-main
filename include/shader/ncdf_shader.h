@@ -30,6 +30,7 @@ struct NcdfShaderUniforms {
     int dataMin;   // float: data range min
     int dataMax;   // float: data range max
     int slopeMode; // int: 0=continuous Sobel, 1=SST segments
+    int vectorMode; // int: 0=scalar (R channel), 1=vector (R=u, G=v, compute speed)
 };
 NcdfShaderUniforms ncdf_shader_get_uniforms();
 

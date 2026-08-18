@@ -56,12 +56,37 @@ wxColour CurrentOverlay::GetColor(double val_in) {
 }
 
 bool CurrentOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_pi *plugin,
-                                     ncdfOverlayFactory *factory, bool useShader, int interpMode) {
-    if (!gui || !gui->myMessage.hasCurrent()) return false;
+                                     ncdfOverlayFactory *factory, bool useShader, int interpMode,
+                                     double** animatedGrid, double** animUGrid, double** animVGrid) {
+    if (!gui) return false;
     int ni = gui->myMessage.lonLength;
     int nj = gui->myMessage.latLength;
     if (ni < 2 || nj < 2) return false;
 
+    // If animated grid provided, use it directly (animation replaces static color map)
+    if (animatedGrid) {
+        if (cachedOwns && cachedGrid) { for (int j = 0; j < cachedNj; j++) delete[] cachedGrid[j]; delete[] cachedGrid; }
+        cachedGrid = animatedGrid;
+        cachedOwns = false;  // owned by ncdfAnimate
+        cachedNj = nj; cachedNi = ni;
+        // Compute data range from animated grid (speed)
+        double dMin = 1e30, dMax = -1e30;
+        for (int jj = 0; jj < nj; jj++)
+            for (int ii = 0; ii < ni; ii++) {
+                double v = animatedGrid[jj][ii];
+                if (v != ncdf_NOTDEF && v == v && isfinite(v)) {
+                    if (v < dMin) dMin = v; if (v > dMax) dMax = v;
+                }
+            }
+        cachedDataMin = (dMin < dMax) ? (float)dMin : 0;
+        cachedDataMax = (dMin < dMax) ? (float)dMax : 1;
+        needsRebuild = true;  // force texture rebuild every animation frame
+
+        // Store animated u/v grids for vector mode texture upload
+        // (will be used in settings setup below)
+    } else if (!gui->myMessage.hasCurrent()) {
+        return false;
+    } else {
     // Compute speed grid on-the-fly from u/v (NaN-safe)
     // Also serves as cached grid for aniso diffusion / sharpening
     if (needsRebuild || !cachedGrid) {
@@ -106,6 +131,7 @@ bool CurrentOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
             cachedDataMax = (dMin < dMax) ? (float)dMax : 1;
         }
     }
+    } // end else (not animated)
 
     // Slope shading (vorticity)
     double** slopeGrid = NULL;
@@ -137,6 +163,44 @@ bool CurrentOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
     settings.slopeShading = plugin->m_settingsCurrent.slopeShading;
     settings.slopeMode = 0;  // continuous gradient for current
 
+    // Vector mode: pass u/v grids for shader-side speed computation
+    double** tmpU = NULL, **tmpV = NULL;
+    if (animUGrid && animVGrid) {
+        // Animation mode: use advected u/v grids for vector interpolation
+        settings.vectorMode = true;
+        settings.uGrid = animUGrid;
+        settings.vGrid = animVGrid;
+    } else if (!animatedGrid && gui->myMessage.hasCurrent()) {
+        // Static mode: build u/v grids from source data
+        settings.vectorMode = true;
+        tmpU = new double*[nj]; tmpV = new double*[nj];
+        for (int j = 0; j < nj; j++) {
+            tmpU[j] = new double[ni]; tmpV[j] = new double[ni];
+            for (int i = 0; i < ni; i++) {
+                tmpU[j][i] = gui->myMessage.getU(i, j);
+                tmpV[j][i] = gui->myMessage.getV(i, j);
+            }
+        }
+        settings.uGrid = tmpU;
+        settings.vGrid = tmpV;
+        // Compute speed range for shader normalization
+        double dMin = 1e30, dMax = -1e30;
+        for (int jj = 0; jj < nj; jj++)
+            for (int ii = 0; ii < ni; ii++) {
+                double u = tmpU[jj][ii], v = tmpV[jj][ii];
+                if (u != ncdf_NOTDEF && v != ncdf_NOTDEF && isfinite(u) && isfinite(v)) {
+                    double spd = sqrt(u*u + v*v);
+                    if (spd < dMin) dMin = spd; if (spd > dMax) dMax = spd;
+                }
+            }
+        cachedDataMin = (dMin < dMax) ? (float)dMin : 0;
+        cachedDataMax = (dMin < dMax) ? (float)dMax : 1;
+    } else {
+        settings.vectorMode = false;
+        settings.uGrid = NULL;
+        settings.vGrid = NULL;
+    }
+
     // Use cached data range for slope shading (computed during rebuild)
     if (settings.slopeShading) {
         settings.dataMin = cachedDataMin;
@@ -151,6 +215,10 @@ bool CurrentOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
         glTexture, hasTexture, needsRebuild,
         dataDim, glDim, lutID, hasLUT, uploadBuf, uploadBufSize,
         slopeGrid, hasVortTexture ? vortTexture : 0);
+
+    // Free temporary u/v grids
+    if (tmpU) { for (int j = 0; j < nj; j++) delete[] tmpU[j]; delete[] tmpU; }
+    if (tmpV) { for (int j = 0; j < nj; j++) delete[] tmpV[j]; delete[] tmpV; }
 
     return true;
 }

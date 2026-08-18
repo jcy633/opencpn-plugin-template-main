@@ -103,7 +103,50 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
             memset(texData, 0, tw * th * 4);
 
             if (settings.useShader) {
-                // --- Shader path: normalized data in R channel, alpha=validity ---
+                if (settings.vectorMode && settings.uGrid && settings.vGrid) {
+                    // --- Vector mode: R=u, G=v, A=validity ---
+                    // Shader computes speed = sqrt(u²+v²) and normalizes
+                    double dMin = 1e30, dMax = -1e30;
+                    for (int j = 0; j < nj; j++) {
+                        for (int i = 0; i < ni; i++) {
+                            double u = settings.uGrid[j][i], v = settings.vGrid[j][i];
+                            if (u != ncdf_NOTDEF && v != ncdf_NOTDEF && isfinite(u) && isfinite(v)) {
+                                double spd = sqrt(u*u + v*v);
+                                if (spd < dMin) dMin = spd;
+                                if (spd > dMax) dMax = spd;
+                            }
+                        }
+                    }
+                    if (dMax <= dMin) { dMin = 0; dMax = 1; }
+                    // Store speed range for shader normalization
+                    const_cast<RenderSettings&>(settings).dataMin = (float)dMin;
+                    const_cast<RenderSettings&>(settings).dataMax = (float)dMax;
+                    // Set dMin/dRange for shared LUT creation below
+                    // (LUT maps speed values to colors, same as scalar mode)
+
+                    for (int j = 0; j < nj; j++) {
+                        int texRow = (gui->myMessage.jDirectionIncr >= 0) ? j : (nj - 1 - j);
+                        for (int i = 0; i < ni; i++) {
+                            double u = settings.uGrid[j][i], v = settings.vGrid[j][i];
+                            int x = i + borderH, y = texRow + 1;
+                            if (x >= tw - 1 || y >= th - 1) continue;
+                            int off = 4 * (y * tw + x);
+                            if (u == ncdf_NOTDEF || v == ncdf_NOTDEF || !isfinite(u) || !isfinite(v)) {
+                                texData[off] = 0; texData[off+3] = 0;
+                            } else {
+                                // Normalize u and v to [0, 1] for texture storage
+                                // Use a symmetric range centered on 0
+                                double maxSpeed = fmax(fabs(dMin), fabs(dMax));
+                                if (maxSpeed < 1e-10) maxSpeed = 1.0;
+                                texData[off]   = (unsigned char)(fmin(fmax((u / maxSpeed + 1.0) * 0.5, 0.0), 1.0) * 255.0);
+                                texData[off+1] = (unsigned char)(fmin(fmax((v / maxSpeed + 1.0) * 0.5, 0.0), 1.0) * 255.0);
+                                texData[off+2] = 0;
+                                texData[off+3] = 255;
+                            }
+                        }
+                    }
+                } else {
+                // --- Scalar mode: normalized data in R channel, alpha=validity ---
                 double dMin = 1e30, dMax = -1e30;
                 for (int j = 0; j < nj; j++) {
                     if (!grid[j]) continue;
@@ -160,6 +203,8 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
                     glBindTexture(GL_TEXTURE_2D, lutID);
                     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, 1, GL_RGBA, GL_UNSIGNED_BYTE, lutData);
                 }
+
+                }  // end scalar mode else
 
             } else {
                 // --- Fixed-function path: colored RGBA texture ---
@@ -329,6 +374,7 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
                 if (u.dataMin >= 0) ncdf_shader_uniform_1f(u.dataMin, settings.dataMin);
                 if (u.dataMax >= 0) ncdf_shader_uniform_1f(u.dataMax, settings.dataMax);
                 if (u.slopeMode >= 0) ncdf_shader_uniform_1i(u.slopeMode, settings.slopeMode);
+                if (u.vectorMode >= 0) ncdf_shader_uniform_1i(u.vectorMode, settings.vectorMode ? 1 : 0);
                 if (u.dataTex >= 0) {
                     ncdf_shader_active_texture(0x84C0);
                     glBindTexture(GL_TEXTURE_2D, texID);

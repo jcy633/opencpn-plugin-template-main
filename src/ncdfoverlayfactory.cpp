@@ -260,12 +260,21 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
                      (int)s_shaderCompiled, (int)s_shaderOk, (int)m_useShader);
     }
 
-    // Animation: DISABLED for now — needs per-type advection to avoid
-    // cross-contaminating SST/salinity with current data.
-    // TODO: re-enable with per-type animGrid (one per data type)
+    // Animation: get advected grids if any type's animation is active
     double** animGrid = NULL;
-
-    // ... normal rendering uses animGrid when available ...
+    double** animUGrid = NULL;
+    double** animVGrid = NULL;
+    bool animateActive = (plugin->m_settingsCurrent.animate && plugin->m_bShowCurrentForce) ||
+                         (plugin->m_settingsSeaTemp.animate && plugin->m_bShowSeaTemp) ||
+                         (plugin->m_settingsSalinity.animate && plugin->m_bShowSalinity);
+    if (animateActive && m_animate.IsInitialized()) {
+        if (!m_animate.HasDisplacement()) {
+            m_animate.ComputeDisplacementMap();
+        }
+        animGrid = m_animate.GetAdvectedGrid();
+        animUGrid = m_animate.GetAdvectedUGrid();
+        animVGrid = m_animate.GetAdvectedVGrid();
+    }
 
     static int s_frameDbg = 0;
     if (s_frameDbg < 5) {
@@ -311,9 +320,9 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 	      m_currentSCurve = plugin->m_settingsCurrent.sCurve;
 	      m_currentSlopeShading = plugin->m_settingsCurrent.slopeShading;
 	      m_currentSlopeMode = 0;
+	      m_currentOverlay.RenderColorMap(vp, gui, plugin, this, m_useShader, m_currentInterpMode, animGrid, animUGrid, animVGrid);
 	      m_currentDataMin = m_currentOverlay.cachedDataMin;
 	      m_currentDataMax = m_currentOverlay.cachedDataMax;
-	      m_currentOverlay.RenderColorMap(vp, gui, plugin, this, m_useShader, m_currentInterpMode);
 #endif
 	}
 
@@ -339,9 +348,9 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 		m_currentSCurve = plugin->m_settingsSeaTemp.sCurve;
 		m_currentSlopeShading = plugin->m_settingsSeaTemp.slopeShading;
 		m_currentSlopeMode = 1;
+		m_seaTempOverlay.RenderColorMap(vp, gui, plugin, this, m_useShader, m_currentInterpMode, animGrid);
 		m_currentDataMin = m_seaTempOverlay.cachedDataMin;
 		m_currentDataMax = m_seaTempOverlay.cachedDataMax;
-		m_seaTempOverlay.RenderColorMap(vp, gui, plugin, this, m_useShader, m_currentInterpMode);
 #endif
 	}
 
@@ -359,9 +368,9 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 		m_currentSCurve = plugin->m_settingsSalinity.sCurve;
 		m_currentSlopeShading = plugin->m_settingsSalinity.slopeShading;
 		m_currentSlopeMode = 0;
+		m_salinityOverlay.RenderColorMap(vp, gui, plugin, this, m_useShader, m_currentInterpMode, animGrid);
 		m_currentDataMin = m_salinityOverlay.cachedDataMin;
 		m_currentDataMax = m_salinityOverlay.cachedDataMax;
-		m_salinityOverlay.RenderColorMap(vp, gui, plugin, this, m_useShader, m_currentInterpMode);
 #endif
 	}
 
@@ -405,7 +414,7 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
     m_last_vp_latMax = vp->lat_max;
 
     // Advance animation frame
-    if (animGrid) m_animate.AdvanceFrame();
+    // Frame advance is now inside GetAdvectedGrid for proper synchronization
 
     // Reset GL state to avoid corrupting other plugins (GRIB, OpenCPN core)
     glDisable(GL_TEXTURE_2D);

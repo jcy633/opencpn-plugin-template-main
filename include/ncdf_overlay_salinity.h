@@ -51,7 +51,8 @@ struct SalinityOverlay {
 
     bool RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_pi *plugin,
                         ncdfOverlayFactory *factory,
-                        bool useShader, int interpMode);
+                        bool useShader, int interpMode,
+                        double** animatedGrid = NULL);
     void RenderIsoLines(PlugIn_ViewPort *vp, MainDialog *gui);
 
     static bool s_smoothColors;

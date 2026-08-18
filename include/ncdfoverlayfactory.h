@@ -137,6 +137,9 @@ public:
          bool slopeShading;
          float dataMin, dataMax;
          int slopeMode;
+         bool vectorMode;     // true: u/v separate interpolation in shader
+         double** uGrid;      // u-component grid (vector mode, for texture upload)
+         double** vGrid;      // v-component grid (vector mode, for texture upload)
      };
 
      // Shared color interpolation with optional smoothstep

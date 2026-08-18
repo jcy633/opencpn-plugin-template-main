@@ -54,10 +54,14 @@ struct CurrentOverlay {
     void Invalidate();
 
     // Render the current color map overlay
-    // Returns true if something was rendered
+    // animatedGrid: if non-NULL, use this as speed grid (scalar mode for animation)
+    // animUGrid/animVGrid: if non-NULL, use vector mode with these u/v grids
     bool RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_pi *plugin,
                         ncdfOverlayFactory *factory,
-                        bool useShader, int interpMode);
+                        bool useShader, int interpMode,
+                        double** animatedGrid = NULL,
+                        double** animUGrid = NULL,
+                        double** animVGrid = NULL);
 
     // Color function (static for use as function pointer)
     static bool s_smoothColors;  // set by RenderColorMap before drawing

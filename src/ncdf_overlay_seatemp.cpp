@@ -49,13 +49,33 @@ wxColour SeaTempOverlay::GetColor(double temp_c) {
 }
 
 bool SeaTempOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_pi *plugin,
-                                     ncdfOverlayFactory *factory, bool useShader, int interpMode) {
-    if (!gui || !gui->myMessage.hasSSTData()) return false;
+                                     ncdfOverlayFactory *factory, bool useShader, int interpMode,
+                                     double** animatedGrid) {
+    if (!gui) return false;
     int ni = gui->myMessage.lonLength;
     int nj = gui->myMessage.latLength;
     if (ni < 2 || nj < 2) return false;
 
-    // Build cached grid if needed
+    // If animated grid provided, use it directly (animation replaces static color map)
+    if (animatedGrid) {
+        if (cachedOwns && cachedGrid) { for (int j = 0; j < cachedNj; j++) delete[] cachedGrid[j]; delete[] cachedGrid; }
+        cachedGrid = animatedGrid;
+        cachedOwns = false;
+        cachedNj = nj; cachedNi = ni;
+        double dMin = 1e30, dMax = -1e30;
+        for (int jj = 0; jj < nj; jj++)
+            for (int ii = 0; ii < ni; ii++) {
+                double v = animatedGrid[jj][ii];
+                if (v != ncdf_NOTDEF && v == v && isfinite(v)) {
+                    if (v < dMin) dMin = v; if (v > dMax) dMax = v;
+                }
+            }
+        cachedDataMin = (dMin < dMax) ? (float)dMin : 0;
+        cachedDataMax = (dMin < dMax) ? (float)dMax : 1;
+        needsRebuild = true;
+    } else if (!gui->myMessage.hasSSTData()) {
+        return false;
+    } else {
     if (needsRebuild || !cachedGrid) {
         if (cachedOwns) { for (int j = 0; j < cachedNj; j++) delete[] cachedGrid[j]; delete[] cachedGrid; }
         cachedGrid = NULL; cachedOwns = false;
@@ -90,6 +110,7 @@ bool SeaTempOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
             cachedDataMax = (dMin < dMax) ? (float)dMax : 1;
         }
     }
+    } // end else (not animated)
 
     ncdfOverlayFactory::RenderSettings settings;
     settings.useShader = useShader;
@@ -98,6 +119,9 @@ bool SeaTempOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
     settings.sCurve = plugin->m_settingsSeaTemp.sCurve;
     settings.slopeShading = plugin->m_settingsSeaTemp.slopeShading;
     settings.slopeMode = 1;  // SST temperature segments
+    settings.vectorMode = false;  // SST uses scalar interpolation
+    settings.uGrid = NULL;
+    settings.vGrid = NULL;
 
     if (settings.slopeShading) {
         settings.dataMin = cachedDataMin;
