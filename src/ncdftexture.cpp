@@ -17,7 +17,85 @@ extern void ncdfLog(const char* format, ...);
 #include "IsoLine2.h"
 
 //===================================================================
-// Color texture (shared via RenderGridOverlay)
+// Mask-aware cubic B-spline IIR prefilter
+// Processes each row/column's contiguous ocean segments independently.
+// Land boundaries reset the IIR state, preventing land values from
+// contaminating ocean coefficients near coastlines.
+//===================================================================
+static void BicubicSplinePrefilterMasked(float* dst, const float* src,
+                                          const unsigned char* mask, int w, int h) {
+    const float z = -0.26794919243112270f;
+    // inv = 1/(1-z): correct for 2D separable B-spline prefilter
+    // causal steady state = K/(1-z), anti-causal produces same
+    // reconstruction = (2/3)² * c * inv² * (1-z)² = (4/9) * K/(1-z)² * 1/(1-z)² * (1-z)² = K
+    const float inv = 1.0f / (1.0f - z);
+
+    for (int k = 0; k < w * h; k++) dst[k] = src[k];
+
+    ncdfLog("[pf] w=%d h=%d z=%d inv=%d\n", w, h, (int)(z*10000), (int)(inv*10000));
+
+    // Horizontal pass
+    for (int j = 0; j < h; j++) {
+        float* row = dst + j * w;
+        const unsigned char* mrow = mask + j * w;
+        bool allValid = true;
+        for (int i = 0; i < w; i++) { if (!mrow[i]) { allValid = false; break; } }
+
+        if (allValid) {
+            row[0] *= inv;
+            for (int i = 1; i < w; i++) row[i] += z * row[i-1];
+            // Anti-causal: NO inv scaling (already applied at causal boundary)
+            for (int i = w-2; i >= 0; i--) row[i] += z * row[i+1];
+        } else {
+            int segStart = -1;
+            for (int i = 0; i <= w; i++) {
+                bool valid = (i < w) && mrow[i];
+                if (valid && segStart < 0) segStart = i;
+                if ((!valid || i == w) && segStart >= 0) {
+                    int segEnd = i - 1;
+                    if (segEnd == segStart) {
+                        row[segStart] *= inv;
+                    } else {
+                        row[segStart] *= inv;
+                        for (int k = segStart + 1; k <= segEnd; k++) row[k] += z * row[k-1];
+                        // Anti-causal: NO inv scaling
+                        for (int k = segEnd - 1; k >= segStart; k--) row[k] += z * row[k+1];
+                    }
+                    segStart = -1;
+                }
+            }
+        }
+    }
+
+    // Vertical pass
+    for (int i = 0; i < w; i++) {
+        bool allValid = true;
+        for (int j = 0; j < h; j++) { if (!mask[j * w + i]) { allValid = false; break; } }
+
+        if (allValid) {
+            dst[i] *= inv;
+            for (int j = 1; j < h; j++) dst[j*w+i] += z * dst[(j-1)*w+i];
+            for (int j = h-2; j >= 0; j--) dst[j*w+i] += z * dst[(j+1)*w+i];
+        } else {
+            int segStart = -1;
+            for (int j = 0; j <= h; j++) {
+                bool valid = (j < h) && mask[j * w + i];
+                if (valid && segStart < 0) segStart = j;
+                if ((!valid || j == h) && segStart >= 0) {
+                    int segEnd = j - 1;
+                    if (segEnd == segStart) {
+                        dst[segStart*w+i] *= inv;
+                    } else {
+                        dst[segStart*w+i] *= inv;
+                        for (int k = segStart + 1; k <= segEnd; k++) dst[k*w+i] += z * dst[(k-1)*w+i];
+                        for (int k = segEnd - 1; k >= segStart; k--) dst[k*w+i] += z * dst[(k+1)*w+i];
+                    }
+                    segStart = -1;
+                }
+            }
+        }
+    }
+}
 //===================================================================
 //===================================================================
 // Shared utilities
@@ -80,8 +158,8 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
         int expectedTw = ni + 2 * borderH + extraCol;
         int expectedTh = nj + 2;
 
-        // Fill texture data only when data changed or first creation
-        bool dataChanged = needsRebuild;
+        // Fill texture data only when data changed or texture doesn't exist
+        bool dataChanged = needsRebuild || !hasTex;
         if (needsRebuild) {
             if (hasTex && texID && (glDim[0] != expectedTw || glDim[1] != expectedTh)) {
                 glDeleteTextures(1, &texID); texID = 0;
@@ -104,107 +182,256 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
 
             if (settings.useShader) {
                 if (settings.vectorMode && settings.uGrid && settings.vGrid) {
-                    // --- Vector mode: R=u, G=v, A=validity ---
-                    // Shader computes speed = sqrt(u²+v²) and normalizes
+                    // --- Vector mode: R8 normalized u,v with B-spline prefilter ---
                     double dMin = 1e30, dMax = -1e30;
-                    for (int j = 0; j < nj; j++) {
+                    for (int j = 0; j < nj; j++)
                         for (int i = 0; i < ni; i++) {
                             double u = settings.uGrid[j][i], v = settings.vGrid[j][i];
                             if (u != ncdf_NOTDEF && v != ncdf_NOTDEF && isfinite(u) && isfinite(v)) {
                                 double spd = sqrt(u*u + v*v);
-                                if (spd < dMin) dMin = spd;
-                                if (spd > dMax) dMax = spd;
+                                if (spd < dMin) dMin = spd; if (spd > dMax) dMax = spd;
+                            }
+                        }
+                    if (dMax <= dMin) { dMin = 0; dMax = 1; }
+                    const_cast<RenderSettings&>(settings).dataMin = (float)dMin;
+                    const_cast<RenderSettings&>(settings).dataMax = (float)dMax;
+
+                    float* rawU = (float*)calloc(nj * ni, sizeof(float));
+                    float* rawV = (float*)calloc(nj * ni, sizeof(float));
+                    float* coeffU = (float*)calloc(nj * ni, sizeof(float));
+                    float* coeffV = (float*)calloc(nj * ni, sizeof(float));
+                    unsigned char* validMask = (unsigned char*)calloc(nj * ni, 1);
+
+                    if (rawU && rawV && coeffU && coeffV && validMask) {
+                        for (int j = 0; j < nj; j++)
+                            for (int i = 0; i < ni; i++) {
+                                double u = settings.uGrid[j][i], v = settings.vGrid[j][i];
+                                if (u == ncdf_NOTDEF || v == ncdf_NOTDEF || !isfinite(u) || !isfinite(v)) {
+                                    rawU[j*ni+i] = 0; rawV[j*ni+i] = 0;
+                                    validMask[j*ni+i] = 0;
+                                } else {
+                                    rawU[j*ni+i] = (float)u;
+                                    rawV[j*ni+i] = (float)v;
+                                    validMask[j*ni+i] = 1;
+                                }
+                            }
+                        // Mask-aware B-spline prefilter (no FillInvalidPixels)
+                        BicubicSplinePrefilterMasked(coeffU, rawU, validMask, ni, nj);
+                        BicubicSplinePrefilterMasked(coeffV, rawV, validMask, ni, nj);
+
+                        // Compute coefMin/coefMax from both u and v valid coefficients
+                        float coefMin = 1e30f, coefMax = -1e30f;
+                        for (int k = 0; k < nj * ni; k++) {
+                            if (!validMask[k]) continue;
+                            if (coeffU[k] < coefMin) coefMin = coeffU[k];
+                            if (coeffU[k] > coefMax) coefMax = coeffU[k];
+                            if (coeffV[k] < coefMin) coefMin = coeffV[k];
+                            if (coeffV[k] > coefMax) coefMax = coeffV[k];
+                        }
+                        if (coefMax <= coefMin) { coefMin = 0; coefMax = 1; }
+                        float coefRange = coefMax - coefMin;
+                        if (coefRange < 1e-10f) coefRange = 1.0f;
+
+                        const_cast<RenderSettings&>(settings).dataMin = coefMin;
+                        const_cast<RenderSettings&>(settings).dataMax = coefMax;
+
+                        ncdfLog("[vector] coefMin=%.4f coefMax=%.4f dMin=%.4f dMax=%.4f\n",
+                            coefMin, coefMax, dMin, dMax);
+
+                        for (int j = 0; j < nj; j++) {
+                            int texRow = (gui->myMessage.jDirectionIncr >= 0) ? j : (nj - 1 - j);
+                            for (int i = 0; i < ni; i++) {
+                                int x = i + borderH, y = texRow + 1;
+                                if (x >= tw - 1 || y >= th - 1) continue;
+                                int off = 4 * (y * tw + x);
+                                if (!validMask[j*ni+i]) {
+                                    texData[off] = 0; texData[off+1] = 0; texData[off+2] = 0; texData[off+3] = 0;
+                                } else {
+                                    texData[off]   = (unsigned char)(fmin(fmax((coeffU[j*ni+i] - coefMin) / coefRange, 0.0f), 1.0f) * 255.0f + 0.5f);
+                                    texData[off+1] = (unsigned char)(fmin(fmax((coeffV[j*ni+i] - coefMin) / coefRange, 0.0f), 1.0f) * 255.0f + 0.5f);
+                                    texData[off+2] = 0; texData[off+3] = 255;
+                                }
                             }
                         }
                     }
-                    if (dMax <= dMin) { dMin = 0; dMax = 1; }
-                    // Store speed range for shader normalization
-                    const_cast<RenderSettings&>(settings).dataMin = (float)dMin;
-                    const_cast<RenderSettings&>(settings).dataMax = (float)dMax;
-                    // Set dMin/dRange for shared LUT creation below
-                    // (LUT maps speed values to colors, same as scalar mode)
+                    if (rawU) free(rawU); if (rawV) free(rawV);
+                    if (coeffU) free(coeffU); if (coeffV) free(coeffV);
+                    if (validMask) free(validMask);
+                    ncdfLog("[vector] B-spline u/v mask-aware prefiltred, R8 coefNorm\n");
+                } else {
+                // --- Scalar mode: mask-aware B-spline prefiltred coefficients ---
 
+                // Build flat array for B-spline prefilter
+                float* rawBuf = (float*)calloc(nj * ni, sizeof(float));
+                float* coeffBuf = (float*)calloc(nj * ni, sizeof(float));
+                unsigned char* validMask = (unsigned char*)calloc(nj * ni, 1);
+                if (!rawBuf || !coeffBuf || !validMask) {
+                    if (rawBuf) free(rawBuf);
+                    if (coeffBuf) free(coeffBuf);
+                    if (validMask) free(validMask);
+                } else {
+                    for (int j = 0; j < nj; j++)
+                        for (int i = 0; i < ni; i++) {
+                            double val = grid[j][i];
+                            if (val == ncdf_NOTDEF || isnan(val) || !isfinite(val)) {
+                                rawBuf[j*ni+i] = 0.0f;
+                                validMask[j*ni+i] = 0;
+                            } else {
+                                rawBuf[j*ni+i] = (float)val;
+                                validMask[j*ni+i] = 1;
+                            }
+                        }
+
+                    // DEBUG: Test prefilter with 100-element uniform data
+                    {
+                        float testSrc[100], testDst[100];
+                        unsigned char testMask[100];
+                        for (int k = 0; k < 100; k++) { testSrc[k] = 35.0f; testMask[k] = 1; }
+                        BicubicSplinePrefilterMasked(testDst, testSrc, testMask, 100, 1);
+                        // Check center (position 50) - far from boundary
+                        ncdfLog("[pf100] c50=%d c25=%d c75=%d\n",
+                            (int)(testDst[50]*100), (int)(testDst[25]*100), (int)(testDst[75]*100));
+                        // Reconstruction at center: f(50) = (1/6)*c[48] + (4/6)*c[49] + (1/6)*c[50]
+                        float recon = testDst[48]/6.0f + testDst[49]*4.0f/6.0f + testDst[50]/6.0f;
+                        ncdfLog("[pf100] recon50=%d expect=3500\n", (int)(recon*100));
+                    }
+
+                    // Stage 1: Count valid/invalid pixels and physical data range
+                    float physMin = 1e30f, physMax = -1e30f;
+                    int validCount = 0, invalidCount = 0;
+                    for (int k = 0; k < nj * ni; k++) {
+                        if (!validMask[k]) { invalidCount++; continue; }
+                        validCount++;
+                        if (rawBuf[k] < physMin) physMin = rawBuf[k];
+                        if (rawBuf[k] > physMax) physMax = rawBuf[k];
+                    }
+                    ncdfLog("[stage1-data] valid=%d invalid=%d physMin=%.4f physMax=%.4f\n",
+                        validCount, invalidCount, physMin, physMax);
+
+                    // Stage 2: Mask-aware B-spline prefilter
+                    BicubicSplinePrefilterMasked(coeffBuf, rawBuf, validMask, ni, nj);
+
+                    // Stage 3: Coefficient range and distribution
+                    float coefMin = 1e30f, coefMax = -1e30f;
+                    for (int k = 0; k < nj * ni; k++) {
+                        if (!validMask[k]) continue;
+                        if (coeffBuf[k] < coefMin) coefMin = coeffBuf[k];
+                        if (coeffBuf[k] > coefMax) coefMax = coeffBuf[k];
+                    }
+                    if (coefMax <= coefMin) { coefMin = 0; coefMax = 1; }
+                    float coefRange = coefMax - coefMin;
+                    if (coefRange < 1e-10f) coefRange = 1.0f;
+
+                    // Find the longest ocean segment in a middle row
+                    int cj = nj / 2;  // middle row
+                    int bestStart = 0, bestLen = 0, curStart = -1;
+                    for (int i = 0; i <= ni; i++) {
+                        bool valid = (i < ni) && validMask[cj*ni+i];
+                        if (valid && curStart < 0) curStart = i;
+                        if ((!valid || i == ni) && curStart >= 0) {
+                            int len = i - curStart;
+                            if (len > bestLen) { bestLen = len; bestStart = curStart; }
+                            curStart = -1;
+                        }
+                    }
+                    int bi = bestStart + bestLen / 2;  // center of longest segment
+                    float pBest = rawBuf[cj*ni+bi];
+                    float cBest = coeffBuf[cj*ni+bi];
+                    float cBestL = (bi > 0) ? coeffBuf[cj*ni+bi-1] : cBest;
+                    float cBestR = (bi < ni-1) ? coeffBuf[cj*ni+bi+1] : cBest;
+                    float reconBest = cBestL/6.0f + cBest*4.0f/6.0f + cBestR/6.0f;
+                    ncdfLog("[longseg] bestRow start=%d len=%d center=%d\n", bestStart, bestLen, bi);
+                    ncdfLog("[longseg] phys=%.2f coef=%.2f recon=%.2f\n", pBest, cBest, reconBest);
+
+                    ncdfLog("[stage3-coef] coefMin=%.4f coefMax=%.4f coefRange=%.4f\n", coefMin, coefMax, coefRange);
+
+                    // Stage 4: R8 normalization
+                    // Scan a row through center to find valid/invalid pattern
+                    int rowStart = -1, rowEnd = -1, rowGaps = 0;
+                    for (int i = 0; i < ni; i++) {
+                        if (validMask[cj*ni+i]) {
+                            if (rowStart < 0) rowStart = i;
+                            rowEnd = i;
+                        } else if (rowStart >= 0) {
+                            rowGaps++;
+                        }
+                    }
+                    ncdfLog("[stage3-row] centerRow: start=%d end=%d gaps=%d len=%d\n",
+                        rowStart, rowEnd, rowGaps, rowEnd - rowStart + 1);
+
+                    const float bsplineScale = 2.5858f;  // (1-z)^4, correction for 2D B-spline
+                    const_cast<RenderSettings&>(settings).dataMin = coefMin * bsplineScale;
+                    const_cast<RenderSettings&>(settings).dataMax = coefMax * bsplineScale;
+
+                    // Stage 4: R8 normalization and sampling
+                    int r8Min = 255, r8Max = 0;
                     for (int j = 0; j < nj; j++) {
                         int texRow = (gui->myMessage.jDirectionIncr >= 0) ? j : (nj - 1 - j);
                         for (int i = 0; i < ni; i++) {
-                            double u = settings.uGrid[j][i], v = settings.vGrid[j][i];
                             int x = i + borderH, y = texRow + 1;
                             if (x >= tw - 1 || y >= th - 1) continue;
                             int off = 4 * (y * tw + x);
-                            if (u == ncdf_NOTDEF || v == ncdf_NOTDEF || !isfinite(u) || !isfinite(v)) {
-                                texData[off] = 0; texData[off+3] = 0;
+                            if (!validMask[j*ni+i]) {
+                                texData[off] = 0; texData[off+1] = 0; texData[off+2] = 0; texData[off+3] = 0;
                             } else {
-                                // Normalize u and v to [0, 1] for texture storage
-                                // Use a symmetric range centered on 0
-                                double maxSpeed = fmax(fabs(dMin), fabs(dMax));
-                                if (maxSpeed < 1e-10) maxSpeed = 1.0;
-                                texData[off]   = (unsigned char)(fmin(fmax((u / maxSpeed + 1.0) * 0.5, 0.0), 1.0) * 255.0);
-                                texData[off+1] = (unsigned char)(fmin(fmax((v / maxSpeed + 1.0) * 0.5, 0.0), 1.0) * 255.0);
-                                texData[off+2] = 0;
-                                texData[off+3] = 255;
+                                float normalized = (coeffBuf[j*ni+i] - coefMin) / coefRange;
+                                unsigned char q = (unsigned char)(fmin(fmax(normalized, 0.0f), 1.0f) * 255.0f + 0.5f);
+                                texData[off] = q; texData[off+1] = 0; texData[off+2] = 0; texData[off+3] = 255;
+                                if (q < r8Min) r8Min = q; if (q > r8Max) r8Max = q;
                             }
                         }
                     }
-                } else {
-                // --- Scalar mode: normalized data in R channel, alpha=validity ---
-                double dMin = 1e30, dMax = -1e30;
-                for (int j = 0; j < nj; j++) {
-                    if (!grid[j]) continue;
-                    for (int i = 0; i < ni; i++) {
-                        double v = grid[j][i];
-                        if (v != ncdf_NOTDEF && !isnan(v) && isfinite(v)) {
-                            if (v < dMin) dMin = v;
-                            if (v > dMax) dMax = v;
-                        }
-                    }
-                }
-                if (dMax <= dMin) { dMin = 0; dMax = 1; }
-                double dRange = dMax - dMin;
-                if (dRange < 1e-10) dRange = 1.0;
+                    ncdfLog("[stage4-r8] r8Min=%d r8Max=%d\n", r8Min, r8Max);
 
-                for (int j = 0; j < nj; j++) {
-                    if (!grid[j]) break;
-                    int texRow = (gui->myMessage.jDirectionIncr >= 0) ? j : (nj - 1 - j);
-                    for (int i = 0; i < ni; i++) {
-                        double val = grid[j][i];
-                        int x = i + borderH, y = texRow + 1;
-                        if (x >= tw - 1 || y >= th - 1) continue;
-                        int off = 4 * (y * tw + x);
-                        if (val == ncdf_NOTDEF || isnan(val) || !isfinite(val)) {
-                            texData[off] = 0; texData[off+3] = 0;
-                        } else {
-                            double normalized = (val - dMin) / dRange;
-                            texData[off] = (unsigned char)(fmin(fmax(normalized, 0.0), 1.0) * 255.0);
-                            texData[off+1] = 0; texData[off+2] = 0;
-                            texData[off+3] = 255;
-                        }
-                    }
-                }
-
-                // Color LUT (256 entries) — create once, update with glTexSubImage2D
-                unsigned char lutData[256 * 4];
-                for (int k = 0; k < 256; k++) {
-                    double val = dMin + (k / 255.0) * dRange;
-                    wxColour c = colorFunc(val);
-                    lutData[k*4] = c.Red(); lutData[k*4+1] = c.Green();
-                    lutData[k*4+2] = c.Blue(); lutData[k*4+3] = 255;
-                }
-                if (!hasLUT || !lutID) {
-                    glGenTextures(1, &lutID);
-                    glBindTexture(GL_TEXTURE_2D, lutID);
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 256, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, lutData);
-                    hasLUT = true;
-                } else {
-                    // Update existing LUT
-                    glBindTexture(GL_TEXTURE_2D, lutID);
-                    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, 1, GL_RGBA, GL_UNSIGNED_BYTE, lutData);
+                    free(rawBuf); free(coeffBuf); free(validMask);
                 }
 
                 }  // end scalar mode else
+
+                // Color LUT (shared between vector and scalar modes)
+                // Only rebuild when lutMin/lutMax or colorFunc changes
+                {
+                    static float s_cachedLutMin = 0, s_cachedLutMax = 0;
+                    static ColorFunc s_cachedColorFunc = NULL;
+                    float lutMin = settings.lutMin;
+                    float lutMax = settings.lutMax;
+                    bool lutChanged = (lutMin != s_cachedLutMin || lutMax != s_cachedLutMax
+                                       || colorFunc != s_cachedColorFunc);
+                    if (lutChanged || !hasLUT || !lutID) {
+                        float lutRange = lutMax - lutMin;
+                        if (lutRange < 1e-10f) lutRange = 1.0f;
+                        unsigned char lutData[256 * 4];
+                        for (int k = 0; k < 256; k++) {
+                            double val = lutMin + (k / 255.0) * lutRange;
+                            wxColour c = colorFunc(val);
+                            lutData[k*4] = c.Red(); lutData[k*4+1] = c.Green();
+                            lutData[k*4+2] = c.Blue(); lutData[k*4+3] = 255;
+                        }
+                        ncdfLog("[stage5-lut] lutMin=%.4f lutMax=%.4f lutRange=%.4f changed=%d\n",
+                            lutMin, lutMax, lutRange, (int)lutChanged);
+                        ncdfLog("[stage5-lut] LUT[0]=(%d,%d,%d) val=%.2f | LUT[64]=(%d,%d,%d) val=%.2f | LUT[128]=(%d,%d,%d) val=%.2f | LUT[192]=(%d,%d,%d) val=%.2f | LUT[255]=(%d,%d,%d) val=%.2f\n",
+                            lutData[0], lutData[1], lutData[2], lutMin + 0.0/255.0*lutRange,
+                            lutData[256], lutData[257], lutData[258], lutMin + 64.0/255.0*lutRange,
+                            lutData[512], lutData[513], lutData[514], lutMin + 128.0/255.0*lutRange,
+                            lutData[768], lutData[769], lutData[770], lutMin + 192.0/255.0*lutRange,
+                            lutData[1020], lutData[1021], lutData[1022], lutMin + 255.0/255.0*lutRange);
+                        if (!hasLUT || !lutID) {
+                            glGenTextures(1, &lutID);
+                            glBindTexture(GL_TEXTURE_2D, lutID);
+                            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 256, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, lutData);
+                            hasLUT = true;
+                        } else {
+                            glBindTexture(GL_TEXTURE_2D, lutID);
+                            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, 1, GL_RGBA, GL_UNSIGNED_BYTE, lutData);
+                        }
+                        s_cachedLutMin = lutMin; s_cachedLutMax = lutMax;
+                        s_cachedColorFunc = colorFunc;
+                    }
+                }
 
             } else {
                 // --- Fixed-function path: colored RGBA texture ---
@@ -221,30 +448,7 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
                         int off = 4 * (y * tw + x);
                         unsigned char r = c.Red(), g = c.Green(), b = c.Blue();
 
-                        // Slope shading: modulate brightness by gradient
-                        if (settings.slopeShading && j > 0 && j < nj-1 && i > 0 && i < ni-1) {
-                            // Use slopeGrid (e.g., vorticity) if available, otherwise use data grid
-                            double** gSlope = slopeGrid ? slopeGrid : grid;
-                            double vn = gSlope[j-1][i], vs = gSlope[j+1][i];
-                            double vw = gSlope[j][i-1], ve = gSlope[j][i+1];
-                            if (vn != ncdf_NOTDEF && vs != ncdf_NOTDEF &&
-                                vw != ncdf_NOTDEF && ve != ncdf_NOTDEF) {
-                                double gx = (ve - vw) * 0.5;
-                                double gy = (vs - vn) * 0.5;
-                                double mag = sqrt(gx*gx + gy*gy);
-                                if (mag > 1e-10) {
-                                    double nx = -gx, ny = -gy;
-                                    double nz = 1.0;
-                                    double nm = sqrt(nx*nx + ny*ny + nz*nz);
-                                    double light = (nx*(-0.5) + ny*(-0.5) + nz*0.707) / nm;
-                                    light = 0.5 + light * 0.8;
-                                    light = fmax(0.3, fmin(1.5, light));
-                                    r = (unsigned char)fmin(255.0, r * light);
-                                    g = (unsigned char)fmin(255.0, g * light);
-                                    b = (unsigned char)fmin(255.0, b * light);
-                                }
-                            }
-                        }
+                        // (slope shading removed - always use shader)
                         texData[off]     = r;
                         texData[off + 1] = g;
                         texData[off + 2] = b;
@@ -360,21 +564,14 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
                 ncdf_shader_use_program(ncdf_shader_get_grid_program());
                 NcdfShaderUniforms u = ncdf_shader_get_uniforms();
                 if (u.texSize >= 0) ncdf_shader_uniform_2f(u.texSize, (float)tw, (float)th);
-                // mode: 0=linear scalar, 1=bicubic, 2=monotone bicubic
-                int shaderMode = (settings.interpMode >= 2) ? settings.interpMode - 1 : 0;
-                if (u.mode >= 0) ncdf_shader_uniform_1i(u.mode, shaderMode);
-                if (u.sCurve >= 0) ncdf_shader_uniform_1i(u.sCurve, settings.sCurve ? 1 : 0);
-                if (u.slope >= 0) ncdf_shader_uniform_1i(u.slope, settings.slopeShading ? 1 : 0);
-                if (u.slopeTex >= 0) {
-                    ncdf_shader_active_texture(0x84C2);  // GL_TEXTURE2
-                    GLuint stID = slopeTexID ? slopeTexID : texID;
-                    glBindTexture(GL_TEXTURE_2D, stID);
-                    ncdf_shader_uniform_1i(u.slopeTex, 2);
-                }
+                if (u.vectorMode >= 0) ncdf_shader_uniform_1i(u.vectorMode, settings.vectorMode ? 1 : 0);
                 if (u.dataMin >= 0) ncdf_shader_uniform_1f(u.dataMin, settings.dataMin);
                 if (u.dataMax >= 0) ncdf_shader_uniform_1f(u.dataMax, settings.dataMax);
-                if (u.slopeMode >= 0) ncdf_shader_uniform_1i(u.slopeMode, settings.slopeMode);
-                if (u.vectorMode >= 0) ncdf_shader_uniform_1i(u.vectorMode, settings.vectorMode ? 1 : 0);
+                if (u.lutMin >= 0) ncdf_shader_uniform_1f(u.lutMin, settings.lutMin);
+                if (u.lutMax >= 0) ncdf_shader_uniform_1f(u.lutMax, settings.lutMax);
+                ncdfLog("[draw] vec=%d dMin=%.3f dMax=%.3f lutMin=%.3f lutMax=%.3f texID=%u lutID=%u hasLUT=%d\n",
+                    (int)settings.vectorMode, settings.dataMin, settings.dataMax,
+                    settings.lutMin, settings.lutMax, texID, lutID, (int)hasLUT);
                 if (u.dataTex >= 0) {
                     ncdf_shader_active_texture(0x84C0);
                     glBindTexture(GL_TEXTURE_2D, texID);

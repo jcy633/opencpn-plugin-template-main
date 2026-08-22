@@ -71,6 +71,13 @@
 - 颜色映射支持动态切换（ColorMapType枚举：CurrentMap、WindMap、GenericMap、SeaTempMap），通过m_colorMapType成员变量控制
 - 固定间距箭头绘制需添加间距计算的安全防护，避免除零错误
 -可以参考grib插件的相关功能的代码，对本插件的功能的代码进行优化。
+## OpenCPN OpenGL 环境约束
+- OpenCPN使用OpenGL 2.1（GLSL 1.20），**不支持RGBA16F等浮点纹理格式**
+- 核心功能：基础纹理、固定管线、GLSL 1.20着色器
+- VBO（顶点缓冲对象）：作为扩展使用（GL_ARB_vertex_buffer_object）
+- FBO（帧缓冲对象）：使用扩展版本 GL_EXT_framebuffer_object
+- 浮点纹理（GL_ARB_texture_float）：**不可用**，所有纹理必须使用RGBA8（unsigned byte）
+- 纹理上传必须使用GL_RGBA + GL_UNSIGNED_BYTE格式
 ## Engineering Conventions
 - 循环变量应使用size_t类型避免有符号/无符号不匹配
 - C++17及以上环境中禁止使用废弃的register关键字

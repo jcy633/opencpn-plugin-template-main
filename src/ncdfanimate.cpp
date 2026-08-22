@@ -217,11 +217,7 @@ void NcdfAnimateEngine::advectCoordField(CoordField& field)
             float srcY = (float)j + coordOffset.y;
             
             // 从位移映射中采样（Keys三次卷积核插值）
-            Vec2f disp = sampleCoordField(
-                // 将displacement当作CoordField来采样
-                // 这里简化为双线性插值
-                srcX, srcY
-            );
+            Vec2f disp = sampleCoordField(field, srcX, srcY);
             
             // 更新坐标偏移
             temp.at(i, j).x = coordOffset.x + disp.x;

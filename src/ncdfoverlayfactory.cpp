@@ -196,6 +196,10 @@ void ncdfOverlayFactory::reset()
 {
     this->m_bReadyToRender = false;
     clearBmp();
+    // Invalidate all overlays so they rebuild with new data
+    m_currentOverlay.Invalidate();
+    m_seaTempOverlay.Invalidate();
+    m_salinityOverlay.Invalidate();
 }
 
 
@@ -314,13 +318,13 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 #ifdef ocpnUSE_GL
 	      glDisable(GL_TEXTURE_2D);
 	      glBindTexture(GL_TEXTURE_2D, 0);
-	      m_useShader = s_shaderOk && (plugin->m_settingsCurrent.interpMode >= 0);
-	      m_currentInterpMode = plugin->m_settingsCurrent.interpMode;
+	      m_useShader = s_shaderOk;
+	      m_currentInterpMode = 0;
 	      m_currentSmoothColors = plugin->m_settingsCurrent.smoothColors;
 	      m_currentSCurve = plugin->m_settingsCurrent.sCurve;
 	      m_currentSlopeShading = plugin->m_settingsCurrent.slopeShading;
 	      m_currentSlopeMode = 0;
-	      m_currentOverlay.RenderColorMap(vp, gui, plugin, this, m_useShader, m_currentInterpMode, animGrid, animUGrid, animVGrid);
+	      m_currentOverlay.RenderColorMap(vp, gui, plugin, this, m_useShader, animGrid, animUGrid, animVGrid);
 	      m_currentDataMin = m_currentOverlay.cachedDataMin;
 	      m_currentDataMax = m_currentOverlay.cachedDataMax;
 #endif
@@ -342,13 +346,13 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 	// Sea temperature color map overlay
 	if (plugin->m_bShowSeaTemp && gui && gui->myMessage.hasSSTData() && !m_pdc) {
 #ifdef ocpnUSE_GL
-		m_useShader = s_shaderOk && (plugin->m_settingsSeaTemp.interpMode >= 0);
-		m_currentInterpMode = plugin->m_settingsSeaTemp.interpMode;
+		m_useShader = s_shaderOk;
+		m_currentInterpMode = 0;
 		m_currentSmoothColors = plugin->m_settingsSeaTemp.smoothColors;
 		m_currentSCurve = plugin->m_settingsSeaTemp.sCurve;
 		m_currentSlopeShading = plugin->m_settingsSeaTemp.slopeShading;
 		m_currentSlopeMode = 1;
-		m_seaTempOverlay.RenderColorMap(vp, gui, plugin, this, m_useShader, m_currentInterpMode, animGrid);
+		m_seaTempOverlay.RenderColorMap(vp, gui, plugin, this, m_useShader, animGrid);
 		m_currentDataMin = m_seaTempOverlay.cachedDataMin;
 		m_currentDataMax = m_seaTempOverlay.cachedDataMax;
 #endif
@@ -362,13 +366,13 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 	// Salinity color map overlay
 	if (plugin->m_bShowSalinity && gui && gui->myMessage.hasSalData() && !m_pdc) {
 #ifdef ocpnUSE_GL
-		m_useShader = s_shaderOk && (plugin->m_settingsSalinity.interpMode >= 0);
-		m_currentInterpMode = plugin->m_settingsSalinity.interpMode;
+		m_useShader = s_shaderOk;
+		m_currentInterpMode = 0;
 		m_currentSmoothColors = plugin->m_settingsSalinity.smoothColors;
 		m_currentSCurve = plugin->m_settingsSalinity.sCurve;
 		m_currentSlopeShading = plugin->m_settingsSalinity.slopeShading;
 		m_currentSlopeMode = 0;
-		m_salinityOverlay.RenderColorMap(vp, gui, plugin, this, m_useShader, m_currentInterpMode, animGrid);
+		m_salinityOverlay.RenderColorMap(vp, gui, plugin, this, m_useShader, animGrid);
 		m_currentDataMin = m_salinityOverlay.cachedDataMin;
 		m_currentDataMax = m_salinityOverlay.cachedDataMax;
 #endif

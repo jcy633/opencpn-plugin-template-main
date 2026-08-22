@@ -131,15 +131,12 @@ public:
      // Per-call shader settings (passed by each overlay type)
      struct RenderSettings {
          bool useShader;
-         int interpMode;
          bool smoothColors;
-         bool sCurve;
-         bool slopeShading;
-         float dataMin, dataMax;
-         int slopeMode;
-         bool vectorMode;     // true: u/v separate interpolation in shader
-         double** uGrid;      // u-component grid (vector mode, for texture upload)
-         double** vGrid;      // v-component grid (vector mode, for texture upload)
+         float dataMin, dataMax;  // coefMin/coefMax for shader denormalization
+         float lutMin, lutMax;    // dMin/dMax for LUT color lookup
+         bool vectorMode;
+         double** uGrid;
+         double** vGrid;
      };
 
      // Shared color interpolation with optional smoothstep

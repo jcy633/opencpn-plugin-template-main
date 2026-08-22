@@ -47,6 +47,14 @@ set(SRC
     src/ncdfarrow.cpp
     src/ncdftexture.cpp
     src/ncdfparticle.cpp
+    src/ncdf_overlay_current.cpp
+    src/ncdf_overlay_seatemp.cpp
+    src/ncdf_overlay_salinity.cpp
+    src/shader/ncdf_shader.cpp
+    src/ncdf_legend.cpp
+    src/ncdfanimate.cpp
+    src/ncdf_animate.cpp
+    src/shader/ncdf_animate_shader.cpp
 )
 
 set(HEADERS
@@ -59,6 +67,10 @@ set(HEADERS
     include/IsoLine2.h
     include/icons2.h
     include/helper.h
+    include/ncdf_overlay_current.h
+    include/ncdf_overlay_seatemp.h
+    include/ncdf_overlay_salinity.h
+    include/shader/ncdf_shader.h
 )
 
 source_group("" FILES

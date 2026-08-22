@@ -16,6 +16,7 @@ void CurrentOverlay::Init() {
     uploadBuf = NULL; uploadBufSize = 0;
     cachedGrid = NULL; cachedNj = cachedNi = 0; cachedOwns = false;
     cachedDataMin = 0; cachedDataMax = 1;
+    cachedCoefMin = 0; cachedCoefMax = 1;
     cachedVorticity = NULL; vortNj = vortNi = 0;
     vortTexture = 0; hasVortTexture = false;
     slopeSource = 0;
@@ -56,7 +57,7 @@ wxColour CurrentOverlay::GetColor(double val_in) {
 }
 
 bool CurrentOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_pi *plugin,
-                                     ncdfOverlayFactory *factory, bool useShader, int interpMode,
+                                     ncdfOverlayFactory *factory, bool useShader,
                                      double** animatedGrid, double** animUGrid, double** animVGrid) {
     if (!gui) return false;
     int ni = gui->myMessage.lonLength;
@@ -157,11 +158,7 @@ bool CurrentOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
     // Build shader settings
     ncdfOverlayFactory::RenderSettings settings;
     settings.useShader = useShader;
-    settings.interpMode = interpMode;
     settings.smoothColors = plugin->m_settingsCurrent.smoothColors;
-    settings.sCurve = plugin->m_settingsCurrent.sCurve;
-    settings.slopeShading = plugin->m_settingsCurrent.slopeShading;
-    settings.slopeMode = 0;  // continuous gradient for current
 
     // Vector mode: pass u/v grids for shader-side speed computation
     double** tmpU = NULL, **tmpV = NULL;
@@ -201,13 +198,16 @@ bool CurrentOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
         settings.vGrid = NULL;
     }
 
-    // Use cached data range for slope shading (computed during rebuild)
-    if (settings.slopeShading) {
+    // Use cached coefMin/coefMax if texture exists (set by RenderGridOverlay on first frame)
+    if (hasTexture) {
+        settings.dataMin = cachedCoefMin;
+        settings.dataMax = cachedCoefMax;
+    } else {
         settings.dataMin = cachedDataMin;
         settings.dataMax = cachedDataMax;
-    } else {
-        settings.dataMin = 0; settings.dataMax = 1;
     }
+    settings.lutMin = 0.0f;    // Current speed color stops range
+    settings.lutMax = 1.5f;
 
     s_smoothColors = settings.smoothColors;
     factory->RenderGridOverlay(vp, cachedGrid,
@@ -215,6 +215,12 @@ bool CurrentOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
         glTexture, hasTexture, needsRebuild,
         dataDim, glDim, lutID, hasLUT, uploadBuf, uploadBufSize,
         slopeGrid, hasVortTexture ? vortTexture : 0);
+
+    // Cache coefMin/coefMax from RenderGridOverlay for subsequent frames
+    if (hasTexture) {
+        cachedCoefMin = settings.dataMin;
+        cachedCoefMax = settings.dataMax;
+    }
 
     // Free temporary u/v grids
     if (tmpU) { for (int j = 0; j < nj; j++) delete[] tmpU[j]; delete[] tmpU; }

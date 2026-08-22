@@ -16,6 +16,7 @@ void SeaTempOverlay::Init() {
     uploadBuf = NULL; uploadBufSize = 0;
     cachedGrid = NULL; cachedNj = cachedNi = 0; cachedOwns = false;
     cachedDataMin = 0; cachedDataMax = 1;
+    cachedCoefMin = 0; cachedCoefMax = 1;
     needsIsoRebuild = true;
     isoSegments.clear();
 }
@@ -49,7 +50,7 @@ wxColour SeaTempOverlay::GetColor(double temp_c) {
 }
 
 bool SeaTempOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_pi *plugin,
-                                     ncdfOverlayFactory *factory, bool useShader, int interpMode,
+                                     ncdfOverlayFactory *factory, bool useShader,
                                      double** animatedGrid) {
     if (!gui) return false;
     int ni = gui->myMessage.lonLength;
@@ -114,27 +115,30 @@ bool SeaTempOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
 
     ncdfOverlayFactory::RenderSettings settings;
     settings.useShader = useShader;
-    settings.interpMode = interpMode;
     settings.smoothColors = plugin->m_settingsSeaTemp.smoothColors;
-    settings.sCurve = plugin->m_settingsSeaTemp.sCurve;
-    settings.slopeShading = plugin->m_settingsSeaTemp.slopeShading;
-    settings.slopeMode = 1;  // SST temperature segments
-    settings.vectorMode = false;  // SST uses scalar interpolation
+    settings.vectorMode = false;
     settings.uGrid = NULL;
     settings.vGrid = NULL;
-
-    if (settings.slopeShading) {
+    if (hasTexture) {
+        settings.dataMin = cachedCoefMin;
+        settings.dataMax = cachedCoefMax;
+    } else {
         settings.dataMin = cachedDataMin;
         settings.dataMax = cachedDataMax;
-    } else {
-        settings.dataMin = 0; settings.dataMax = 1;
     }
+    settings.lutMin = -2.0f;   // SST color stops range
+    settings.lutMax = 32.0f;
 
     s_smoothColors = settings.smoothColors;
     factory->RenderGridOverlay(vp, cachedGrid,
         SeaTempOverlay::GetColor, settings,
         glTexture, hasTexture, needsRebuild,
         dataDim, glDim, lutID, hasLUT, uploadBuf, uploadBufSize);
+
+    if (hasTexture) {
+        cachedCoefMin = settings.dataMin;
+        cachedCoefMax = settings.dataMax;
+    }
 
     return true;
 }

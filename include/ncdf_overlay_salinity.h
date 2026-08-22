@@ -40,6 +40,8 @@ struct SalinityOverlay {
 
     // Cached data range (computed during rebuild, not every frame)
     float cachedDataMin, cachedDataMax;
+    // Cached coefficient range (set by RenderGridOverlay during texture creation)
+    float cachedCoefMin, cachedCoefMax;
 
     // Isolines
     bool needsIsoRebuild;
@@ -51,7 +53,7 @@ struct SalinityOverlay {
 
     bool RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_pi *plugin,
                         ncdfOverlayFactory *factory,
-                        bool useShader, int interpMode,
+                        bool useShader,
                         double** animatedGrid = NULL);
     void RenderIsoLines(PlugIn_ViewPort *vp, MainDialog *gui);
 
