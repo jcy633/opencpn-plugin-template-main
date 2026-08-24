@@ -20,14 +20,22 @@ unsigned int ncdf_shader_get_grid_program();
 
 // Uniform locations (cached at init time)
 struct NcdfShaderUniforms {
-    int dataTex;     // sampler2D: R8 data texture (R=normalized coeff, A=validity)
-    int colorLUT;    // sampler2D: 1x256 color lookup texture
-    int texSize;     // vec2: texture dimensions for B-spline sampling
-    int vectorMode;  // int: 0=scalar, 1=vector
-    int dataMin;     // float: coefMin (coefficient normalization range min)
-    int dataMax;     // float: coefMax (coefficient normalization range max)
-    int lutMin;      // float: dMin (data display range min for LUT)
-    int lutMax;      // float: dMax (data display range max for LUT)
+    int dataTex;      // sampler2D: R8 data texture (R=normalized coeff, A=validity)
+    int physicalTex;  // sampler2D: physical values for bilinear fallback
+    int colorLUT;     // sampler2D: 1x256 color lookup texture
+    int texSize;      // vec2: texture dimensions for B-spline sampling
+    int vectorMode;   // int: 0=scalar, 1=vector
+    int dataMin;      // float: coefMin for U component (or scalar)
+    int dataMax;      // float: coefMax for U component (or scalar)
+    int dataMinV;     // float: coefMin for V component (vector only)
+    int dataMaxV;     // float: coefMax for V component (vector only)
+    int lutMin;       // float: dMin (data display range min for LUT)
+    int lutMax;       // float: dMax (data display range max for LUT)
+    int physMin;      // float: physical value min for U (or scalar)
+    int physMax;      // float: physical value max for U (or scalar)
+    int physMinV;     // float: physical value min for V (vector only)
+    int physMaxV;     // float: physical value max for V (vector only)
+    int skipLandCheck; // int: 1=skip land detection (pure ocean fast path)
 };
 NcdfShaderUniforms ncdf_shader_get_uniforms();
 

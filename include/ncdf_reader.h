@@ -109,18 +109,22 @@ private:
 		// Coordinate arrays (deep copy, raw pointer)
 		if (other.latValues) {
 			latValues = (wxDouble*)calloc(latLength, sizeof(wxDouble));
-			memcpy(latValues, other.latValues, latLength * sizeof(wxDouble));
+			if (latValues) memcpy(latValues, other.latValues, latLength * sizeof(wxDouble));
 		}
 		if (other.lonValues) {
 			lonValues = (wxDouble*)calloc(lonLength, sizeof(wxDouble));
-			memcpy(lonValues, other.lonValues, lonLength * sizeof(wxDouble));
+			if (lonValues) memcpy(lonValues, other.lonValues, lonLength * sizeof(wxDouble));
 		}
 		if (other.timeValues) {
 			timeValues = (double*)calloc(timeLength, sizeof(double));
-			memcpy(timeValues, other.timeValues, timeLength * sizeof(double));
+			if (timeValues) memcpy(timeValues, other.timeValues, timeLength * sizeof(double));
 		}
 
-		// Data arrays — vector assignment = deep copy, automatic memory management
+		// Data arrays — use swap to avoid deep copy for large global data
+		ucurr.clear(); ucurr.shrink_to_fit();
+		vcurr.clear(); vcurr.shrink_to_fit();
+		sst.clear(); sst.shrink_to_fit();
+		salinity.clear(); salinity.shrink_to_fit();
 		ucurr = other.ucurr;
 		vcurr = other.vcurr;
 		sst = other.sst;

@@ -6,6 +6,7 @@
 #endif
 #include <GL/gl.h>
 #include "ncdf.h"
+#include <memory>
 
 class MainDialog;
 class ncdf_pi;
@@ -25,22 +26,33 @@ struct CurrentOverlay {
     GLuint lutID;
     bool hasLUT;
 
+    // Physical value texture for bilinear fallback (vector mode only)
+    GLuint physicalTexID;
+    bool hasPhysicalTex;
+
     // Persistent upload buffer
     unsigned char *uploadBuf;
     int uploadBufSize;
 
-    // Cached processed grid (sharpened / diffused)
-    double **cachedGrid;
+    // Cached processed grid (sharpened / diffused), owns the 2D array
+    std::unique_ptr<double*[]> cachedGrid;
     int cachedNj, cachedNi;
-    bool cachedOwns;
+
+    // Cached U/V grids for vector mode (avoid per-frame rebuild)
+    double **cachedU, **cachedV;
+    int cachedUNj, cachedVNi;
 
     // Cached data range (computed during rebuild, not every frame)
     float cachedDataMin, cachedDataMax;
+    float cachedDataMinV, cachedDataMaxV;  // V component range (vector only)
     // Cached coefficient range (set by RenderGridOverlay during texture creation)
     float cachedCoefMin, cachedCoefMax;
+    // Cached physical value range (for shader bilinear fallback)
+    float cachedPhysMin, cachedPhysMax;
+    float cachedPhysMinV, cachedPhysMaxV;  // V component range (vector only)
 
-    // Vorticity grid for slope shading
-    double **cachedVorticity;
+    // Vorticity grid for slope shading, owns the 2D array
+    std::unique_ptr<double*[]> cachedVorticity;
     int vortNj, vortNi;
     GLuint vortTexture;
     bool hasVortTexture;

@@ -7,13 +7,12 @@
 #include <GL/gl.h>
 #include "ncdf.h"
 #include <vector>
+#include <memory>
 
 class MainDialog;
 class ncdf_pi;
 class ncdfOverlayFactory;
 struct PlugIn_ViewPort;
-struct ncdfIsoSeg;
-
 struct ncdfIsoSeg;
 
 // Sea temperature (海温) overlay: color map + isolines
@@ -33,15 +32,17 @@ struct SeaTempOverlay {
     unsigned char *uploadBuf;
     int uploadBufSize;
 
-    // Cached processed grid
-    double **cachedGrid;
+    // Cached processed grid (owns the 2D array)
+    std::unique_ptr<double*[]> cachedGrid;
     int cachedNj, cachedNi;
-    bool cachedOwns;
 
     // Cached data range (computed during rebuild, not every frame)
     float cachedDataMin, cachedDataMax;
     // Cached coefficient range (set by RenderGridOverlay during texture creation)
     float cachedCoefMin, cachedCoefMax;
+    // Cached physical value range (for shader bilinear fallback)
+    float cachedPhysMin, cachedPhysMax;
+    float cachedPhysMinV, cachedPhysMaxV;
 
     // Isolines
     bool needsIsoRebuild;

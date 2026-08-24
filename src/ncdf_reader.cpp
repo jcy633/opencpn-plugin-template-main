@@ -62,23 +62,17 @@ void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 		return;
 	}
 
-	ncdfLog("[ncdf] readncdfFile: entering, meridian=%d, parallel=%d, points=%d, hasCurrent=%d, hasSST=%d, hasSal=%d\n",
-		(int)dataMessage.noPointsMeridian, (int)dataMessage.noPointsParallel,
-		dataMessage.numberOfPoints, (int)hasCurrent, (int)hasSST, (int)hasSal);
-
 	// Free old coordinate arrays before deep copy
 	if (gui->myMessage.latValues) { free(gui->myMessage.latValues); gui->myMessage.latValues = NULL; }
 	if (gui->myMessage.lonValues) { free(gui->myMessage.lonValues); gui->myMessage.lonValues = NULL; }
 	if (gui->myMessage.timeValues) { free(gui->myMessage.timeValues); gui->myMessage.timeValues = NULL; }
 
 	gui->myMessage = dataMessage;  // deep copy (vectors auto-manage ucurr/vcurr/sst/salinity)
-	ncdfLog("[ncdf] readncdfFile: myMessage copied\n");
 
 	// hasSeaTemp/hasSalinity are now in myMessage (set by deep copy)
 
 	wxDateTime ddt;
 	ddt = dataMessage.dataDateTime;
-	ncdfLog("[ncdf] readncdfFile: dataDateTime valid=%d\n", (int)ddt.IsValid());
 
 	wxString ls;
 	if (ddt.IsValid()) {
@@ -87,8 +81,6 @@ void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 		ls = _T("No date/time");
 	}
 	gui->m_staticTextDateTime->SetLabel(ls);
-	ncdfLog("[ncdf] readncdfFile: datetime label set, calling reset/setData...\n");
-
 	gui->pPlugIn->GetncdfOverlayFactory()->reset();
 	gui->pPlugIn->GetncdfOverlayFactory()->setData(gui,
 							   gui->pPlugIn,
@@ -101,11 +93,8 @@ void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 							   );
 	isReading = false;
 
-	ncdfLog("[ncdf] readncdfFile: completed, readyToRender=%d, points=%d, meridian=%d, parallel=%d\n",
-		gui->pPlugIn->GetncdfOverlayFactory()->isReadyToRender(),
-		dataMessage.numberOfPoints,
-		dataMessage.noPointsMeridian,
-		dataMessage.noPointsParallel);
+	ncdfLog("[ncdf] readncdfFile: done, readyToRender=%d\n",
+		gui->pPlugIn->GetncdfOverlayFactory()->isReadyToRender());
 }
 
 

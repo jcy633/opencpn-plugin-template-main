@@ -1659,18 +1659,17 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 				m_staticTextSalinity->Show(showSal);
 				m_textCtrlSalinity->Show(showSal);
 				Layout();
-				if (showSST) {
-					pPlugIn->m_bShowSeaTemp = false;
-					m_checkBoxSeaTemp->SetValue(false);
-				} else {
-					pPlugIn->m_bShowSeaTemp = false;
-					pPlugIn->m_bShowSeaTempIso = false;
-				}
+				// Only disable overlays when data is NOT available (same as Path A)
 				if (!showCur) {
 					pPlugIn->m_bShowCurrentDir = false;
 					pPlugIn->m_bShowCurrentForce = false;
 					pPlugIn->m_bShowParticles = false;
 					m_checkBoxBmpCurrentForce->SetValue(false);
+				}
+				if (!showSST) {
+					pPlugIn->m_bShowSeaTemp = false;
+					pPlugIn->m_bShowSeaTempIso = false;
+					m_checkBoxSeaTemp->SetValue(false);
 				}
 				if (!showSal) {
 					pPlugIn->m_bShowSalinity = false;
@@ -1913,6 +1912,9 @@ void MainDialog::onDCurrentClick( wxCommandEvent& event )
 }
 void MainDialog::onBmpCurrentForceClick(wxCommandEvent& event)
 {
+	static bool s_guard = false;
+	if (s_guard) return;
+	s_guard = true;
 	bool checked = m_checkBoxBmpCurrentForce->GetValue();
 	pPlugIn->m_bShowCurrentForce = checked;
 	// Mutual exclusion: uncheck SST and Salinity color maps
@@ -1922,6 +1924,7 @@ void MainDialog::onBmpCurrentForceClick(wxCommandEvent& event)
 		m_checkBoxSalinity->SetValue(false);
 		pPlugIn->m_bShowSalinity = false;
 	}
+	s_guard = false;
 	RequestRefresh(m_parent);
 }
 
@@ -1933,6 +1936,9 @@ void MainDialog::onParticlesClick(wxCommandEvent& event)
 
 void MainDialog::onSeaTempClick(wxCommandEvent& event)
 {
+	static bool s_guard = false;
+	if (s_guard) return;
+	s_guard = true;
 	bool checked = m_checkBoxSeaTemp->GetValue();
 	pPlugIn->m_bShowSeaTemp = checked;
 	// Mutual exclusion: uncheck Current and Salinity color maps
@@ -1942,6 +1948,7 @@ void MainDialog::onSeaTempClick(wxCommandEvent& event)
 		m_checkBoxSalinity->SetValue(false);
 		pPlugIn->m_bShowSalinity = false;
 	}
+	s_guard = false;
 	RequestRefresh(m_parent);
 }
 
@@ -1963,6 +1970,9 @@ void MainDialog::onIsoSalClick(wxCommandEvent& event)
 
 void MainDialog::onSalinityClick(wxCommandEvent& event)
 {
+	static bool s_guard = false;
+	if (s_guard) return;
+	s_guard = true;
 	bool checked = m_checkBoxSalinity->GetValue();
 	pPlugIn->m_bShowSalinity = checked;
 	// Mutual exclusion: uncheck Current and SST color maps
@@ -1972,6 +1982,7 @@ void MainDialog::onSalinityClick(wxCommandEvent& event)
 		m_checkBoxSeaTemp->SetValue(false);
 		pPlugIn->m_bShowSeaTemp = false;
 	}
+	s_guard = false;
 	RequestRefresh(m_parent);
 }
 

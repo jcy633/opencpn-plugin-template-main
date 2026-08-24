@@ -14,9 +14,11 @@ void SalinityOverlay::Init() {
     glDim[0] = glDim[1] = 0;
     lutID = 0; hasLUT = false;
     uploadBuf = NULL; uploadBufSize = 0;
-    cachedGrid = NULL; cachedNj = cachedNi = 0; cachedOwns = false;
+    cachedGrid.reset(); cachedNj = cachedNi = 0;
     cachedDataMin = 0; cachedDataMax = 1;
     cachedCoefMin = 0; cachedCoefMax = 1;
+    cachedPhysMin = 0; cachedPhysMax = 1;
+    cachedPhysMinV = 0; cachedPhysMaxV = 1;
     needsIsoRebuild = true;
     isoSegments.clear();
 }
@@ -25,11 +27,10 @@ void SalinityOverlay::Cleanup() {
     if (hasTexture && glTexture) { glDeleteTextures(1, &glTexture); }
     if (hasLUT && lutID) { glDeleteTextures(1, &lutID); }
     if (uploadBuf) { free(uploadBuf); uploadBuf = NULL; }
-    if (cachedOwns && cachedGrid) {
+    if (cachedGrid) {
         for (int j = 0; j < cachedNj; j++) delete[] cachedGrid[j];
-        delete[] cachedGrid;
+        cachedGrid.reset();
     }
-    cachedGrid = NULL;
     Init();
 }
 
@@ -49,98 +50,36 @@ wxColour SalinityOverlay::GetColor(double sal_psu) {
     return ncdfOverlayFactory::InterpolateStops(stops, 15, sal_psu, s_smoothColors);
 }
 
+// Helper: fill grid from salinity data
+static void FillSalGrid(MainDialog &gui, std::unique_ptr<double*[]> &grid, int nj, int ni) {
+    auto src = std::make_unique<double*[]>(nj);
+    for (int j = 0; j < nj; j++) {
+        src[j] = new double[ni];
+        for (int i = 0; i < ni; i++) src[j][i] = gui.myMessage.getSal(i, j);
+    }
+    grid = std::move(src);
+}
+static bool HasSalData(MainDialog &gui) { return gui.myMessage.hasSalData(); }
+
 bool SalinityOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_pi *plugin,
                                       ncdfOverlayFactory *factory, bool useShader,
                                       double** animatedGrid) {
-    if (!gui) return false;
-    int ni = gui->myMessage.lonLength;
-    int nj = gui->myMessage.latLength;
-    if (ni < 2 || nj < 2) return false;
-
-    // If animated grid provided, use it directly (animation replaces static color map)
-    if (animatedGrid) {
-        if (cachedOwns && cachedGrid) { for (int j = 0; j < cachedNj; j++) delete[] cachedGrid[j]; delete[] cachedGrid; }
-        cachedGrid = animatedGrid;
-        cachedOwns = false;
-        cachedNj = nj; cachedNi = ni;
-        double dMin = 1e30, dMax = -1e30;
-        for (int jj = 0; jj < nj; jj++)
-            for (int ii = 0; ii < ni; ii++) {
-                double v = animatedGrid[jj][ii];
-                if (v != ncdf_NOTDEF && v == v && isfinite(v)) {
-                    if (v < dMin) dMin = v; if (v > dMax) dMax = v;
-                }
-            }
-        cachedDataMin = (dMin < dMax) ? (float)dMin : 0;
-        cachedDataMax = (dMin < dMax) ? (float)dMax : 1;
-        needsRebuild = true;
-    } else if (!gui->myMessage.hasSalData()) {
-        return false;
-    } else {
-    if (needsRebuild || !cachedGrid) {
-        if (cachedOwns) { for (int j = 0; j < cachedNj; j++) delete[] cachedGrid[j]; delete[] cachedGrid; }
-        cachedGrid = NULL; cachedOwns = false;
-        // Build 2D grid from flat salinity vector
-        double** src = new double*[nj];
-        for (int j = 0; j < nj; j++) {
-            src[j] = new double[ni];
-            for (int i = 0; i < ni; i++) src[j][i] = gui->myMessage.getSal(i, j);
-        }
-        cachedGrid = src; cachedOwns = true;
-        if (plugin->m_settingsSalinity.anisoDiffusion) {
-            double** ad = ncdfOverlayFactory::BuildAnisoDiffusedGrid(src, nj, ni);
-            if (ad) { for (int j = 0; j < nj; j++) delete[] src[j]; delete[] src; cachedGrid = ad; }
-        }
-        if (plugin->m_settingsSalinity.sharpen) {
-            double** sh = ncdfOverlayFactory::BuildSharpenedGrid(cachedGrid, nj, ni);
-            if (sh) { if (cachedOwns) { for (int j=0;j<cachedNj;j++) delete[] cachedGrid[j]; delete[] cachedGrid; } cachedGrid = sh; cachedOwns = true; }
-        }
-        cachedNj = nj; cachedNi = ni;
-
-        // Cache data range during rebuild (not every frame)
-        if (cachedGrid) {
-            double dMin = 1e30, dMax = -1e30;
-            for (int jj = 0; jj < nj; jj++)
-                for (int ii = 0; ii < ni; ii++) {
-                    double v = cachedGrid[jj][ii];
-                    if (v != ncdf_NOTDEF && v == v && isfinite(v)) {
-                        if (v < dMin) dMin = v; if (v > dMax) dMax = v;
-                    }
-                }
-            cachedDataMin = (dMin < dMax) ? (float)dMin : 0;
-            cachedDataMax = (dMin < dMax) ? (float)dMax : 1;
-        }
-    }
-    } // end else (not animated)
-
-    ncdfOverlayFactory::RenderSettings settings;
-    settings.useShader = useShader;
-    settings.smoothColors = plugin->m_settingsSalinity.smoothColors;
-    settings.vectorMode = false;
-    settings.uGrid = NULL;
-    settings.vGrid = NULL;
-    if (hasTexture) {
-        settings.dataMin = cachedCoefMin;
-        settings.dataMax = cachedCoefMax;
-    } else {
-        settings.dataMin = cachedDataMin;
-        settings.dataMax = cachedDataMax;
-    }
-    settings.lutMin = 30.0f;   // Salinity color stops range
-    settings.lutMax = 39.0f;
-
-    s_smoothColors = settings.smoothColors;
-    factory->RenderGridOverlay(vp, cachedGrid,
-        SalinityOverlay::GetColor, settings,
-        glTexture, hasTexture, needsRebuild,
-        dataDim, glDim, lutID, hasLUT, uploadBuf, uploadBufSize);
-
-    if (hasTexture) {
-        cachedCoefMin = settings.dataMin;
-        cachedCoefMax = settings.dataMax;
-    }
-
-    return true;
+    ncdfOverlayFactory::ScalarOverlayState st = {
+        &glTexture, &hasTexture, &needsRebuild,
+        dataDim, glDim, &lutID, &hasLUT, &uploadBuf, &uploadBufSize,
+        &cachedGrid, &cachedNj, &cachedNi,
+        &cachedDataMin, &cachedDataMax, &cachedCoefMin, &cachedCoefMax,
+        &cachedPhysMin, &cachedPhysMax, &cachedPhysMinV, &cachedPhysMaxV
+    };
+    bool ok = factory->RenderScalarColorMap(vp, gui, plugin, useShader, st,
+        SalinityOverlay::GetColor, 30.0f, 39.0f,
+        HasSalData, FillSalGrid,
+        plugin->m_settingsSalinity.smoothColors,
+        plugin->m_settingsSalinity.sharpen,
+        plugin->m_settingsSalinity.anisoDiffusion,
+        animatedGrid);
+    s_smoothColors = plugin->m_settingsSalinity.smoothColors;
+    return ok;
 }
 
 void SalinityOverlay::RenderIsoLines(PlugIn_ViewPort *vp, MainDialog *gui) {

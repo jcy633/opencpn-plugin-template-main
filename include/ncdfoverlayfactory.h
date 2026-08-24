@@ -132,12 +132,37 @@ public:
      struct RenderSettings {
          bool useShader;
          bool smoothColors;
-         float dataMin, dataMax;  // coefMin/coefMax for shader denormalization
-         float lutMin, lutMax;    // dMin/dMax for LUT color lookup
+         float dataMin, dataMax;
+         float dataMinV, dataMaxV;
+         float lutMin, lutMax;
+         float physMin, physMax;
+         float physMinV, physMaxV;
          bool vectorMode;
          double** uGrid;
          double** vGrid;
+         bool hasLand;  // true if data contains land pixels (enables coastline shader path)
      };
+
+     // Shared scalar overlay rendering (used by SeaTemp and Salinity)
+     struct ScalarOverlayState {
+         GLuint *p_glTexture; bool *p_hasTexture; bool *p_needsRebuild;
+         int *p_dataDim; int *p_glDim;
+         GLuint *p_lutID; bool *p_hasLUT;
+         unsigned char **p_uploadBuf; int *p_uploadBufSize;
+         std::unique_ptr<double*[]> *p_cachedGrid;
+         int *p_cachedNj, *p_cachedNi;
+         float *p_cachedDataMin, *p_cachedDataMax;
+         float *p_cachedCoefMin, *p_cachedCoefMax;
+         float *p_cachedPhysMin, *p_cachedPhysMax;
+         float *p_cachedPhysMinV, *p_cachedPhysMaxV;
+     };
+     bool RenderScalarColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_pi *plugin,
+                               bool useShader, ScalarOverlayState &state,
+                               ColorFunc colorFunc, float lutMin, float lutMax,
+                               bool (*hasData)(MainDialog&),
+                               void (*fillGrid)(MainDialog&, std::unique_ptr<double*[]>&, int, int),
+                               bool smoothColors, bool sharpen, bool anisoDiffusion,
+                               double** animatedGrid = NULL);
 
      // Shared color interpolation with optional smoothstep
      static wxColour InterpolateStops(const double stops[][4], int nStops, double val, bool smooth);
@@ -154,13 +179,14 @@ public:
      void RenderGridOverlay(PlugIn_ViewPort *vp,
                             double **grid,
                             ColorFunc colorFunc,
-                            const RenderSettings &settings,
+                            RenderSettings &settings,
                             GLuint &texID, bool &hasTex, bool &needsRebuild,
                             int dataDim[2], int glDim[2],
                             GLuint &lutID, bool &hasLUT,
                             unsigned char *&uploadBuf, int &uploadBufSize,
                             double **slopeGrid = NULL,
-                            GLuint slopeTexID = 0);
+                            GLuint slopeTexID = 0,
+                            GLuint *physicalTexID = NULL, bool *hasPhysicalTex = NULL);
 
      PlugIn_ViewPort 	*vp;
 	 bool 		m_bReadyToRender;

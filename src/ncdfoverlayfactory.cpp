@@ -150,10 +150,13 @@ void ncdfOverlayFactory::DeleteDispTexture()
 
 void ncdfOverlayFactory::SetBicubicMode(bool enable)
 {
-    // Force texture rebuild to switch between GL_NEAREST and GL_LINEAR
-    m_currentOverlay.Invalidate();
-    m_seaTempOverlay.Invalidate();
-    m_salinityOverlay.Invalidate();
+    // Only invalidate the currently visible overlay (avoid expensive rebuilds)
+    if (plugin && plugin->m_bShowCurrentForce)
+        m_currentOverlay.Invalidate();
+    else if (plugin && plugin->m_bShowSeaTemp)
+        m_seaTempOverlay.Invalidate();
+    else if (plugin && plugin->m_bShowSalinity)
+        m_salinityOverlay.Invalidate();
 }
 
 void ncdfOverlayFactory::setData(MainDialog *gui, ncdf_pi *plugin, const ncdfDataMessage& g2data, int numberOfPoints, wxDouble tlat, wxDouble tlon, wxDouble blat, wxDouble blon)
@@ -247,21 +250,17 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
         !plugin->m_bShowSeaTempIso && !plugin->m_bShowSalinity) return false;
 
     // Lazy shader compile (first render call, GL context is available)
-    // Shader is compiled once; m_useShader toggles via checkbox
-    static bool s_shaderCompiled = false;
-    static bool s_shaderOk = false;
-    if (!s_shaderCompiled) {
-        s_shaderCompiled = true;
-        s_shaderOk = ncdf_shader_init();
+    // Use ncdf_shader_initialized() to handle factory recreation
+    if (!ncdf_shader_initialized()) {
+        ncdf_shader_init();
     }
-    // m_useShader is set per data type below
     m_useShader = false;
 
     static bool s_shaderDbg = false;
     if (!s_shaderDbg) {
         s_shaderDbg = true;
-        wxLogMessage(_T("[shader] compiled=%d ok=%d m_useShader=%d"),
-                     (int)s_shaderCompiled, (int)s_shaderOk, (int)m_useShader);
+        wxLogMessage(_T("[shader] initialized=%d m_useShader=%d"),
+                     (int)ncdf_shader_initialized(), (int)m_useShader);
     }
 
     // Animation: get advected grids if any type's animation is active
@@ -318,7 +317,7 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 #ifdef ocpnUSE_GL
 	      glDisable(GL_TEXTURE_2D);
 	      glBindTexture(GL_TEXTURE_2D, 0);
-	      m_useShader = s_shaderOk;
+	      m_useShader = ncdf_shader_initialized();
 	      m_currentInterpMode = 0;
 	      m_currentSmoothColors = plugin->m_settingsCurrent.smoothColors;
 	      m_currentSCurve = plugin->m_settingsCurrent.sCurve;
@@ -346,7 +345,7 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 	// Sea temperature color map overlay
 	if (plugin->m_bShowSeaTemp && gui && gui->myMessage.hasSSTData() && !m_pdc) {
 #ifdef ocpnUSE_GL
-		m_useShader = s_shaderOk;
+		m_useShader = ncdf_shader_initialized();
 		m_currentInterpMode = 0;
 		m_currentSmoothColors = plugin->m_settingsSeaTemp.smoothColors;
 		m_currentSCurve = plugin->m_settingsSeaTemp.sCurve;
@@ -366,7 +365,7 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 	// Salinity color map overlay
 	if (plugin->m_bShowSalinity && gui && gui->myMessage.hasSalData() && !m_pdc) {
 #ifdef ocpnUSE_GL
-		m_useShader = s_shaderOk;
+		m_useShader = ncdf_shader_initialized();
 		m_currentInterpMode = 0;
 		m_currentSmoothColors = plugin->m_settingsSalinity.smoothColors;
 		m_currentSCurve = plugin->m_settingsSalinity.sCurve;
