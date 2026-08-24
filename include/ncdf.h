@@ -116,6 +116,7 @@ public:
 private:
 	void UpdateTrackingControls();
 	void printCurrentData();
+	bool switchToFile(const wxString &fileName, const wxString &fn, int &idx);
 
 
 

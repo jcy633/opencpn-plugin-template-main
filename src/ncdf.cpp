@@ -1132,73 +1132,12 @@ int MainDialog::nc_get(wxString filestr){
 	return 0;
 }
 
-bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
-	ncdfLog("[ncdf] readTimeStepData: timeIndex=%d, latLength=%d, lonLength=%d, ucurr.size=%zu\n",
-		dataMessage.timeIndex, (int)dataMessage.latLength, (int)dataMessage.lonLength, dataMessage.ucurr.size());
-
-	if (!dataMessage.latValues || !dataMessage.lonValues) {
-		ncdfLog("[ncdf] readTimeStepData: latValues or lonValues is NULL\n");
-		return false;
-	}
-
-	// Clear stale data and read fresh from nc4 file
-	// Data vectors are empty (first load) — read from nc4 file
-	// Clear any stale data before reading
-	dataMessage.sst.clear();
-	dataMessage.hasSeaTemp = false;
-	dataMessage.salinity.clear();
-	dataMessage.hasSalinity = false;
-	dataMessage.ucurr.clear();
-	dataMessage.vcurr.clear();
-
-	int ncid;
-	int retval;
-	
-	wxString filenameStr = dataMessage.fileName;
-	const wxCharBuffer mbBuf = filenameStr.mb_str();
-	size_t mbLen = strlen(mbBuf);
-	char* filename = new char[mbLen + 1];
-	strcpy(filename, mbBuf);
-	
-	retval = nc_open(filename, NC_NOWRITE, &ncid);
-	if (retval != NC_NOERR) {
-		retval = nc_open(filename, NC_NOWRITE | NC_NETCDF4, &ncid);
-	}
-	if (retval != NC_NOERR) {
-		ncdfLog("[ncdf] readTimeStepData: nc_open failed, retval=%d\n", retval);
-		delete[] filename;
-		return false;
-	}
-	
-	// Use cached variable IDs from nc_get() (GRIB pattern: discover once, read many)
-	// Fallback to CF discovery if cache is invalid (shouldn't happen in normal flow)
-	int u_varid = m_cached_u_varid;
-	int v_varid = m_cached_v_varid;
-	if (u_varid < 0 || v_varid < 0) {
-		ncdfLog("[ncdf] readTimeStepData: cache miss, falling back to CF discovery\n");
-		{
-			const char* alt_std[] = {"surface_eastward_sea_water_velocity", NULL};
-			const char* long_hints[] = {"Eastward Current Velocity", "u-velocity component of current", NULL};
-			const char* var_hints[] = {"u", "uo", "current_u", "curr_u", "u10", "u100", NULL};
-			u_varid = find_var_by_cf(ncid, "eastward_sea_water_velocity", alt_std, long_hints, var_hints);
-		}
-		{
-			const char* alt_std[] = {"surface_northward_sea_water_velocity", NULL};
-			const char* long_hints[] = {"Northward Current Velocity", "v-velocity component of current", NULL};
-			const char* var_hints[] = {"v", "vo", "current_v", "curr_v", "v10", "v100", NULL};
-			v_varid = find_var_by_cf(ncid, "northward_sea_water_velocity", alt_std, long_hints, var_hints);
-		}
-	}
-
-	bool hasUV = (u_varid != -1 && v_varid != -1);
-	ncdfLog("[ncdf] readTimeStepData: hasUV=%d, u_varid=%d, v_varid=%d (cached)\n", (int)hasUV, u_varid, v_varid);
-
-	if (hasUV) {
-	ncdfLog("[ncdf] readTimeStepData: variables found, u_varid=%d, v_varid=%d\n", u_varid, v_varid);
+static bool readUVFromNC(int ncid, int u_varid, int v_varid, ncdfDataMessage& dataMessage) {
+	ncdfLog("[ncdf] readUVFromNC: u_varid=%d, v_varid=%d\n", u_varid, v_varid);
 
 	float fill_value_u = -32767.0f;
 	float fill_value_v = -32767.0f;
-	
+
 	if (nc_get_att_float(ncid, u_varid, "_FillValue", &fill_value_u) != NC_NOERR) {
 		double fill_val_double;
 		if (nc_get_att_double(ncid, u_varid, "_FillValue", &fill_val_double) == NC_NOERR) {
@@ -1207,7 +1146,7 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 			fill_value_u = -32767.0f;
 		}
 	}
-	
+
 	if (nc_get_att_float(ncid, v_varid, "_FillValue", &fill_value_v) != NC_NOERR) {
 		double fill_val_double;
 		if (nc_get_att_double(ncid, v_varid, "_FillValue", &fill_val_double) == NC_NOERR) {
@@ -1216,23 +1155,22 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 			fill_value_v = -32767.0f;
 		}
 	}
-	
-	int ndims;
+
+	int ndims, retval;
 	if ((retval = nc_inq_varndims(ncid, u_varid, &ndims))) {
-		nc_close(ncid);
-		delete[] filename;
 		return false;
 	}
-	
+
 	int* dimids = (int*)calloc(ndims, sizeof(int));
-	if (!dimids) { nc_close(ncid); delete[] filename; return false; }
-	
+	if (!dimids) return false;
+
 	if ((retval = nc_inq_var(ncid, u_varid, NULL, NULL, NULL, dimids, NULL))) {
-		free(dimids); nc_close(ncid); delete[] filename; return false;
+		free(dimids);
+		return false;
 	}
-	
+
 	int time_dimid = -1, lat_dimid = -1, lon_dimid = -1, depth_dimid = -1;
-	
+
 	nc_inq_dimid(ncid, "time", &time_dimid);
 	nc_inq_dimid(ncid, "latitude", &lat_dimid);
 	if (lat_dimid == -1) nc_inq_dimid(ncid, "lat", &lat_dimid);
@@ -1240,66 +1178,64 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 	if (lon_dimid == -1) nc_inq_dimid(ncid, "lon", &lon_dimid);
 	nc_inq_dimid(ncid, "depth", &depth_dimid);
 	if (depth_dimid == -1) nc_inq_dimid(ncid, "z", &depth_dimid);
-	
+
 	int time_idx = -1, lat_idx = -1, lon_idx = -1, depth_idx = -1;
-	
+
 	for (int i = 0; i < ndims; i++) {
 		if (dimids[i] == time_dimid) time_idx = i;
 		else if (dimids[i] == lat_dimid) lat_idx = i;
 		else if (dimids[i] == lon_dimid) lon_idx = i;
 		else if (dimids[i] == depth_dimid) depth_idx = i;
 	}
-	
+
 	free(dimids);
-	
+
 	if (time_idx == -1 || lat_idx == -1 || lon_idx == -1) {
-		nc_close(ncid);
-		delete[] filename;
 		return false;
 	}
-	
+
 	bool lat_before_lon = (lat_idx < lon_idx);
-	
-	ncdfLog("[ncdf] readTimeStepData: dims - time_idx=%d, lat_idx=%d, lon_idx=%d, depth_idx=%d, lat_before_lon=%d\n",
+
+	ncdfLog("[ncdf] readUVFromNC: dims - time_idx=%d, lat_idx=%d, lon_idx=%d, depth_idx=%d, lat_before_lon=%d\n",
 		time_idx, lat_idx, lon_idx, depth_idx, (int)lat_before_lon);
-	
+
 	size_t start[4] = {0, 0, 0, 0};
 	size_t count[4] = {1, 1, 1, 1};
-	
+
 	start[time_idx] = dataMessage.timeIndex;
 	count[time_idx] = 1;
-	
+
 	start[lat_idx] = 0;
 	count[lat_idx] = dataMessage.latLength;
-	
+
 	start[lon_idx] = 0;
 	count[lon_idx] = dataMessage.lonLength;
-	
+
 	if (depth_idx != -1) {
 		start[depth_idx] = 0;
 		count[depth_idx] = 1;
 	}
-	
+
 	size_t nbr_uv = dataMessage.latLength * dataMessage.lonLength;
-	
+
 	float* u_vals = (float*)calloc(nbr_uv, sizeof(float));
-	if (!u_vals) { nc_close(ncid); delete[] filename; return false; }
-	
+	if (!u_vals) return false;
+
 	float* v_vals = (float*)calloc(nbr_uv, sizeof(float));
-	if (!v_vals) { free(u_vals); nc_close(ncid); delete[] filename; return false; }
-	
+	if (!v_vals) { free(u_vals); return false; }
+
 	nc_type u_type, v_type;
 	nc_inq_vartype(ncid, u_varid, &u_type);
 	nc_inq_vartype(ncid, v_varid, &v_type);
-	
-	ncdfLog("[ncdf] readTimeStepData: reading data, u_type=%d, v_type=%d, nbr_uv=%zu\n", 
+
+	ncdfLog("[ncdf] readUVFromNC: reading data, u_type=%d, v_type=%d, nbr_uv=%zu\n",
 		(int)u_type, (int)v_type, nbr_uv);
-	
+
 	if (u_type == NC_DOUBLE) {
 		double* u_vals_double = (double*)calloc(nbr_uv, sizeof(double));
-		if (!u_vals_double) { free(u_vals); free(v_vals); nc_close(ncid); delete[] filename; return false; }
+		if (!u_vals_double) { free(u_vals); free(v_vals); return false; }
 		if ((retval = nc_get_vara_double(ncid, u_varid, start, count, u_vals_double))) {
-			free(u_vals_double); free(u_vals); free(v_vals); nc_close(ncid); delete[] filename; return false;
+			free(u_vals_double); free(u_vals); free(v_vals); return false;
 		}
 		for (size_t i = 0; i < nbr_uv; i++) {
 			u_vals[i] = (float)u_vals_double[i];
@@ -1307,19 +1243,15 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 		free(u_vals_double);
 	} else {
 		if ((retval = nc_get_vara_float(ncid, u_varid, start, count, u_vals))) {
-			free(u_vals);
-			free(v_vals);
-			nc_close(ncid);
-			delete[] filename;
-			return false;
+			free(u_vals); free(v_vals); return false;
 		}
 	}
-	
+
 	if (v_type == NC_DOUBLE) {
 		double* v_vals_double = (double*)calloc(nbr_uv, sizeof(double));
-		if (!v_vals_double) { free(u_vals); free(v_vals); nc_close(ncid); delete[] filename; return false; }
+		if (!v_vals_double) { free(u_vals); free(v_vals); return false; }
 		if ((retval = nc_get_vara_double(ncid, v_varid, start, count, v_vals_double))) {
-			free(v_vals_double); free(u_vals); free(v_vals); nc_close(ncid); delete[] filename; return false;
+			free(v_vals_double); free(u_vals); free(v_vals); return false;
 		}
 		for (size_t i = 0; i < nbr_uv; i++) {
 			v_vals[i] = (float)v_vals_double[i];
@@ -1327,17 +1259,11 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 		free(v_vals_double);
 	} else {
 		if ((retval = nc_get_vara_float(ncid, v_varid, start, count, v_vals))) {
-			free(u_vals);
-			free(v_vals);
-			nc_close(ncid);
-			delete[] filename;
-			return false;
+			free(u_vals); free(v_vals); return false;
 		}
 	}
-	
-	ncdfLog("[ncdf] readTimeStepData: data read successfully, allocating output arrays\n");
 
-	// ncid and filename are freed at the end of the function (after SST read)
+	ncdfLog("[ncdf] readUVFromNC: data read successfully, allocating output arrays\n");
 
 	dataMessage.ucurr.resize(nbr_uv, ncdf_NOTDEF);
 	dataMessage.vcurr.resize(nbr_uv, ncdf_NOTDEF);
@@ -1364,130 +1290,210 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 			}
 		}
 	}
-	
+
 	free(u_vals);
 	free(v_vals);
-	} // end if (hasUV)
+	return true;
+}
 
-	// Read sea surface temperature using cached variable ID (GRIB pattern)
-	if (ncid >= 0 && m_fileHasSeaTemp) {
-		int sst_varid_local = m_cached_sst_varid;
-		if (sst_varid_local < 0) {
-			// Fallback: discover SST variable if cache miss
-			const char* alt_std[] = {"sea_surface_temperature", "surface_temperature", NULL};
-			const char* long_hints[] = {"Sea surface temperature", "sea_water_temperature", "SST", "Temperature", "temperature", NULL};
-			const char* var_hints[] = {"thetao", "sst", "temperature", "temp", "SST", "votemper", "to", NULL};
-			sst_varid_local = find_var_by_cf(ncid, "sea_water_temperature", alt_std, long_hints, var_hints);
+static bool readSSTFromNC(int ncid, int sst_varid, ncdfDataMessage& dataMessage) {
+	ncdfLog("[ncdf] readSSTFromNC: sst_varid=%d\n", sst_varid);
+
+	if (sst_varid < 0) {
+		// Fallback: discover SST variable if cache miss
+		const char* alt_std[] = {"sea_surface_temperature", "surface_temperature", NULL};
+		const char* long_hints[] = {"Sea surface temperature", "sea_water_temperature", "SST", "Temperature", "temperature", NULL};
+		const char* var_hints[] = {"thetao", "sst", "temperature", "temp", "SST", "votemper", "to", NULL};
+		sst_varid = find_var_by_cf(ncid, "sea_water_temperature", alt_std, long_hints, var_hints);
+	}
+	if (sst_varid == -1) return false;
+
+	size_t nbr_uv = dataMessage.latLength * dataMessage.lonLength;
+	float* sst_vals = (float*)calloc(nbr_uv, sizeof(float));
+	if (!sst_vals) return false;
+
+	// Read SST using hyperslab (current time step only)
+	int sst_ndims;
+	nc_inq_varndims(ncid, sst_varid, &sst_ndims);
+	int sst_dimids[NC_MAX_DIMS];
+	nc_inq_vardimid(ncid, sst_varid, sst_dimids);
+	size_t sst_start[NC_MAX_DIMS] = {0};
+	size_t sst_count[NC_MAX_DIMS] = {0};
+	for (int d = 0; d < sst_ndims; d++) {
+		char dimname[NC_MAX_NAME + 1];
+		size_t dimlen;
+		nc_inq_dim(ncid, sst_dimids[d], dimname, &dimlen);
+		if (strstr(dimname, "time") || strstr(dimname, "Time")) {
+			sst_start[d] = dataMessage.timeIndex;
+			sst_count[d] = 1;
+		} else if (strstr(dimname, "lat") || strstr(dimname, "Lat")) {
+			sst_count[d] = dataMessage.latLength;
+		} else if (strstr(dimname, "lon") || strstr(dimname, "Lon")) {
+			sst_count[d] = dataMessage.lonLength;
+		} else {
+			sst_count[d] = 1;
 		}
-		if (sst_varid_local != -1) {
-			size_t nbr_uv = dataMessage.latLength * dataMessage.lonLength;
-			float* sst_vals = (float*)calloc(nbr_uv, sizeof(float));
-			if (sst_vals) {
-				// Read SST using hyperslab (current time step only)
-				int sst_ndims;
-				nc_inq_varndims(ncid, sst_varid_local, &sst_ndims);
-				int sst_dimids[NC_MAX_DIMS];
-				nc_inq_vardimid(ncid, sst_varid_local, sst_dimids);
-				size_t sst_start[NC_MAX_DIMS] = {0};
-				size_t sst_count[NC_MAX_DIMS] = {0};
-				for (int d = 0; d < sst_ndims; d++) {
-					char dimname[NC_MAX_NAME + 1];
-					size_t dimlen;
-					nc_inq_dim(ncid, sst_dimids[d], dimname, &dimlen);
-					if (strstr(dimname, "time") || strstr(dimname, "Time")) {
-						sst_start[d] = dataMessage.timeIndex;
-						sst_count[d] = 1;
-					} else if (strstr(dimname, "lat") || strstr(dimname, "Lat")) {
-						sst_count[d] = dataMessage.latLength;
-					} else if (strstr(dimname, "lon") || strstr(dimname, "Lon")) {
-						sst_count[d] = dataMessage.lonLength;
-					} else {
-						sst_count[d] = 1;
-					}
-				}
-				nc_get_vara_float(ncid, sst_varid_local, sst_start, sst_count, sst_vals);
+	}
+	nc_get_vara_float(ncid, sst_varid, sst_start, sst_count, sst_vals);
 
-				bool isKelvin = false;
-				char units_str[64] = {0};
-				if (nc_get_att_text(ncid, sst_varid_local, "units", units_str) == NC_NOERR) {
-					if (strstr(units_str, "K") || strstr(units_str, "kelvin")) isKelvin = true;
-				}
+	bool isKelvin = false;
+	char units_str[64] = {0};
+	if (nc_get_att_text(ncid, sst_varid, "units", units_str) == NC_NOERR) {
+		if (strstr(units_str, "K") || strstr(units_str, "kelvin")) isKelvin = true;
+	}
 
-				float sst_fill = -32767.0f;
-				nc_get_att_float(ncid, sst_varid_local, "_FillValue", &sst_fill);
+	float sst_fill = -32767.0f;
+	nc_get_att_float(ncid, sst_varid, "_FillValue", &sst_fill);
 
-				dataMessage.sst.resize(nbr_uv, ncdf_NOTDEF);
-				for (size_t k = 0; k < nbr_uv; k++) {
-					double val = (double)sst_vals[k];
-					// Kelvin: typical 271~308K; Celsius: typical -2~35°C
-					// Upper bound catches NetCDF default fill value (9.96921e+36)
-					double minValid = isKelvin ? 100.0 : -10.0;
-					double maxValid = isKelvin ? 370.0 : 50.0;
-					if (!isnan(val) && isfinite(val) && val != sst_fill && val > minValid && val < maxValid) {
-						dataMessage.sst[k] = isKelvin ? (val - 273.15) : val;
-					} else {
-						dataMessage.sst[k] = ncdf_NOTDEF;
-					}
-				}
-				free(sst_vals);
-				ncdfLog("[ncdf] readTimeStepData: SST read, isKelvin=%d\n", (int)isKelvin);
-				dataMessage.hasSeaTemp = true;
-			}
+	dataMessage.sst.resize(nbr_uv, ncdf_NOTDEF);
+	for (size_t k = 0; k < nbr_uv; k++) {
+		double val = (double)sst_vals[k];
+		// Kelvin: typical 271~308K; Celsius: typical -2~35C
+		// Upper bound catches NetCDF default fill value (9.96921e+36)
+		double minValid = isKelvin ? 100.0 : -10.0;
+		double maxValid = isKelvin ? 370.0 : 50.0;
+		if (!isnan(val) && isfinite(val) && val != sst_fill && val > minValid && val < maxValid) {
+			dataMessage.sst[k] = isKelvin ? (val - 273.15) : val;
+		} else {
+			dataMessage.sst[k] = ncdf_NOTDEF;
+		}
+	}
+	free(sst_vals);
+	ncdfLog("[ncdf] readSSTFromNC: SST read, isKelvin=%d\n", (int)isKelvin);
+	dataMessage.hasSeaTemp = true;
+	return true;
+}
+
+static bool readSalinityFromNC(int ncid, int sal_varid, ncdfDataMessage& dataMessage) {
+	ncdfLog("[ncdf] readSalinityFromNC: sal_varid=%d\n", sal_varid);
+
+	if (sal_varid < 0) {
+		const char* alt_std[] = {"sea_surface_salinity", "surface_salinity", NULL};
+		const char* long_hints[] = {"Sea surface salinity", "sea_water_salinity", "Salinity", "salinity", NULL};
+		const char* var_hints[] = {"so", "salinity", "salt", "vosaline", "sos", "SSS", NULL};
+		sal_varid = find_var_by_cf(ncid, "sea_water_salinity", alt_std, long_hints, var_hints);
+	}
+	if (sal_varid == -1) return false;
+
+	size_t nbr_uv = dataMessage.latLength * dataMessage.lonLength;
+	float* sal_vals = (float*)calloc(nbr_uv, sizeof(float));
+	if (!sal_vals) return false;
+
+	int sal_ndims;
+	nc_inq_varndims(ncid, sal_varid, &sal_ndims);
+	int sal_dimids[NC_MAX_DIMS];
+	nc_inq_vardimid(ncid, sal_varid, sal_dimids);
+	size_t sal_start[NC_MAX_DIMS] = {0};
+	size_t sal_count[NC_MAX_DIMS] = {0};
+	for (int d = 0; d < sal_ndims; d++) {
+		char dimname[NC_MAX_NAME + 1];
+		size_t dimlen;
+		nc_inq_dim(ncid, sal_dimids[d], dimname, &dimlen);
+		if (strstr(dimname, "time") || strstr(dimname, "Time")) {
+			sal_start[d] = dataMessage.timeIndex;
+			sal_count[d] = 1;
+		} else if (strstr(dimname, "lat") || strstr(dimname, "Lat")) {
+			sal_count[d] = dataMessage.latLength;
+		} else if (strstr(dimname, "lon") || strstr(dimname, "Lon")) {
+			sal_count[d] = dataMessage.lonLength;
+		} else {
+			sal_count[d] = 1;
+		}
+	}
+	nc_get_vara_float(ncid, sal_varid, sal_start, sal_count, sal_vals);
+
+	float sal_fill = -32767.0f;
+	nc_get_att_float(ncid, sal_varid, "_FillValue", &sal_fill);
+
+	dataMessage.salinity.resize(nbr_uv, ncdf_NOTDEF);
+	for (size_t k = 0; k < nbr_uv; k++) {
+		double val = (double)sal_vals[k];
+		if (!isnan(val) && isfinite(val) && val != sal_fill && val > 0.0 && val < 100.0) {
+			dataMessage.salinity[k] = val;
+		} else {
+			dataMessage.salinity[k] = ncdf_NOTDEF;
+		}
+	}
+	free(sal_vals);
+	ncdfLog("[ncdf] readSalinityFromNC: Salinity read\n");
+	dataMessage.hasSalinity = true;
+	return true;
+}
+
+bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
+	ncdfLog("[ncdf] readTimeStepData: timeIndex=%d, latLength=%d, lonLength=%d, ucurr.size=%zu\n",
+		dataMessage.timeIndex, (int)dataMessage.latLength, (int)dataMessage.lonLength, dataMessage.ucurr.size());
+
+	if (!dataMessage.latValues || !dataMessage.lonValues) {
+		ncdfLog("[ncdf] readTimeStepData: latValues or lonValues is NULL\n");
+		return false;
+	}
+
+	// Clear stale data before reading
+	dataMessage.sst.clear();
+	dataMessage.hasSeaTemp = false;
+	dataMessage.salinity.clear();
+	dataMessage.hasSalinity = false;
+	dataMessage.ucurr.clear();
+	dataMessage.vcurr.clear();
+
+	int ncid;
+	int retval;
+
+	wxString filenameStr = dataMessage.fileName;
+	const wxCharBuffer mbBuf = filenameStr.mb_str();
+	size_t mbLen = strlen(mbBuf);
+	char* filename = new char[mbLen + 1];
+	strcpy(filename, mbBuf);
+
+	retval = nc_open(filename, NC_NOWRITE, &ncid);
+	if (retval != NC_NOERR) {
+		retval = nc_open(filename, NC_NOWRITE | NC_NETCDF4, &ncid);
+	}
+	if (retval != NC_NOERR) {
+		ncdfLog("[ncdf] readTimeStepData: nc_open failed, retval=%d\n", retval);
+		delete[] filename;
+		return false;
+	}
+
+	// Discover variable IDs (with cached fallback)
+	int u_varid = m_cached_u_varid;
+	int v_varid = m_cached_v_varid;
+	if (u_varid < 0 || v_varid < 0) {
+		ncdfLog("[ncdf] readTimeStepData: cache miss, falling back to CF discovery\n");
+		{
+			const char* alt_std[] = {"surface_eastward_sea_water_velocity", NULL};
+			const char* long_hints[] = {"Eastward Current Velocity", "u-velocity component of current", NULL};
+			const char* var_hints[] = {"u", "uo", "current_u", "curr_u", "u10", "u100", NULL};
+			u_varid = find_var_by_cf(ncid, "eastward_sea_water_velocity", alt_std, long_hints, var_hints);
+		}
+		{
+			const char* alt_std[] = {"surface_northward_sea_water_velocity", NULL};
+			const char* long_hints[] = {"Northward Current Velocity", "v-velocity component of current", NULL};
+			const char* var_hints[] = {"v", "vo", "current_v", "curr_v", "v10", "v100", NULL};
+			v_varid = find_var_by_cf(ncid, "northward_sea_water_velocity", alt_std, long_hints, var_hints);
 		}
 	}
 
-	// Read sea salinity using cached variable ID (GRIB pattern)
-	if (ncid >= 0 && m_fileHasSalinity) {
-		int sal_varid_local = m_cached_sal_varid;
-		if (sal_varid_local < 0) {
-			const char* alt_std[] = {"sea_surface_salinity", "surface_salinity", NULL};
-			const char* long_hints[] = {"Sea surface salinity", "sea_water_salinity", "Salinity", "salinity", NULL};
-			const char* var_hints[] = {"so", "salinity", "salt", "vosaline", "sos", "SSS", NULL};
-			sal_varid_local = find_var_by_cf(ncid, "sea_water_salinity", alt_std, long_hints, var_hints);
+	bool hasUV = (u_varid != -1 && v_varid != -1);
+	ncdfLog("[ncdf] readTimeStepData: hasUV=%d, u_varid=%d, v_varid=%d\n", (int)hasUV, u_varid, v_varid);
+
+	// Call helper functions for each data type
+	if (hasUV) {
+		if (!readUVFromNC(ncid, u_varid, v_varid, dataMessage)) {
+			ncdfLog("[ncdf] readTimeStepData: readUVFromNC failed\n");
 		}
-		if (sal_varid_local != -1) {
-			size_t nbr_uv = dataMessage.latLength * dataMessage.lonLength;
-			float* sal_vals = (float*)calloc(nbr_uv, sizeof(float));
-			if (sal_vals) {
-				int sal_ndims;
-				nc_inq_varndims(ncid, sal_varid_local, &sal_ndims);
-				int sal_dimids[NC_MAX_DIMS];
-				nc_inq_vardimid(ncid, sal_varid_local, sal_dimids);
-				size_t sal_start[NC_MAX_DIMS] = {0};
-				size_t sal_count[NC_MAX_DIMS] = {0};
-				for (int d = 0; d < sal_ndims; d++) {
-					char dimname[NC_MAX_NAME + 1];
-					size_t dimlen;
-					nc_inq_dim(ncid, sal_dimids[d], dimname, &dimlen);
-					if (strstr(dimname, "time") || strstr(dimname, "Time")) {
-						sal_start[d] = dataMessage.timeIndex;
-						sal_count[d] = 1;
-					} else if (strstr(dimname, "lat") || strstr(dimname, "Lat")) {
-						sal_count[d] = dataMessage.latLength;
-					} else if (strstr(dimname, "lon") || strstr(dimname, "Lon")) {
-						sal_count[d] = dataMessage.lonLength;
-					} else {
-						sal_count[d] = 1;
-					}
-				}
-				nc_get_vara_float(ncid, sal_varid_local, sal_start, sal_count, sal_vals);
+	}
 
-				float sal_fill = -32767.0f;
-				nc_get_att_float(ncid, sal_varid_local, "_FillValue", &sal_fill);
+	if (ncid >= 0 && m_fileHasSeaTemp) {
+		if (!readSSTFromNC(ncid, m_cached_sst_varid, dataMessage)) {
+			ncdfLog("[ncdf] readTimeStepData: readSSTFromNC failed\n");
+		}
+	}
 
-				dataMessage.salinity.resize(nbr_uv, ncdf_NOTDEF);
-				for (size_t k = 0; k < nbr_uv; k++) {
-					double val = (double)sal_vals[k];
-					if (!isnan(val) && isfinite(val) && val != sal_fill && val > 0.0 && val < 100.0) {
-						dataMessage.salinity[k] = val;
-					} else {
-						dataMessage.salinity[k] = ncdf_NOTDEF;
-					}
-				}
-				free(sal_vals);
-				ncdfLog("[ncdf] readTimeStepData: Salinity read\n");
-				dataMessage.hasSalinity = true;
-			}
+	if (ncid >= 0 && m_fileHasSalinity) {
+		if (!readSalinityFromNC(ncid, m_cached_sal_varid, dataMessage)) {
+			ncdfLog("[ncdf] readTimeStepData: readSalinityFromNC failed\n");
 		}
 	}
 
@@ -1529,6 +1535,59 @@ void MainDialog::onDirChanged(wxCommandEvent& event)
 	    ncdfLog("[ncdf] onDirChanged: deleting all tree items\n");
 		this->m_treeCtrl->DeleteAllItems();
 	}
+}
+
+bool MainDialog::switchToFile(const wxString &fileName, const wxString &fn, int &idx)
+{
+	ncdfLogW(L"[ncdf] switchToFile: switching to file %ls\n", (const wchar_t*)fn.c_str());
+	myDataVector.clear();
+	m_lastSelectedTimeIndex = -1;
+	m_choiceTime->Clear();
+
+	// Clean up old data before loading new file
+	myMessage.clear();
+	pPlugIn->GetncdfOverlayFactory()->reset();
+	pPlugIn->GetncdfOverlayFactory()->m_animate.Cleanup();
+
+	int ret = nc_get(fileName);
+	if (ret != 0) {
+		ncdfLog("[ncdf] switchToFile: nc_get failed for %s\n", (const char*)fn.mb_str());
+		return false;
+	}
+	m_currentFilePath = fileName;
+
+	// Auto-enable rendering for available data types (GRIB pattern)
+	bool showCur = m_fileHasCurrent;
+	bool showSST = m_fileHasSeaTemp;
+	m_checkBoxBmpCurrentForce->Show(showCur);
+	m_staticText40->Show(showCur);
+	m_textCtrlCurrentForce->Show(showCur);
+	m_checkBoxSeaTemp->Show(showSST);
+	m_staticTextSeaTemp->Show(showSST);
+	m_textCtrlSeaTemp->Show(showSST);
+	bool showSal = m_fileHasSalinity;
+	m_checkBoxSalinity->Show(showSal);
+	m_staticTextSalinity->Show(showSal);
+	m_textCtrlSalinity->Show(showSal);
+	Layout();
+	// Only disable overlays when data is NOT available (same as Path A)
+	if (!showCur) {
+		pPlugIn->m_bShowCurrentDir = false;
+		pPlugIn->m_bShowCurrentForce = false;
+		pPlugIn->m_bShowParticles = false;
+		m_checkBoxBmpCurrentForce->SetValue(false);
+	}
+	if (!showSST) {
+		pPlugIn->m_bShowSeaTemp = false;
+		pPlugIn->m_bShowSeaTempIso = false;
+		m_checkBoxSeaTemp->SetValue(false);
+	}
+	if (!showSal) {
+		pPlugIn->m_bShowSalinity = false;
+		m_checkBoxSalinity->SetValue(false);
+	}
+
+	return true;
 }
 
 void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
@@ -1627,53 +1686,8 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 			wxString fn = m_treeCtrl->GetItemText(parentItem);
 			wxString fileName = m_textCtrlDir->GetValue() + _T("\\") + fn;
 			if (fileName != m_currentFilePath) {
-				ncdfLogW(L"[ncdf] onTreeSelectionChanged: switching to file %ls\n", (const wchar_t*)fn.c_str());
-				myDataVector.clear();
-				m_lastSelectedTimeIndex = -1;
-				m_choiceTime->Clear();
-
-				// Clean up old data before loading new file
-				myMessage.clear();
-				pPlugIn->GetncdfOverlayFactory()->reset();
-				pPlugIn->GetncdfOverlayFactory()->m_animate.Cleanup();
-
-				int ret = nc_get(fileName);
-				if (ret != 0) {
-					ncdfLog("[ncdf] onTreeSelectionChanged: nc_get failed for %s\n", (const char*)fn.mb_str());
+				if (!switchToFile(fileName, fn, idx)) {
 					return;
-				}
-				m_currentFilePath = fileName;
-				idx = data->m_index;
-
-				// Auto-enable rendering for available data types (GRIB pattern)
-				bool showCur = m_fileHasCurrent;
-				bool showSST = m_fileHasSeaTemp;
-				m_checkBoxBmpCurrentForce->Show(showCur);
-				m_staticText40->Show(showCur);
-				m_textCtrlCurrentForce->Show(showCur);
-				m_checkBoxSeaTemp->Show(showSST);
-				m_staticTextSeaTemp->Show(showSST);
-				m_textCtrlSeaTemp->Show(showSST);
-				bool showSal = m_fileHasSalinity;
-				m_checkBoxSalinity->Show(showSal);
-				m_staticTextSalinity->Show(showSal);
-				m_textCtrlSalinity->Show(showSal);
-				Layout();
-				// Only disable overlays when data is NOT available (same as Path A)
-				if (!showCur) {
-					pPlugIn->m_bShowCurrentDir = false;
-					pPlugIn->m_bShowCurrentForce = false;
-					pPlugIn->m_bShowParticles = false;
-					m_checkBoxBmpCurrentForce->SetValue(false);
-				}
-				if (!showSST) {
-					pPlugIn->m_bShowSeaTemp = false;
-					pPlugIn->m_bShowSeaTempIso = false;
-					m_checkBoxSeaTemp->SetValue(false);
-				}
-				if (!showSal) {
-					pPlugIn->m_bShowSalinity = false;
-					m_checkBoxSalinity->SetValue(false);
 				}
 			}
 		}

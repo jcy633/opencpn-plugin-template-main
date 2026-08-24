@@ -168,7 +168,6 @@ static const char* s_frag =
     "uniform float physMax;\n"
     "uniform float physMinV;\n"
     "uniform float physMaxV;\n"
-    "uniform int skipLandCheck;\n"  // 1=skip land detection, go straight to B-spline
     "varying vec2 vUV;\n"
     "\n"
     "float bspline(float t) {\n"
@@ -204,20 +203,15 @@ static const char* s_frag =
     "    float rSum=0.0, gSum=0.0, wSum=0.0;\n"
     "    bool usedBSpline = false;\n"
     "\n"
-    "    if(skipLandCheck == 1) {\n"
-    "        // Fast path: all ocean, skip land detection, direct B-spline\n"
-    "        vec4 s[16];\n"
-    "        for(int j=0;j<4;j++)\n"
-    "            for(int i=0;i<4;i++){\n"
-    "                vec2 suv=(tc+vec2(float(i-1),float(j-1))+0.5)*ts;\n"
-    "                s[j*4+i] = texture2D(dataTex,suv);\n"
-    "            }\n"
-    "        float bx[4], by[4];\n"
-    "        for(int k=0;k<4;k++){ bx[k]=bspline(f.x-float(k-1)); by[k]=bspline(f.y-float(k-1)); }\n"
-    "        for(int j=0;j<4;j++) for(int i=0;i<4;i++){ float w=bx[i]*by[j]; rSum+=s[j*4+i].r*w; gSum+=s[j*4+i].g*w; wSum+=w; }\n"
-    "        usedBSpline = true;\n"
-    "    } else {\n"
-    "    // Full path: detect land and choose interpolation method\n"
+    "    // Sample 2x2 center from coefficient texture\n"
+    "    vec4 s00=texture2D(dataTex, (tc+vec2(0.5,0.5))*ts);\n"
+    "    vec4 s10=texture2D(dataTex, (tc+vec2(1.5,0.5))*ts);\n"
+    "    vec4 s01=texture2D(dataTex, (tc+vec2(0.5,1.5))*ts);\n"
+    "    vec4 s11=texture2D(dataTex, (tc+vec2(1.5,1.5))*ts);\n"
+    "    bool h00=s00.a>0.01, h10=s10.a>0.01, h01=s01.a>0.01, h11=s11.a>0.01;\n"
+    "    int land2x2 = (h00?0:1)+(h10?0:1)+(h01?0:1)+(h11?0:1);\n"
+    "\n"
+    "    if(land2x2 == 0) {\n"
     "        // 2x2 clean: check if 4x4 is also clean\n"
     "        int land4x4 = 0;\n"
     "        vec4 s[16];\n"
@@ -266,8 +260,6 @@ static const char* s_frag =
     "        // Case 6/7: 3 or 4 land -> discard\n"
     "        discard;\n"
     "    }\n"
-    "\n"
-    "    }  // end skipLandCheck else\n"
     "\n"
     "    if(wSum<=0.0) discard;\n"
     "\n"
@@ -413,7 +405,6 @@ bool ncdf_shader_init() {
     s_uniforms.physMax = fpGetUniformLocation(s_program, "physMax");
     s_uniforms.physMinV = fpGetUniformLocation(s_program, "physMinV");
     s_uniforms.physMaxV = fpGetUniformLocation(s_program, "physMaxV");
-    s_uniforms.skipLandCheck = fpGetUniformLocation(s_program, "skipLandCheck");
 
     s_initialized = true;
     wxLogMessage(_T("[shader] init OK program=%u"), s_program);

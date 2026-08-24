@@ -215,7 +215,6 @@ bool CurrentOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
         cachedDataMin = (dMin < dMax) ? (float)dMin : 0;
         cachedDataMax = (dMin < dMax) ? (float)dMax : 1;
     }
-    settings.hasLand = false;  // will be set by FillVectorCoeffTex or FillScalarCoeffTex
 
     // Use cached coefMin/coefMax if texture exists (set by RenderGridOverlay on first frame)
     if (hasTexture) {

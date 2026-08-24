@@ -74,6 +74,9 @@ public:
 	 bool RenderGLncdfOverlay(wxGLContext *pcontext, PlugIn_ViewPort *vp);
 	 bool RenderncdfOverlay(wxDC &dc, PlugIn_ViewPort *vp);
 	 bool DoRenderncdfOverlay(PlugIn_ViewPort *vp);
+	 void RenderCurrentOverlay(PlugIn_ViewPort *vp, double **animGrid, double **animUGrid, double **animVGrid);
+	 void RenderSeaTempOverlay(PlugIn_ViewPort *vp, double **animGrid);
+	 void RenderSalinityOverlay(PlugIn_ViewPort *vp, double **animGrid);
 	 void SetBicubicMode(bool enable);
 	 ncdfAnimate m_animate;
 	 CurrentOverlay m_currentOverlay;
@@ -140,7 +143,6 @@ public:
          bool vectorMode;
          double** uGrid;
          double** vGrid;
-         bool hasLand;  // true if data contains land pixels (enables coastline shader path)
      };
 
      // Shared scalar overlay rendering (used by SeaTemp and Salinity)

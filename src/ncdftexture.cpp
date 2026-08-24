@@ -228,7 +228,6 @@ bool ncdfOverlayFactory::RenderScalarColorMap(
     settings.vectorMode = false;
     settings.uGrid = NULL;
     settings.vGrid = NULL;
-    settings.hasLand = false;  // will be set by FillScalarCoeffTex
     if (*st.p_hasTexture) {
         settings.dataMin = *st.p_cachedCoefMin;
         settings.dataMax = *st.p_cachedCoefMax;
@@ -330,21 +329,18 @@ static void FillVectorCoeffTex(TexBuildContext &ctx,
     unsigned char* validMask = (unsigned char*)calloc(nj * ni, 1);
 
     if (rawU && rawV && coeffU && coeffV && validMask) {
-        bool hasAnyLand = false;
         for (int j = 0; j < nj; j++)
             for (int i = 0; i < ni; i++) {
                 double u = settings.uGrid[j][i], v = settings.vGrid[j][i];
                 if (u == ncdf_NOTDEF || v == ncdf_NOTDEF || !isfinite(u) || !isfinite(v)) {
                     rawU[j*ni+i] = 0; rawV[j*ni+i] = 0;
                     validMask[j*ni+i] = 0;
-                    hasAnyLand = true;
                 } else {
                     rawU[j*ni+i] = (float)u;
                     rawV[j*ni+i] = (float)v;
                     validMask[j*ni+i] = 1;
                 }
             }
-        settings.hasLand = hasAnyLand;
         // Mask-aware B-spline prefilter with dateline wrap
         BicubicSplinePrefilterWrapAware(coeffU, rawU, validMask, ni, nj, repeat);
         BicubicSplinePrefilterWrapAware(coeffV, rawV, validMask, ni, nj, repeat);
@@ -414,20 +410,17 @@ static void FillScalarCoeffTex(TexBuildContext &ctx,
         if (coeffBuf) free(coeffBuf);
         if (validMask) free(validMask);
     } else {
-        bool hasAnyLand = false;
         for (int j = 0; j < nj; j++)
             for (int i = 0; i < ni; i++) {
                 double val = grid[j][i];
                 if (val == ncdf_NOTDEF || isnan(val) || !isfinite(val)) {
                     rawBuf[j*ni+i] = 0.0f;
                     validMask[j*ni+i] = 0;
-                    hasAnyLand = true;
                 } else {
                     rawBuf[j*ni+i] = (float)val;
                     validMask[j*ni+i] = 1;
                 }
             }
-        settings.hasLand = hasAnyLand;
         float physMin = 1e30f, physMax = -1e30f;
         for (int k = 0; k < nj * ni; k++) {
             if (!validMask[k]) continue;
@@ -512,38 +505,8 @@ static void BuildLUTTex(ncdfOverlayFactory::ColorFunc colorFunc,
 }
 
 //===================================================================
-// (d) Fixed-function RGBA texture fill
+// (d) Fixed-function path removed — shader only
 //===================================================================
-static void FillFixedFuncTex(TexBuildContext &ctx,
-                             double **grid,
-                             ncdfOverlayFactory::ColorFunc colorFunc)
-{
-    int ni = ctx.ni, nj = ctx.nj, tw = ctx.tw, th = ctx.th;
-    int borderH = ctx.borderH;
-    unsigned char *texData = ctx.texData;
-
-    unsigned char alpha = 255;
-    bool hasAnyLand = false;
-    for (int j = 0; j < nj; j++) {
-        if (!grid[j]) break;
-        int texRow = (ctx.gui->myMessage.jDirectionIncr >= 0) ? j : (nj - 1 - j);
-        for (int i = 0; i < ni; i++) {
-            double val = grid[j][i];
-            if (val == ncdf_NOTDEF || isnan(val) || !isfinite(val)) { hasAnyLand = true; continue; }
-            int x = i + borderH, y = texRow + 1;
-            if (x >= tw - 1 || y >= th - 1) continue;
-            wxColour c = colorFunc(val);
-            int off = 4 * (y * tw + x);
-            unsigned char r = c.Red(), g = c.Green(), b = c.Blue();
-
-            // (slope shading removed - always use shader)
-            texData[off]     = r;
-            texData[off + 1] = g;
-            texData[off + 2] = b;
-            texData[off + 3] = alpha;
-        }
-    }
-}
 
 //===================================================================
 // (e) Border/repeat handling
@@ -781,8 +744,74 @@ static TileGrid ComputeTileUVs(PlugIn_ViewPort *vp, TexBuildContext &ctx,
 }
 
 //===================================================================
+// (i) Common tile iteration with UV correction
+//===================================================================
+struct TileQuad {
+    double u0, v0, u1, v1, u2, v2, u3, v3;
+    float x, y, xS, yS;
+};
+
+typedef void (*TileDrawFunc)(const TileQuad &q, void *userData);
+
+static void ForEachTile(PlugIn_ViewPort *vp, TileGrid &tg,
+                         TileDrawFunc drawFunc, void *userData)
+{
+    int xs = tg.xs, ys = tg.ys, gridH = tg.gridH;
+    double *lva = tg.lva;
+    bool repeat = tg.repeat;
+    double xS = vp->pix_width / (double)xs;
+    double yS = vp->pix_height / (double)ys;
+
+    for (int i = 0; i < xs; i++) {
+        for (int j = 0; j < ys; j++) {
+            int i00 = (i * gridH + j) * 2;
+            int i10 = ((i+1) * gridH + j) * 2;
+            int i11 = ((i+1) * gridH + j+1) * 2;
+            int i01 = (i * gridH + j+1) * 2;
+            TileQuad q;
+            q.u0=lva[i00]; q.u1=lva[i10]; q.u2=lva[i11]; q.u3=lva[i01];
+            q.v0=lva[i00+1]; q.v1=lva[i10+1]; q.v2=lva[i11+1]; q.v3=lva[i01+1];
+
+            if (repeat) {
+                if (q.u1 - q.u0 > .5) q.u1--;
+                else if (q.u0 - q.u1 > .5) q.u1++;
+                if (q.u2 - q.u0 > .5) q.u2--;
+                else if (q.u0 - q.u2 > .5) q.u2++;
+                if (q.u3 - q.u0 > .5) q.u3--;
+                else if (q.u0 - q.u3 > .5) q.u3++;
+            }
+
+            if (!((repeat ||
+                   ((q.u0>=0||q.u1>=0||q.u2>=0||q.u3>=0)&&(q.u0<=1||q.u1<=1||q.u2<=1||q.u3<=1))) &&
+                  (q.v0>=0||q.v1>=0||q.v2>=0||q.v3>=0)&&(q.v0<=1||q.v1<=1||q.v2<=1||q.v3<=1))) continue;
+            if (q.u1 <= q.u0) continue;
+
+            q.x = (float)(xS * i);
+            q.y = (float)(yS * j);
+            q.xS = (float)xS;
+            q.yS = (float)yS;
+            drawFunc(q, userData);
+        }
+    }
+}
+
+//===================================================================
 // (i) Shader draw path
 //===================================================================
+static void DrawShaderTile(const TileQuad &q, void *userData) {
+    GLfloat verts[8] = {q.x, q.y, q.x+q.xS, q.y,
+                        q.x+q.xS, q.y+q.yS, q.x, q.y+q.yS};
+    GLfloat uvs[8] = {(float)q.u0,(float)q.v0, (float)q.u1,(float)q.v1,
+                      (float)q.u2,(float)q.v2, (float)q.u3,(float)q.v3};
+    ncdf_shader_enable_attrib(0);
+    ncdf_shader_enable_attrib(1);
+    ncdf_shader_attrib_pointer(0, 2, 0, verts);
+    ncdf_shader_attrib_pointer(1, 2, 0, uvs);
+    glDrawArrays(GL_QUADS, 0, 4);
+    ncdf_shader_disable_attrib(0);
+    ncdf_shader_disable_attrib(1);
+}
+
 static void DrawShaderPath(PlugIn_ViewPort *vp,
                            ncdfOverlayFactory::RenderSettings &settings,
                            GLuint texID, GLuint lutID, bool hasLUT,
@@ -803,7 +832,6 @@ static void DrawShaderPath(PlugIn_ViewPort *vp,
     if (u.physMax >= 0) ncdf_shader_uniform_1f(u.physMax, settings.physMax);
     if (u.physMinV >= 0) ncdf_shader_uniform_1f(u.physMinV, settings.physMinV);
     if (u.physMaxV >= 0) ncdf_shader_uniform_1f(u.physMaxV, settings.physMaxV);
-    if (u.skipLandCheck >= 0) ncdf_shader_uniform_1i(u.skipLandCheck, settings.hasLand ? 0 : 1);
     if (u.dataTex >= 0) {
         ncdf_shader_active_texture(0x84C0);
         glBindTexture(GL_TEXTURE_2D, texID);
@@ -824,107 +852,12 @@ static void DrawShaderPath(PlugIn_ViewPort *vp,
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    int xs = tg.xs, ys = tg.ys, gridH = tg.gridH;
-    double *lva = tg.lva;
-    bool repeat = tg.repeat;
-    double xS = vp->pix_width / (double)xs;
-    double yS = vp->pix_height / (double)ys;
-    for (int i = 0; i < xs; i++) {
-        for (int j = 0; j < ys; j++) {
-            int i00 = (i * gridH + j) * 2;
-            int i10 = ((i+1) * gridH + j) * 2;
-            int i11 = ((i+1) * gridH + j+1) * 2;
-            int i01 = (i * gridH + j+1) * 2;
-            double u0=lva[i00], u1=lva[i10], u2=lva[i11], u3=lva[i01];
-            double v0=lva[i00+1], v1=lva[i10+1], v2=lva[i11+1], v3=lva[i01+1];
-
-            if (repeat) {
-                if (u1 - u0 > .5) u1--;
-                else if (u0 - u1 > .5) u1++;
-                if (u2 - u0 > .5) u2--;
-                else if (u0 - u2 > .5) u2++;
-                if (u3 - u0 > .5) u3--;
-                else if (u0 - u3 > .5) u3++;
-            }
-
-            if (!((repeat ||
-                   ((u0>=0||u1>=0||u2>=0||u3>=0)&&(u0<=1||u1<=1||u2<=1||u3<=1))) &&
-                  (v0>=0||v1>=0||v2>=0||v3>=0)&&(v0<=1||v1<=1||v2<=1||v3<=1))) continue;
-            if (u1 <= u0) continue;
-            double x = xS * i, y = yS * j;
-            GLfloat verts[8] = {(float)x,(float)y, (float)(x+xS),(float)y,
-                                (float)(x+xS),(float)(y+yS), (float)x,(float)(y+yS)};
-            GLfloat uvs[8] = {(float)u0,(float)v0, (float)u1,(float)v1,
-                              (float)u2,(float)v2, (float)u3,(float)v3};
-            ncdf_shader_enable_attrib(0);
-            ncdf_shader_enable_attrib(1);
-            ncdf_shader_attrib_pointer(0, 2, 0, verts);
-            ncdf_shader_attrib_pointer(1, 2, 0, uvs);
-            glDrawArrays(GL_QUADS, 0, 4);
-            ncdf_shader_disable_attrib(0);
-            ncdf_shader_disable_attrib(1);
-        }
-    }
+    ForEachTile(vp, tg, DrawShaderTile, NULL);
 
     // Restore fixed-function state
     ncdf_shader_use_program(0);
     ncdf_shader_active_texture(0x84C0);
     glDisable(GL_BLEND);
-}
-
-//===================================================================
-// (j) Fixed-function draw path
-//===================================================================
-static void DrawFixedFuncPath(PlugIn_ViewPort *vp, GLuint texID,
-                              TileGrid &tg, int tw, int th)
-{
-    glEnable(GL_TEXTURE_2D);
-    glBindTexture(GL_TEXTURE_2D, texID);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
-    glColor4f(1, 1, 1, 1);
-
-    int xs = tg.xs, ys = tg.ys, gridH = tg.gridH;
-    double *lva = tg.lva;
-    bool repeat = tg.repeat;
-    double xS = vp->pix_width / (double)xs;
-    double yS = vp->pix_height / (double)ys;
-    for (int i = 0; i < xs; i++) {
-        for (int j = 0; j < ys; j++) {
-            int i00 = (i * gridH + j) * 2;
-            int i10 = ((i+1) * gridH + j) * 2;
-            int i11 = ((i+1) * gridH + j+1) * 2;
-            int i01 = (i * gridH + j+1) * 2;
-            double u0=lva[i00], u1=lva[i10], u2=lva[i11], u3=lva[i01];
-            double v0=lva[i00+1], v1=lva[i10+1], v2=lva[i11+1], v3=lva[i01+1];
-
-            if (repeat) {
-                if (u1 - u0 > .5) u1--;
-                else if (u0 - u1 > .5) u1++;
-                if (u2 - u0 > .5) u2--;
-                else if (u0 - u2 > .5) u2++;
-                if (u3 - u0 > .5) u3--;
-                else if (u0 - u3 > .5) u3++;
-            }
-
-            if (!((repeat ||
-                   ((u0>=0||u1>=0||u2>=0||u3>=0)&&(u0<=1||u1<=1||u2<=1||u3<=1))) &&
-                  (v0>=0||v1>=0||v2>=0||v3>=0)&&(v0<=1||v1<=1||v2<=1||v3<=1))) continue;
-            if (u1 <= u0) continue;
-            double x = xS * i, y = yS * j;
-            glBegin(GL_QUADS);
-            glTexCoord2d(u0,v0); glVertex2f((float)x,(float)y);
-            glTexCoord2d(u1,v1); glVertex2f((float)(x+xS),(float)y);
-            glTexCoord2d(u2,v2); glVertex2f((float)(x+xS),(float)(y+yS));
-            glTexCoord2d(u3,v3); glVertex2f((float)x,(float)(y+yS));
-            glEnd();
-        }
-    }
-
-    glDisable(GL_BLEND);
-    glDisable(GL_TEXTURE_2D);
-    glBindTexture(GL_TEXTURE_2D, 0);
 }
 
 //===================================================================
@@ -989,8 +922,6 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
                 else
                     FillScalarCoeffTex(ctx, grid, settings);
                 BuildLUTTex(colorFunc, settings, lutID, hasLUT);
-            } else {
-                FillFixedFuncTex(ctx, grid, colorFunc);
             }
 
             ApplyTextureBorders(ctx);
@@ -1007,16 +938,11 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
             TileGrid tg = ComputeTileUVs(vp, drawCtx, dataDim, glDim);
             if (!tg.lva) return;
 
-            if (settings.useShader && ncdf_shader_initialized() &&
-                ncdf_shader_get_grid_program() > 0) {
+            if (ncdf_shader_initialized() && ncdf_shader_get_grid_program() > 0) {
                 DrawShaderPath(vp, settings, texID, lutID, hasLUT,
                                physicalTexID, hasPhysicalTex,
                                tg, glDim[0], glDim[1]);
-                delete[] tg.lva;
-                return;
             }
-
-            DrawFixedFuncPath(vp, texID, tg, glDim[0], glDim[1]);
             delete[] tg.lva;
         }
 #endif

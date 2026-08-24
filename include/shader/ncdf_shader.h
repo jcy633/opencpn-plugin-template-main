@@ -35,7 +35,6 @@ struct NcdfShaderUniforms {
     int physMax;      // float: physical value max for U (or scalar)
     int physMinV;     // float: physical value min for V (vector only)
     int physMaxV;     // float: physical value max for V (vector only)
-    int skipLandCheck; // int: 1=skip land detection (pure ocean fast path)
 };
 NcdfShaderUniforms ncdf_shader_get_uniforms();
 

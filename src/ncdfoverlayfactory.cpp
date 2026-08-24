@@ -284,7 +284,7 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
         wxLogMessage(_T("[render] frame %d ucurr.size=%zu vcurr.size=%zu sst.size=%zu sal.size=%zu"), s_frameDbg, gui->myMessage.ucurr.size(), gui->myMessage.vcurr.size(), gui->myMessage.sst.size(), gui->myMessage.salinity.size());
         s_frameDbg++;
     }
-    
+
     if(vp->view_scale_ppm != m_last_vp_scale)
     {
       if(vp->view_scale_ppm < 0.001135)
@@ -292,16 +292,16 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
       else if(vp->view_scale_ppm <= 0.001135)
 	  m_space = space[1];
       else if(vp->view_scale_ppm <= 0.018165)
-	  m_space = space[2]; 
+	  m_space = space[2];
       else if(vp->view_scale_ppm <= 0.072659)
-	  m_space = space[3];  
+	  m_space = space[3];
 
     }
 	// No need to clear on viewport change - texture is cached
 	m_last_vp_latMax = vp->lat_max;
 
-	static int s_renderDbg = 0;
-	if (s_renderDbg < 10) {
+    static int s_renderDbg = 0;
+    if (s_renderDbg < 10) {
 		wxLogMessage(_T("[render] ready=%d gui=%p ucurr.size=%zu ni=%d showF=%d showD=%d showP=%d"),
 			(int)m_bReadyToRender, gui,
 			gui ? gui->myMessage.ucurr.size() : (size_t)0,
@@ -312,112 +312,55 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 		s_renderDbg++;
 	}
 
-	// Current color map overlay (delegated to per-type overlay)
-	if(plugin->m_bShowCurrentForce && gui->myMessage.hasCurrent() && !m_pdc) {
-#ifdef ocpnUSE_GL
-	      glDisable(GL_TEXTURE_2D);
-	      glBindTexture(GL_TEXTURE_2D, 0);
-	      m_useShader = ncdf_shader_initialized();
-	      m_currentInterpMode = 0;
-	      m_currentSmoothColors = plugin->m_settingsCurrent.smoothColors;
-	      m_currentSCurve = plugin->m_settingsCurrent.sCurve;
-	      m_currentSlopeShading = plugin->m_settingsCurrent.slopeShading;
-	      m_currentSlopeMode = 0;
-	      m_currentOverlay.RenderColorMap(vp, gui, plugin, this, m_useShader, animGrid, animUGrid, animVGrid);
-	      m_currentDataMin = m_currentOverlay.cachedDataMin;
-	      m_currentDataMax = m_currentOverlay.cachedDataMax;
-#endif
-	}
+    // Dispatch to per-type renderers
+    RenderCurrentOverlay(vp, animGrid, animUGrid, animVGrid);
 
+    if(plugin->m_bShowCurrentDir) {
+        RenderncdfCurrent();
+    }
 
-	// Arrows
-	if(plugin->m_bShowCurrentDir) {
-      RenderncdfCurrent();
-	}
+    if(plugin->m_bShowParticles) {
+        RenderParticles(vp);
+    } else {
+        ClearParticles();
+    }
 
-	// Particles
-	if(plugin->m_bShowParticles) {
-      RenderParticles(vp);
-	} else {
-      ClearParticles();
-	}
+    RenderSeaTempOverlay(vp, animGrid);
+    RenderSalinityOverlay(vp, animGrid);
 
-	// Sea temperature color map overlay
-	if (plugin->m_bShowSeaTemp && gui && gui->myMessage.hasSSTData() && !m_pdc) {
-#ifdef ocpnUSE_GL
-		m_useShader = ncdf_shader_initialized();
-		m_currentInterpMode = 0;
-		m_currentSmoothColors = plugin->m_settingsSeaTemp.smoothColors;
-		m_currentSCurve = plugin->m_settingsSeaTemp.sCurve;
-		m_currentSlopeShading = plugin->m_settingsSeaTemp.slopeShading;
-		m_currentSlopeMode = 1;
-		m_seaTempOverlay.RenderColorMap(vp, gui, plugin, this, m_useShader, animGrid);
-		m_currentDataMin = m_seaTempOverlay.cachedDataMin;
-		m_currentDataMax = m_seaTempOverlay.cachedDataMax;
-#endif
-	}
-
-	// Sea temperature isolines
-	if (plugin->m_bShowSeaTempIso && gui && gui->myMessage.hasSSTData()) {
-		m_seaTempOverlay.RenderIsoLines(vp, gui);
-	}
-
-	// Salinity color map overlay
-	if (plugin->m_bShowSalinity && gui && gui->myMessage.hasSalData() && !m_pdc) {
-#ifdef ocpnUSE_GL
-		m_useShader = ncdf_shader_initialized();
-		m_currentInterpMode = 0;
-		m_currentSmoothColors = plugin->m_settingsSalinity.smoothColors;
-		m_currentSCurve = plugin->m_settingsSalinity.sCurve;
-		m_currentSlopeShading = plugin->m_settingsSalinity.slopeShading;
-		m_currentSlopeMode = 0;
-		m_salinityOverlay.RenderColorMap(vp, gui, plugin, this, m_useShader, animGrid);
-		m_currentDataMin = m_salinityOverlay.cachedDataMin;
-		m_currentDataMax = m_salinityOverlay.cachedDataMax;
-#endif
-	}
-
-	// Salinity isolines
-	if (plugin->m_settingsSalinity.showIsoLines && plugin->m_bShowSalinity && gui && gui->myMessage.hasSalData()) {
-		m_salinityOverlay.RenderIsoLines(vp, gui);
-	}
-
-	// Color legend
-	{
-		static const ColorStop tempStops[] = {
-			{-2, 0x80, 0x00, 0xc0}, {2, 0x40, 0x30, 0xff}, {7, 0x00, 0x90, 0xfa},
-			{12, 0x00, 0xd8, 0xb0}, {17, 0x10, 0xbb, 0x20}, {22, 0x90, 0xd0, 0x00},
-			{26, 0xf0, 0xd0, 0x00}, {30, 0xf0, 0x70, 0x00}, {32, 0xff, 0x00, 0x00}
-		};
-		static const ColorStop salStops[] = {
-			{30, 0x87, 0xce, 0xeb}, {31, 0x60, 0xb0, 0xe0}, {32, 0x40, 0x90, 0xd0},
-			{33, 0x20, 0x70, 0xc0}, {34, 0x10, 0x50, 0xa0}, {35, 0x00, 0x80, 0x80},
-			{35.5, 0x20, 0xa0, 0x70}, {36, 0x40, 0xc0, 0x60}, {36.5, 0x80, 0xc0, 0x40},
-			{37, 0xc0, 0xb0, 0x20}, {37.5, 0xe0, 0xa0, 0x10}, {38, 0xe0, 0x70, 0x20},
-			{38.5, 0xd0, 0x40, 0x20}, {39, 0xc0, 0x20, 0x20}
-		};
-		static const ColorStop currStops[] = {
-			{0.00, 20, 20, 180}, {0.10, 30, 80, 220}, {0.25, 0, 180, 220},
-			{0.50, 0, 200, 80}, {0.75, 220, 220, 20}, {1.00, 240, 100, 20},
-			{1.50, 220, 20, 20}
-		};
-		if (plugin->m_bShowSeaTemp && gui && gui->myMessage.hasSSTData()) {
-			m_legend.SetData(tempStops, 9, "\xC2\xB0" "C", "Sea Temperature");
-			m_legend.Draw((int)vp->pix_width, (int)vp->pix_height);
-		} else if (plugin->m_bShowSalinity && gui && gui->myMessage.hasSalData()) {
-			m_legend.SetData(salStops, 14, "PSU", "Salinity");
-			m_legend.Draw((int)vp->pix_width, (int)vp->pix_height);
-		} else if (plugin->m_bShowCurrentForce && gui && gui->myMessage.hasCurrent()) {
-			m_legend.SetData(currStops, 7, "m/s", "Current Speed");
-			m_legend.Draw((int)vp->pix_width, (int)vp->pix_height);
-		}
-	}
+    // Color legend
+    {
+        static const ColorStop tempStops[] = {
+            {-2, 0x80, 0x00, 0xc0}, {2, 0x40, 0x30, 0xff}, {7, 0x00, 0x90, 0xfa},
+            {12, 0x00, 0xd8, 0xb0}, {17, 0x10, 0xbb, 0x20}, {22, 0x90, 0xd0, 0x00},
+            {26, 0xf0, 0xd0, 0x00}, {30, 0xf0, 0x70, 0x00}, {32, 0xff, 0x00, 0x00}
+        };
+        static const ColorStop salStops[] = {
+            {30, 0x87, 0xce, 0xeb}, {31, 0x60, 0xb0, 0xe0}, {32, 0x40, 0x90, 0xd0},
+            {33, 0x20, 0x70, 0xc0}, {34, 0x10, 0x50, 0xa0}, {35, 0x00, 0x80, 0x80},
+            {35.5, 0x20, 0xa0, 0x70}, {36, 0x40, 0xc0, 0x60}, {36.5, 0x80, 0xc0, 0x40},
+            {37, 0xc0, 0xb0, 0x20}, {37.5, 0xe0, 0xa0, 0x10}, {38, 0xe0, 0x70, 0x20},
+            {38.5, 0xd0, 0x40, 0x20}, {39, 0xc0, 0x20, 0x20}
+        };
+        static const ColorStop currStops[] = {
+            {0.00, 20, 20, 180}, {0.10, 30, 80, 220}, {0.25, 0, 180, 220},
+            {0.50, 0, 200, 80}, {0.75, 220, 220, 20}, {1.00, 240, 100, 20},
+            {1.50, 220, 20, 20}
+        };
+        if (plugin->m_bShowSeaTemp && gui && gui->myMessage.hasSSTData()) {
+            m_legend.SetData(tempStops, 9, "\xC2\xB0" "C", "Sea Temperature");
+            m_legend.Draw((int)vp->pix_width, (int)vp->pix_height);
+        } else if (plugin->m_bShowSalinity && gui && gui->myMessage.hasSalData()) {
+            m_legend.SetData(salStops, 14, "PSU", "Salinity");
+            m_legend.Draw((int)vp->pix_width, (int)vp->pix_height);
+        } else if (plugin->m_bShowCurrentForce && gui && gui->myMessage.hasCurrent()) {
+            m_legend.SetData(currStops, 7, "m/s", "Current Speed");
+            m_legend.Draw((int)vp->pix_width, (int)vp->pix_height);
+        }
+    }
 
     m_last_vp_scale = vp->view_scale_ppm;
     m_last_vp_latMax = vp->lat_max;
-
-    // Advance animation frame
-    // Frame advance is now inside GetAdvectedGrid for proper synchronization
 
     // Reset GL state to avoid corrupting other plugins (GRIB, OpenCPN core)
     glDisable(GL_TEXTURE_2D);
@@ -427,6 +370,67 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
     glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
 
     return true;
+}
+
+void ncdfOverlayFactory::RenderCurrentOverlay(PlugIn_ViewPort *vp, double **animGrid, double **animUGrid, double **animVGrid)
+{
+    if(plugin->m_bShowCurrentForce && gui->myMessage.hasCurrent() && !m_pdc) {
+#ifdef ocpnUSE_GL
+        glDisable(GL_TEXTURE_2D);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        m_useShader = ncdf_shader_initialized();
+        m_currentInterpMode = 0;
+        m_currentSmoothColors = plugin->m_settingsCurrent.smoothColors;
+        m_currentSCurve = plugin->m_settingsCurrent.sCurve;
+        m_currentSlopeShading = plugin->m_settingsCurrent.slopeShading;
+        m_currentSlopeMode = 0;
+        m_currentOverlay.RenderColorMap(vp, gui, plugin, this, m_useShader, animGrid, animUGrid, animVGrid);
+        m_currentDataMin = m_currentOverlay.cachedDataMin;
+        m_currentDataMax = m_currentOverlay.cachedDataMax;
+#endif
+    }
+}
+
+void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp, double **animGrid)
+{
+    if (plugin->m_bShowSeaTemp && gui && gui->myMessage.hasSSTData() && !m_pdc) {
+#ifdef ocpnUSE_GL
+        m_useShader = ncdf_shader_initialized();
+        m_currentInterpMode = 0;
+        m_currentSmoothColors = plugin->m_settingsSeaTemp.smoothColors;
+        m_currentSCurve = plugin->m_settingsSeaTemp.sCurve;
+        m_currentSlopeShading = plugin->m_settingsSeaTemp.slopeShading;
+        m_currentSlopeMode = 1;
+        m_seaTempOverlay.RenderColorMap(vp, gui, plugin, this, m_useShader, animGrid);
+        m_currentDataMin = m_seaTempOverlay.cachedDataMin;
+        m_currentDataMax = m_seaTempOverlay.cachedDataMax;
+#endif
+    }
+
+    if (plugin->m_bShowSeaTempIso && gui && gui->myMessage.hasSSTData()) {
+        m_seaTempOverlay.RenderIsoLines(vp, gui);
+    }
+}
+
+void ncdfOverlayFactory::RenderSalinityOverlay(PlugIn_ViewPort *vp, double **animGrid)
+{
+    if (plugin->m_bShowSalinity && gui && gui->myMessage.hasSalData() && !m_pdc) {
+#ifdef ocpnUSE_GL
+        m_useShader = ncdf_shader_initialized();
+        m_currentInterpMode = 0;
+        m_currentSmoothColors = plugin->m_settingsSalinity.smoothColors;
+        m_currentSCurve = plugin->m_settingsSalinity.sCurve;
+        m_currentSlopeShading = plugin->m_settingsSalinity.slopeShading;
+        m_currentSlopeMode = 0;
+        m_salinityOverlay.RenderColorMap(vp, gui, plugin, this, m_useShader, animGrid);
+        m_currentDataMin = m_salinityOverlay.cachedDataMin;
+        m_currentDataMax = m_salinityOverlay.cachedDataMax;
+#endif
+    }
+
+    if (plugin->m_settingsSalinity.showIsoLines && plugin->m_bShowSalinity && gui && gui->myMessage.hasSalData()) {
+        m_salinityOverlay.RenderIsoLines(vp, gui);
+    }
 }
 
 void ncdfOverlayFactory::clearBmp()
