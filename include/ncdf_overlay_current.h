@@ -19,6 +19,7 @@ struct CurrentOverlay {
     GLuint glTexture;
     bool hasTexture;
     bool needsRebuild;
+    bool dataReady;  // true after prepareData completes (data is in cached grids/coefficients)
     int dataDim[2];
     int glDim[2];
 
@@ -41,6 +42,11 @@ struct CurrentOverlay {
     // Cached U/V grids for vector mode (avoid per-frame rebuild)
     double **cachedU, **cachedV;
     int cachedUNj, cachedVNi;
+
+    // Cached B-spline coefficients for vector mode (computed once per data change)
+    float *cachedCoeffU, *cachedCoeffV;
+    float cachedCoefU_min, cachedCoefU_max, cachedCoefV_min, cachedCoefV_max;
+    int cachedCoeffNj, cachedCoeffNi;
 
     // Cached data range (computed during rebuild, not every frame)
     float cachedDataMin, cachedDataMax;
@@ -66,13 +72,13 @@ struct CurrentOverlay {
     void Init();
     void Cleanup();
     void Invalidate();
+    void prepareData(MainDialog *gui, ncdf_pi *plugin, ncdfOverlayFactory *factory);  // Precompute grids + coefficients
 
     // Render the current color map overlay
     // animatedGrid: if non-NULL, use this as speed grid (scalar mode for animation)
     // animUGrid/animVGrid: if non-NULL, use vector mode with these u/v grids
     bool RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_pi *plugin,
                         ncdfOverlayFactory *factory,
-                        bool useShader,
                         double** animatedGrid = NULL,
                         double** animUGrid = NULL,
                         double** animVGrid = NULL);

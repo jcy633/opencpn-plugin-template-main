@@ -54,22 +54,45 @@ ncdfReader::~ncdfReader()
 
 void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 {
+	FILE *dbg = fopen("C:\\ProgramData\\opencpn\\ncdf_crash_trace.log", "a");
+	if (dbg) { fprintf(dbg, "readncdfFile: ENTER\n"); fflush(dbg); fclose(dbg); }
+
 	bool hasCurrent = dataMessage.hasCurrent();
 	bool hasSST = dataMessage.hasSSTData();
 	bool hasSal = dataMessage.hasSalData();
-
-	if (!hasCurrent && !hasSST && !hasSal) {
-		return;
-	}
 
 	// Free old coordinate arrays before deep copy
 	if (gui->myMessage.latValues) { free(gui->myMessage.latValues); gui->myMessage.latValues = NULL; }
 	if (gui->myMessage.lonValues) { free(gui->myMessage.lonValues); gui->myMessage.lonValues = NULL; }
 	if (gui->myMessage.timeValues) { free(gui->myMessage.timeValues); gui->myMessage.timeValues = NULL; }
 
-	gui->myMessage = dataMessage;  // deep copy (vectors auto-manage ucurr/vcurr/sst/salinity)
+	dbg = fopen("C:\\ProgramData\\opencpn\\ncdf_crash_trace.log", "a");
+	if (dbg) { fprintf(dbg, "readncdfFile: A-before copy\n"); fflush(dbg); fclose(dbg); }
 
-	// hasSeaTemp/hasSalinity are now in myMessage (set by deep copy)
+	gui->myMessage = dataMessage;  // deep copy
+
+	dbg = fopen("C:\\ProgramData\\opencpn\\ncdf_crash_trace.log", "a");
+	if (dbg) { fprintf(dbg, "readncdfFile: B-after copy, calling reset, factory=%p plugin=%p\n",
+		(void*)gui->pPlugIn->GetncdfOverlayFactory(), (void*)gui->pPlugIn); fflush(dbg); fclose(dbg); }
+
+	ncdfOverlayFactory *pof = gui->pPlugIn->GetncdfOverlayFactory();
+	if (pof) {
+		pof->m_bReadyToRender = false;
+		dbg = fopen("C:\\ProgramData\\opencpn\\ncdf_crash_trace.log", "a");
+		if (dbg) { fprintf(dbg, "readncdfFile: B2-readyToRender=false\n"); fflush(dbg); fclose(dbg); }
+	}
+
+	dbg = fopen("C:\\ProgramData\\opencpn\\ncdf_crash_trace.log", "a");
+	if (dbg) { fprintf(dbg, "readncdfFile: C-after reset\n"); fflush(dbg); fclose(dbg); }
+
+	if (!hasCurrent && !hasSST && !hasSal) {
+		gui->pPlugIn->GetncdfOverlayFactory()->setData(gui,
+								   gui->pPlugIn,
+								   dataMessage,
+								   0, 0, 0, 0, 0);
+		isReading = false;
+		return;
+	}
 
 	wxDateTime ddt;
 	ddt = dataMessage.dataDateTime;
@@ -81,7 +104,10 @@ void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 		ls = _T("No date/time");
 	}
 	gui->m_staticTextDateTime->SetLabel(ls);
-	gui->pPlugIn->GetncdfOverlayFactory()->reset();
+
+	dbg = fopen("C:\\ProgramData\\opencpn\\ncdf_crash_trace.log", "a");
+	if (dbg) { fprintf(dbg, "readncdfFile: D-before setData\n"); fflush(dbg); fclose(dbg); }
+
 	gui->pPlugIn->GetncdfOverlayFactory()->setData(gui,
 							   gui->pPlugIn,
 							   dataMessage,
@@ -91,10 +117,14 @@ void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 							   dataMessage.lastGridPointLat,
 							   dataMessage.lastGridPointLong
 							   );
+
+	// Precompute all overlay data (grids + B-spline coefficients) and free CPU buffers
+	gui->pPlugIn->GetncdfOverlayFactory()->prepareAllOverlays();
+
 	isReading = false;
 
-	ncdfLog("[ncdf] readncdfFile: done, readyToRender=%d\n",
-		gui->pPlugIn->GetncdfOverlayFactory()->isReadyToRender());
+	dbg = fopen("C:\\ProgramData\\opencpn\\ncdf_crash_trace.log", "a");
+	if (dbg) { fprintf(dbg, "readncdfFile: E-DONE\n"); fflush(dbg); fclose(dbg); }
 }
 
 

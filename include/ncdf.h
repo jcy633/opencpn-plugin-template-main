@@ -112,6 +112,7 @@ public:
 	bool readTimeStepData(ncdfDataMessage& dataMessage);
 	bool m_isTreeUpdating;
 	wxString m_currentFilePath;  // Track which file is currently loaded
+	wxTimer m_sliderDebounceTimer;  // Debounce rapid slider events
 
 private:
 	void UpdateTrackingControls();

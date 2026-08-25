@@ -41,6 +41,8 @@
 #include "ncdf_pi.h"
 #include "ncdf.h"
 
+extern void ncdfLog(const char* format, ...);
+
 // Crash dump handler — generates minidump on access violation
 #include <dbghelp.h>
 #pragma comment(lib, "dbghelp.lib")
@@ -302,6 +304,14 @@ bool ncdf_pi::RenderGLOverlay(wxGLContext *pcontext, PlugIn_ViewPort *vp)
 	if (b_showODAS == true){
 		RenderGLOverlayArrow(pcontext, vp);
 		return true;
+	}
+
+	static int s_glDbg = 0;
+	if (s_glDbg < 10) {
+		ncdfLog("[render] RenderGLOverlay: dialog=%p factory=%p ready=%d\n",
+			(void*)m_pncdfDialog, (void*)m_pncdfOverlayFactory,
+			m_pncdfOverlayFactory ? (int)m_pncdfOverlayFactory->isReadyToRender() : -1);
+		s_glDbg++;
 	}
 
 	if (m_pncdfDialog && m_pncdfOverlayFactory)

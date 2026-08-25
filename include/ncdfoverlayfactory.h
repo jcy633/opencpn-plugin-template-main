@@ -68,6 +68,7 @@ public:
 
 			void setData(MainDialog *gui, ncdf_pi *plugin, const ncdfDataMessage& g2data, int numberOfPoints, wxDouble tlat, wxDouble tlon, wxDouble blat, wxDouble blon);
      void reset();
+     void prepareAllOverlays();  // Precompute grids + B-spline coefficients for all data types
      void setSelectionRectangle(Selection *rect);
      bool isReadyToRender(){ return m_bReadyToRender; }
      void clearBmp();
@@ -133,7 +134,6 @@ public:
 
      // Per-call shader settings (passed by each overlay type)
      struct RenderSettings {
-         bool useShader;
          bool smoothColors;
          float dataMin, dataMax;
          float dataMinV, dataMaxV;
@@ -143,6 +143,23 @@ public:
          bool vectorMode;
          double** uGrid;
          double** vGrid;
+         // Pre-computed B-spline coefficients (skip prefilter if provided)
+         float *precompCoeffU, *precompCoeffV;
+         float precompCoefU_min, precompCoefU_max;
+         float precompCoefV_min, precompCoefV_max;
+         // Pre-computed scalar B-spline coefficients (skip prefilter if provided)
+         float *precompScalarCoeff;
+         float precompScalarCoefMin, precompScalarCoefMax;
+         float precompScalarPhysMin, precompScalarPhysMax;
+         RenderSettings() : smoothColors(false),
+             dataMin(0), dataMax(1), dataMinV(0), dataMaxV(1),
+             lutMin(0), lutMax(1), physMin(0), physMax(1), physMinV(0), physMaxV(1),
+             vectorMode(false), uGrid(NULL), vGrid(NULL),
+             precompCoeffU(NULL), precompCoeffV(NULL),
+             precompCoefU_min(0), precompCoefU_max(1),
+             precompCoefV_min(0), precompCoefV_max(1),
+             precompScalarCoeff(NULL), precompScalarCoefMin(0), precompScalarCoefMax(1),
+             precompScalarPhysMin(0), precompScalarPhysMax(1) {}
      };
 
      // Shared scalar overlay rendering (used by SeaTemp and Salinity)
@@ -152,14 +169,20 @@ public:
          GLuint *p_lutID; bool *p_hasLUT;
          unsigned char **p_uploadBuf; int *p_uploadBufSize;
          std::unique_ptr<double*[]> *p_cachedGrid;
+         std::unique_ptr<double*[]> *p_cachedBaseGrid;  // base grid for re-filtering on settings change
          int *p_cachedNj, *p_cachedNi;
          float *p_cachedDataMin, *p_cachedDataMax;
          float *p_cachedCoefMin, *p_cachedCoefMax;
          float *p_cachedPhysMin, *p_cachedPhysMax;
          float *p_cachedPhysMinV, *p_cachedPhysMaxV;
+         // B-spline coefficient cache (computed once per data change)
+         float **p_cachedCoeff;
+         float *p_cachedCoefScalarMin, *p_cachedCoefScalarMax;
+         float *p_cachedPhysScalarMin, *p_cachedPhysScalarMax;
+         int *p_cachedCoeffNj, *p_cachedCoeffNi;
      };
      bool RenderScalarColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_pi *plugin,
-                               bool useShader, ScalarOverlayState &state,
+                               ScalarOverlayState &state,
                                ColorFunc colorFunc, float lutMin, float lutMax,
                                bool (*hasData)(MainDialog&),
                                void (*fillGrid)(MainDialog&, std::unique_ptr<double*[]>&, int, int),
@@ -172,6 +195,12 @@ public:
      static double** BuildAnisoDiffusedGrid(double** grid, int nj, int ni);
      static double** BuildVorticityGrid(double** uGrid, double** vGrid, int nj, int ni);
      static void FreeSharpenedGrid(double** grid, int nj);
+     // B-spline prefilter wrapper for overlay use
+     static void PrefilterCoefficients(float* coeffU, float* coeffV,
+                                        double** uGrid, double** vGrid,
+                                        int ni, int nj, bool isGlobal,
+                                        float &coefU_min, float &coefU_max,
+                                        float &coefV_min, float &coefV_max);
      static void DrawIsoLines(PlugIn_ViewPort *vp,
                               double **grid, int ni, int nj,
                               bool &needsRebuild,
@@ -203,6 +232,8 @@ private:
      MainDialog		*gui;
      ncdf_pi        *plugin;
      double 		m_last_vp_scale;
+
+public:
      wxDouble		tlon,tlat,blon,blat;
      wxDouble		incrLon, incrLat;
      wxUint32		sectors, latSectors, lonSectors;
@@ -241,8 +272,7 @@ private:
 	 void ClearParticles();
 	 void RenderParticles(PlugIn_ViewPort *vp);
 
-	 // Shader bicubic interpolation (optional, auto-fallback to fixed pipeline)
-	 bool m_useShader;
+	 // Current interpolation mode
 	 int  m_currentInterpMode;
 	 bool m_currentSmoothColors;
 	 bool m_currentSCurve;

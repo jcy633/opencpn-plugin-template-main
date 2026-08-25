@@ -120,11 +120,7 @@ private:
 			if (timeValues) memcpy(timeValues, other.timeValues, timeLength * sizeof(double));
 		}
 
-		// Data arrays — use swap to avoid deep copy for large global data
-		ucurr.clear(); ucurr.shrink_to_fit();
-		vcurr.clear(); vcurr.shrink_to_fit();
-		sst.clear(); sst.shrink_to_fit();
-		salinity.clear(); salinity.shrink_to_fit();
+		// Data arrays — assign directly, avoid shrink_to_fit memory churn
 		ucurr = other.ucurr;
 		vcurr = other.vcurr;
 		sst = other.sst;

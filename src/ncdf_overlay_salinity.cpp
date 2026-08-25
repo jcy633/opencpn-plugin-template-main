@@ -6,10 +6,15 @@
 #include "shader/ncdf_shader.h"
 #include <cmath>
 
+extern void ncdfLog(const char* format, ...);
+extern void BicubicSplinePrefilterWrapAware(float* dst, const float* src,
+                                             const unsigned char* mask,
+                                             int w, int h, bool isGlobal);
+
 bool SalinityOverlay::s_smoothColors = false;
 
 void SalinityOverlay::Init() {
-    glTexture = 0; hasTexture = false; needsRebuild = true;
+    glTexture = 0; hasTexture = false; needsRebuild = true; dataReady = false;
     dataDim[0] = dataDim[1] = 0;
     glDim[0] = glDim[1] = 0;
     lutID = 0; hasLUT = false;
@@ -19,6 +24,9 @@ void SalinityOverlay::Init() {
     cachedCoefMin = 0; cachedCoefMax = 1;
     cachedPhysMin = 0; cachedPhysMax = 1;
     cachedPhysMinV = 0; cachedPhysMaxV = 1;
+    cachedCoeff = NULL; cachedCoefScalarMin = 0; cachedCoefScalarMax = 1;
+    cachedPhysScalarMin = 0; cachedPhysScalarMax = 1;
+    cachedCoeffNj = cachedCoeffNi = 0;
     needsIsoRebuild = true;
     isoSegments.clear();
 }
@@ -31,12 +39,128 @@ void SalinityOverlay::Cleanup() {
         for (int j = 0; j < cachedNj; j++) delete[] cachedGrid[j];
         cachedGrid.reset();
     }
+    if (cachedBaseGrid) {
+        for (int j = 0; j < cachedNj; j++) delete[] cachedBaseGrid[j];
+        cachedBaseGrid.reset();
+    }
+    if (cachedCoeff) { free(cachedCoeff); cachedCoeff = NULL; }
     Init();
 }
 
 void SalinityOverlay::Invalidate() {
     needsRebuild = true;
     needsIsoRebuild = true;
+    if (hasLUT && lutID) { glDeleteTextures(1, &lutID); lutID = 0; }
+    hasLUT = false;
+    if (cachedGrid) {
+        for (int j = 0; j < cachedNj; j++) delete[] cachedGrid[j];
+        cachedGrid.reset();
+    }
+}
+
+void SalinityOverlay::prepareData(MainDialog *gui, ncdf_pi *plugin, ncdfOverlayFactory *factory) {
+    if (!gui || !gui->myMessage.hasSalData()) return;
+    int ni = gui->myMessage.lonLength;
+    int nj = gui->myMessage.latLength;
+    if (ni < 2 || nj < 2) return;
+
+    // 1. Build salinity grid
+    if (!cachedBaseGrid) {
+        auto src = std::make_unique<double*[]>(nj);
+        for (int j = 0; j < nj; j++) {
+            src[j] = new double[ni];
+            for (int i = 0; i < ni; i++) src[j][i] = gui->myMessage.getSal(i, j);
+        }
+        cachedBaseGrid = std::move(src);
+        cachedNj = nj; cachedNi = ni;
+    }
+    // Always rebuild filtered grid from base grid
+    if (cachedGrid) { for (int j = 0; j < cachedNj; j++) delete[] cachedGrid[j]; cachedGrid.reset(); }
+    {
+        cachedGrid.reset(new double*[nj]);
+        for (int j = 0; j < nj; j++) {
+            cachedGrid[j] = new double[ni];
+            memcpy(cachedGrid[j], cachedBaseGrid[j], ni * sizeof(double));
+        }
+        if (plugin->m_settingsSalinity.anisoDiffusion) {
+            double** ad = ncdfOverlayFactory::BuildAnisoDiffusedGrid(cachedGrid.get(), nj, ni);
+            if (ad) { for (int j = 0; j < nj; j++) delete[] cachedGrid[j]; cachedGrid.reset(ad); }
+        }
+        if (plugin->m_settingsSalinity.sharpen) {
+            double** sh = ncdfOverlayFactory::BuildSharpenedGrid(cachedGrid.get(), nj, ni);
+            if (sh) { for (int j = 0; j < nj; j++) delete[] cachedGrid[j]; cachedGrid.reset(sh); }
+        }
+
+        double dMin = 1e30, dMax = -1e30;
+        for (int jj = 0; jj < nj; jj++)
+            for (int ii = 0; ii < ni; ii++) {
+                double v = cachedGrid[jj][ii];
+                if (v != ncdf_NOTDEF && v == v && isfinite(v)) {
+                    if (v < dMin) dMin = v; if (v > dMax) dMax = v;
+                }
+            }
+        cachedDataMin = (dMin < dMax) ? (float)dMin : 0;
+        cachedDataMax = (dMin < dMax) ? (float)dMax : 1;
+    }
+
+    // 2. Compute B-spline coefficients
+    if (!cachedCoeff || cachedCoeffNj != nj || cachedCoeffNi != ni) {
+        if (cachedCoeff) { free(cachedCoeff); cachedCoeff = NULL; }
+        float *coeffBuf = (float*)calloc(ni * nj, sizeof(float));
+        unsigned char *byteMask = (unsigned char*)malloc(ni * nj);
+        if (coeffBuf && byteMask && cachedGrid) {
+            float *rawBuf = (float*)calloc(ni * nj, sizeof(float));
+            if (rawBuf) {
+                float pMin = 1e30f, pMax = -1e30f;
+                for (int j = 0; j < nj; j++)
+                    for (int i = 0; i < ni; i++) {
+                        int k = j * ni + i;
+                        double val = cachedGrid[j][i];
+                        if (val == ncdf_NOTDEF || isnan(val) || !isfinite(val)) {
+                            rawBuf[k] = 0; byteMask[k] = 0;
+                        } else {
+                            rawBuf[k] = (float)val; byteMask[k] = 1;
+                            if (rawBuf[k] < pMin) pMin = rawBuf[k];
+                            if (rawBuf[k] > pMax) pMax = rawBuf[k];
+                        }
+                    }
+                cachedPhysScalarMin = pMin;
+                cachedPhysScalarMax = pMax;
+
+                double lonMin = wxMin(gui->myMessage.firstGridPointLong, gui->myMessage.lastGridPointLong);
+                double lonMax = wxMax(gui->myMessage.firstGridPointLong, gui->myMessage.lastGridPointLong);
+                double gridSpacingLon = (lonMax - lonMin) / (ni - 1);
+                bool repeat = (lonMax - lonMin + gridSpacingLon >= 360);
+                BicubicSplinePrefilterWrapAware(coeffBuf, rawBuf, byteMask, ni, nj, repeat);
+                free(rawBuf);
+
+                float cMin = 1e30f, cMax = -1e30f;
+                for (int k = 0; k < ni * nj; k++) {
+                    if (!byteMask[k]) continue;
+                    if (coeffBuf[k] < cMin) cMin = coeffBuf[k];
+                    if (coeffBuf[k] > cMax) cMax = coeffBuf[k];
+                }
+                if (cMax <= cMin) { cMin = 0; cMax = 1; }
+                cachedCoefScalarMin = cMin;
+                cachedCoefScalarMax = cMax;
+                const float bsplineScale = 2.5858f;
+                cachedCoefMin = cMin * bsplineScale;
+                cachedCoefMax = cMax * bsplineScale;
+                cachedPhysMin = cachedPhysScalarMin;
+                cachedPhysMax = cachedPhysScalarMax;
+                cachedCoeff = coeffBuf;
+                coeffBuf = NULL;
+                cachedCoeffNj = nj;
+                cachedCoeffNi = ni;
+            }
+        }
+        if (coeffBuf) free(coeffBuf);
+        if (byteMask) free(byteMask);
+    }
+
+    dataReady = true;
+    needsRebuild = false;  // Data is ready — RenderColorMap will just create textures
+    ncdfLog("[render] SalinityOverlay::prepareData done, ni=%d nj=%d\n", ni, nj);
 }
 
 wxColour SalinityOverlay::GetColor(double sal_psu) {
@@ -62,16 +186,18 @@ static void FillSalGrid(MainDialog &gui, std::unique_ptr<double*[]> &grid, int n
 static bool HasSalData(MainDialog &gui) { return gui.myMessage.hasSalData(); }
 
 bool SalinityOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_pi *plugin,
-                                      ncdfOverlayFactory *factory, bool useShader,
+                                      ncdfOverlayFactory *factory,
                                       double** animatedGrid) {
     ncdfOverlayFactory::ScalarOverlayState st = {
         &glTexture, &hasTexture, &needsRebuild,
         dataDim, glDim, &lutID, &hasLUT, &uploadBuf, &uploadBufSize,
-        &cachedGrid, &cachedNj, &cachedNi,
+        &cachedGrid, &cachedBaseGrid, &cachedNj, &cachedNi,
         &cachedDataMin, &cachedDataMax, &cachedCoefMin, &cachedCoefMax,
-        &cachedPhysMin, &cachedPhysMax, &cachedPhysMinV, &cachedPhysMaxV
+        &cachedPhysMin, &cachedPhysMax, &cachedPhysMinV, &cachedPhysMaxV,
+        &cachedCoeff, &cachedCoefScalarMin, &cachedCoefScalarMax,
+        &cachedPhysScalarMin, &cachedPhysScalarMax, &cachedCoeffNj, &cachedCoeffNi
     };
-    bool ok = factory->RenderScalarColorMap(vp, gui, plugin, useShader, st,
+    bool ok = factory->RenderScalarColorMap(vp, gui, plugin, st,
         SalinityOverlay::GetColor, 30.0f, 39.0f,
         HasSalData, FillSalGrid,
         plugin->m_settingsSalinity.smoothColors,

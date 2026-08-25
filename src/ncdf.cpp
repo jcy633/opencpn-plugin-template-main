@@ -93,6 +93,34 @@ MainDialog::MainDialog(wxWindow *parent) : ncdfDialog( parent ), m_isTreeUpdatin
 	m_bpPrev->Connect( wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler( MainDialog::onPrev ), NULL, this );
 	m_bpNext->Connect( wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler( MainDialog::onNext ), NULL, this );
 
+	// Debounce slider: delay data loading until user stops dragging
+	m_sliderDebounceTimer.Bind(wxEVT_TIMER, [this](wxTimerEvent&) {
+		int idx = m_sTimeline->GetValue();
+		if (idx == m_lastSelectedTimeIndex) return;
+		if (idx >= 0 && idx < (int)myDataVector.size()) {
+			if (m_lastSelectedTimeIndex >= 0 && m_lastSelectedTimeIndex < (int)myDataVector.size())
+				myDataVector[m_lastSelectedTimeIndex].clearData();
+			ncdfDataMessage& data = myDataVector[idx];
+			m_lastSelectedTimeIndex = idx;
+			m_isTreeUpdating = true;
+			m_sTimeline->SetValue(idx);
+			m_isTreeUpdating = false;
+			m_choiceTime->SetSelection(idx);
+			wxString timeText;
+			if (data.timeValid)
+				timeText = data.dataDateTime.Format(_T("%Y-%m-%d %H:00"));
+			else
+				timeText = wxString::Format(_("time%d"), idx + 1);
+			m_staticTextDateTime->SetLabel(timeText);
+			if (readTimeStepData(data)) {
+				my_ncdfReader->readncdfFile(data);
+				data.clearData();  // Release data from myDataVector (now in myMessage)
+				pPlugIn->GetncdfOverlayFactory()->renderSelectionRectangle = false;
+				RequestRefresh(m_parent);
+			}
+		}
+	});
+
 	BuildHelpPage();
 
 	/* Ensure dialog and its contents can be resized */
@@ -583,12 +611,77 @@ static int find_dim_by_var(int ncid, int varid, int dim_idx) {
     int ndims;
     nc_inq_varndims(ncid, varid, &ndims);
     if (dim_idx >= ndims) return -1;
-    
+
     int* dimids = new int[ndims];
     nc_inq_var(ncid, varid, NULL, NULL, NULL, dimids, NULL);
     int dimid = dimids[dim_idx];
     delete[] dimids;
     return dimid;
+}
+
+/* Shared dimension discovery for any NetCDF variable.
+   Matches variable dimensions to time/lat/lon/depth by comparing dimension IDs.
+   Returns indices within the variable's dimension array. */
+struct VarDimInfo {
+    int time_idx, lat_idx, lon_idx, depth_idx;
+    bool lat_before_lon;
+    bool valid;
+};
+
+static VarDimInfo discover_var_dims(int ncid, int varid) {
+    VarDimInfo info = {-1, -1, -1, -1, false, false};
+
+    int ndims;
+    if (nc_inq_varndims(ncid, varid, &ndims) != NC_NOERR) return info;
+
+    int* dimids = (int*)calloc(ndims, sizeof(int));
+    if (!dimids) return info;
+    if (nc_inq_var(ncid, varid, NULL, NULL, NULL, dimids, NULL) != NC_NOERR) {
+        free(dimids);
+        return info;
+    }
+
+    int time_dimid = -1, lat_dimid = -1, lon_dimid = -1, depth_dimid = -1;
+
+    nc_inq_dimid(ncid, "time", &time_dimid);
+
+    if (nc_inq_dimid(ncid, "latitude", &lat_dimid) != NC_NOERR)
+        if (nc_inq_dimid(ncid, "lat", &lat_dimid) != NC_NOERR)
+            if (nc_inq_dimid(ncid, "y", &lat_dimid) != NC_NOERR)
+                nc_inq_dimid(ncid, "nav_lat", &lat_dimid);
+
+    if (nc_inq_dimid(ncid, "longitude", &lon_dimid) != NC_NOERR)
+        if (nc_inq_dimid(ncid, "lon", &lon_dimid) != NC_NOERR)
+            if (nc_inq_dimid(ncid, "x", &lon_dimid) != NC_NOERR)
+                nc_inq_dimid(ncid, "nav_lon", &lon_dimid);
+
+    if (nc_inq_dimid(ncid, "depth", &depth_dimid) != NC_NOERR)
+        if (nc_inq_dimid(ncid, "z", &depth_dimid) != NC_NOERR)
+            if (nc_inq_dimid(ncid, "deptht", &depth_dimid) != NC_NOERR)
+                nc_inq_dimid(ncid, "depthu", &depth_dimid);
+
+    for (int i = 0; i < ndims; i++) {
+        if (dimids[i] == time_dimid) info.time_idx = i;
+        else if (dimids[i] == lat_dimid) info.lat_idx = i;
+        else if (dimids[i] == lon_dimid) info.lon_idx = i;
+        else if (dimids[i] == depth_dimid) info.depth_idx = i;
+    }
+
+    free(dimids);
+
+    if (info.time_idx == -1 || info.lat_idx == -1 || info.lon_idx == -1) {
+        ncdfLog("[ncdf] discover_var_dims: FAILED for varid=%d (time=%d lat=%d lon=%d)\n",
+            varid, info.time_idx, info.lat_idx, info.lon_idx);
+        return info;
+    }
+
+    info.lat_before_lon = (info.lat_idx < info.lon_idx);
+    info.valid = true;
+
+    ncdfLog("[ncdf] discover_var_dims: varid=%d time=%d lat=%d lon=%d depth=%d lat_before_lon=%d\n",
+        varid, info.time_idx, info.lat_idx, info.lon_idx, info.depth_idx, (int)info.lat_before_lon);
+
+    return info;
 }
 
 /* CF-compliant time unit parser.
@@ -656,6 +749,9 @@ static CFTimeInfo ParseCFTimeUnits(const char* unitsStr) {
 }
 
 int MainDialog::nc_get(wxString filestr){
+
+	FILE *dbg = fopen("C:\\ProgramData\\opencpn\\ncdf_crash_trace.log", "a");
+	if (dbg) { fprintf(dbg, "nc_get: ENTER\n"); fflush(dbg); fclose(dbg); }
 
 	ncdfLog("[ncdf] nc_get: started\n");
 
@@ -1156,64 +1252,24 @@ static bool readUVFromNC(int ncid, int u_varid, int v_varid, ncdfDataMessage& da
 		}
 	}
 
-	int ndims, retval;
-	if ((retval = nc_inq_varndims(ncid, u_varid, &ndims))) {
-		return false;
-	}
+	VarDimInfo dims = discover_var_dims(ncid, u_varid);
+	if (!dims.valid) return false;
 
-	int* dimids = (int*)calloc(ndims, sizeof(int));
-	if (!dimids) return false;
-
-	if ((retval = nc_inq_var(ncid, u_varid, NULL, NULL, NULL, dimids, NULL))) {
-		free(dimids);
-		return false;
-	}
-
-	int time_dimid = -1, lat_dimid = -1, lon_dimid = -1, depth_dimid = -1;
-
-	nc_inq_dimid(ncid, "time", &time_dimid);
-	nc_inq_dimid(ncid, "latitude", &lat_dimid);
-	if (lat_dimid == -1) nc_inq_dimid(ncid, "lat", &lat_dimid);
-	nc_inq_dimid(ncid, "longitude", &lon_dimid);
-	if (lon_dimid == -1) nc_inq_dimid(ncid, "lon", &lon_dimid);
-	nc_inq_dimid(ncid, "depth", &depth_dimid);
-	if (depth_dimid == -1) nc_inq_dimid(ncid, "z", &depth_dimid);
-
-	int time_idx = -1, lat_idx = -1, lon_idx = -1, depth_idx = -1;
-
-	for (int i = 0; i < ndims; i++) {
-		if (dimids[i] == time_dimid) time_idx = i;
-		else if (dimids[i] == lat_dimid) lat_idx = i;
-		else if (dimids[i] == lon_dimid) lon_idx = i;
-		else if (dimids[i] == depth_dimid) depth_idx = i;
-	}
-
-	free(dimids);
-
-	if (time_idx == -1 || lat_idx == -1 || lon_idx == -1) {
-		return false;
-	}
-
-	bool lat_before_lon = (lat_idx < lon_idx);
-
-	ncdfLog("[ncdf] readUVFromNC: dims - time_idx=%d, lat_idx=%d, lon_idx=%d, depth_idx=%d, lat_before_lon=%d\n",
-		time_idx, lat_idx, lon_idx, depth_idx, (int)lat_before_lon);
+	int ndims;
+	nc_inq_varndims(ncid, u_varid, &ndims);
 
 	size_t start[4] = {0, 0, 0, 0};
 	size_t count[4] = {1, 1, 1, 1};
 
-	start[time_idx] = dataMessage.timeIndex;
-	count[time_idx] = 1;
-
-	start[lat_idx] = 0;
-	count[lat_idx] = dataMessage.latLength;
-
-	start[lon_idx] = 0;
-	count[lon_idx] = dataMessage.lonLength;
-
-	if (depth_idx != -1) {
-		start[depth_idx] = 0;
-		count[depth_idx] = 1;
+	start[dims.time_idx] = dataMessage.timeIndex;
+	count[dims.time_idx] = 1;
+	start[dims.lat_idx] = 0;
+	count[dims.lat_idx] = dataMessage.latLength;
+	start[dims.lon_idx] = 0;
+	count[dims.lon_idx] = dataMessage.lonLength;
+	if (dims.depth_idx != -1) {
+		start[dims.depth_idx] = 0;
+		count[dims.depth_idx] = 1;
 	}
 
 	size_t nbr_uv = dataMessage.latLength * dataMessage.lonLength;
@@ -1231,6 +1287,7 @@ static bool readUVFromNC(int ncid, int u_varid, int v_varid, ncdfDataMessage& da
 	ncdfLog("[ncdf] readUVFromNC: reading data, u_type=%d, v_type=%d, nbr_uv=%zu\n",
 		(int)u_type, (int)v_type, nbr_uv);
 
+	int retval;
 	if (u_type == NC_DOUBLE) {
 		double* u_vals_double = (double*)calloc(nbr_uv, sizeof(double));
 		if (!u_vals_double) { free(u_vals); free(v_vals); return false; }
@@ -1269,7 +1326,7 @@ static bool readUVFromNC(int ncid, int u_varid, int v_varid, ncdfDataMessage& da
 	dataMessage.vcurr.resize(nbr_uv, ncdf_NOTDEF);
 
 	size_t count_records = 0;
-	if (lat_before_lon) {
+	if (dims.lat_before_lon) {
 		for (size_t j = 0; j < dataMessage.latLength; j++) {
 			for (size_t k = 0; k < dataMessage.lonLength; k++) {
 				if (u_vals[count_records] != fill_value_u && v_vals[count_records] != fill_value_v) {
@@ -1308,33 +1365,47 @@ static bool readSSTFromNC(int ncid, int sst_varid, ncdfDataMessage& dataMessage)
 	}
 	if (sst_varid == -1) return false;
 
+	VarDimInfo dims = discover_var_dims(ncid, sst_varid);
+	if (!dims.valid) return false;
+
+	int ndims;
+	nc_inq_varndims(ncid, sst_varid, &ndims);
+
+	size_t start[NC_MAX_DIMS] = {0};
+	size_t count[NC_MAX_DIMS] = {0};
+
+	start[dims.time_idx] = dataMessage.timeIndex;
+	count[dims.time_idx] = 1;
+	start[dims.lat_idx] = 0;
+	count[dims.lat_idx] = dataMessage.latLength;
+	start[dims.lon_idx] = 0;
+	count[dims.lon_idx] = dataMessage.lonLength;
+	if (dims.depth_idx != -1) {
+		start[dims.depth_idx] = 0;
+		count[dims.depth_idx] = 1;
+	}
+
 	size_t nbr_uv = dataMessage.latLength * dataMessage.lonLength;
+
+	nc_type var_type;
+	nc_inq_vartype(ncid, sst_varid, &var_type);
+
 	float* sst_vals = (float*)calloc(nbr_uv, sizeof(float));
 	if (!sst_vals) return false;
 
-	// Read SST using hyperslab (current time step only)
-	int sst_ndims;
-	nc_inq_varndims(ncid, sst_varid, &sst_ndims);
-	int sst_dimids[NC_MAX_DIMS];
-	nc_inq_vardimid(ncid, sst_varid, sst_dimids);
-	size_t sst_start[NC_MAX_DIMS] = {0};
-	size_t sst_count[NC_MAX_DIMS] = {0};
-	for (int d = 0; d < sst_ndims; d++) {
-		char dimname[NC_MAX_NAME + 1];
-		size_t dimlen;
-		nc_inq_dim(ncid, sst_dimids[d], dimname, &dimlen);
-		if (strstr(dimname, "time") || strstr(dimname, "Time")) {
-			sst_start[d] = dataMessage.timeIndex;
-			sst_count[d] = 1;
-		} else if (strstr(dimname, "lat") || strstr(dimname, "Lat")) {
-			sst_count[d] = dataMessage.latLength;
-		} else if (strstr(dimname, "lon") || strstr(dimname, "Lon")) {
-			sst_count[d] = dataMessage.lonLength;
-		} else {
-			sst_count[d] = 1;
+	if (var_type == NC_DOUBLE) {
+		double* sst_double = (double*)calloc(nbr_uv, sizeof(double));
+		if (!sst_double) { free(sst_vals); return false; }
+		if (nc_get_vara_double(ncid, sst_varid, start, count, sst_double) != NC_NOERR) {
+			free(sst_double); free(sst_vals); return false;
+		}
+		for (size_t i = 0; i < nbr_uv; i++) sst_vals[i] = (float)sst_double[i];
+		free(sst_double);
+	} else {
+		if (nc_get_vara_float(ncid, sst_varid, start, count, sst_vals) != NC_NOERR) {
+			free(sst_vals); return false;
 		}
 	}
-	nc_get_vara_float(ncid, sst_varid, sst_start, sst_count, sst_vals);
 
 	bool isKelvin = false;
 	char units_str[64] = {0};
@@ -1346,20 +1417,46 @@ static bool readSSTFromNC(int ncid, int sst_varid, ncdfDataMessage& dataMessage)
 	nc_get_att_float(ncid, sst_varid, "_FillValue", &sst_fill);
 
 	dataMessage.sst.resize(nbr_uv, ncdf_NOTDEF);
-	for (size_t k = 0; k < nbr_uv; k++) {
-		double val = (double)sst_vals[k];
-		// Kelvin: typical 271~308K; Celsius: typical -2~35C
-		// Upper bound catches NetCDF default fill value (9.96921e+36)
-		double minValid = isKelvin ? 100.0 : -10.0;
-		double maxValid = isKelvin ? 370.0 : 50.0;
-		if (!isnan(val) && isfinite(val) && val != sst_fill && val > minValid && val < maxValid) {
-			dataMessage.sst[k] = isKelvin ? (val - 273.15) : val;
-		} else {
-			dataMessage.sst[k] = ncdf_NOTDEF;
+
+	// Rearrange data to [lat, lon] order regardless of file dimension order
+	size_t latLen = dataMessage.latLength;
+	size_t lonLen = dataMessage.lonLength;
+	size_t count_records = 0;
+	double minValid = isKelvin ? 100.0 : -10.0;
+	double maxValid = isKelvin ? 370.0 : 50.0;
+
+	if (dims.lat_before_lon) {
+		for (size_t j = 0; j < latLen; j++) {
+			for (size_t k = 0; k < lonLen; k++) {
+				double val = (double)sst_vals[count_records];
+				if (!isnan(val) && isfinite(val) && val != sst_fill && val > minValid && val < maxValid)
+					dataMessage.sst[count_records] = isKelvin ? (val - 273.15) : val;
+				else
+					dataMessage.sst[count_records] = ncdf_NOTDEF;
+				count_records++;
+			}
+		}
+	} else {
+		// File order is [lon, lat] — reorder to [lat, lon]
+		float* reordered = (float*)calloc(nbr_uv, sizeof(float));
+		if (reordered) {
+			for (size_t k = 0; k < lonLen; k++)
+				for (size_t j = 0; j < latLen; j++)
+					reordered[j * lonLen + k] = sst_vals[k * latLen + j];
+			for (size_t i = 0; i < nbr_uv; i++) {
+				double val = (double)reordered[i];
+				if (!isnan(val) && isfinite(val) && val != sst_fill && val > minValid && val < maxValid)
+					dataMessage.sst[i] = isKelvin ? (val - 273.15) : val;
+				else
+					dataMessage.sst[i] = ncdf_NOTDEF;
+			}
+			free(reordered);
 		}
 	}
+
 	free(sst_vals);
-	ncdfLog("[ncdf] readSSTFromNC: SST read, isKelvin=%d\n", (int)isKelvin);
+	ncdfLog("[ncdf] readSSTFromNC: SST read, isKelvin=%d, lat_before_lon=%d\n",
+		(int)isKelvin, (int)dims.lat_before_lon);
 	dataMessage.hasSeaTemp = true;
 	return true;
 }
@@ -1375,47 +1472,89 @@ static bool readSalinityFromNC(int ncid, int sal_varid, ncdfDataMessage& dataMes
 	}
 	if (sal_varid == -1) return false;
 
+	VarDimInfo dims = discover_var_dims(ncid, sal_varid);
+	if (!dims.valid) return false;
+
+	int ndims;
+	nc_inq_varndims(ncid, sal_varid, &ndims);
+
+	size_t start[NC_MAX_DIMS] = {0};
+	size_t count[NC_MAX_DIMS] = {0};
+
+	start[dims.time_idx] = dataMessage.timeIndex;
+	count[dims.time_idx] = 1;
+	start[dims.lat_idx] = 0;
+	count[dims.lat_idx] = dataMessage.latLength;
+	start[dims.lon_idx] = 0;
+	count[dims.lon_idx] = dataMessage.lonLength;
+	if (dims.depth_idx != -1) {
+		start[dims.depth_idx] = 0;
+		count[dims.depth_idx] = 1;
+	}
+
 	size_t nbr_uv = dataMessage.latLength * dataMessage.lonLength;
+
+	nc_type var_type;
+	nc_inq_vartype(ncid, sal_varid, &var_type);
+
 	float* sal_vals = (float*)calloc(nbr_uv, sizeof(float));
 	if (!sal_vals) return false;
 
-	int sal_ndims;
-	nc_inq_varndims(ncid, sal_varid, &sal_ndims);
-	int sal_dimids[NC_MAX_DIMS];
-	nc_inq_vardimid(ncid, sal_varid, sal_dimids);
-	size_t sal_start[NC_MAX_DIMS] = {0};
-	size_t sal_count[NC_MAX_DIMS] = {0};
-	for (int d = 0; d < sal_ndims; d++) {
-		char dimname[NC_MAX_NAME + 1];
-		size_t dimlen;
-		nc_inq_dim(ncid, sal_dimids[d], dimname, &dimlen);
-		if (strstr(dimname, "time") || strstr(dimname, "Time")) {
-			sal_start[d] = dataMessage.timeIndex;
-			sal_count[d] = 1;
-		} else if (strstr(dimname, "lat") || strstr(dimname, "Lat")) {
-			sal_count[d] = dataMessage.latLength;
-		} else if (strstr(dimname, "lon") || strstr(dimname, "Lon")) {
-			sal_count[d] = dataMessage.lonLength;
-		} else {
-			sal_count[d] = 1;
+	if (var_type == NC_DOUBLE) {
+		double* sal_double = (double*)calloc(nbr_uv, sizeof(double));
+		if (!sal_double) { free(sal_vals); return false; }
+		if (nc_get_vara_double(ncid, sal_varid, start, count, sal_double) != NC_NOERR) {
+			free(sal_double); free(sal_vals); return false;
+		}
+		for (size_t i = 0; i < nbr_uv; i++) sal_vals[i] = (float)sal_double[i];
+		free(sal_double);
+	} else {
+		if (nc_get_vara_float(ncid, sal_varid, start, count, sal_vals) != NC_NOERR) {
+			free(sal_vals); return false;
 		}
 	}
-	nc_get_vara_float(ncid, sal_varid, sal_start, sal_count, sal_vals);
 
 	float sal_fill = -32767.0f;
 	nc_get_att_float(ncid, sal_varid, "_FillValue", &sal_fill);
 
 	dataMessage.salinity.resize(nbr_uv, ncdf_NOTDEF);
-	for (size_t k = 0; k < nbr_uv; k++) {
-		double val = (double)sal_vals[k];
-		if (!isnan(val) && isfinite(val) && val != sal_fill && val > 0.0 && val < 100.0) {
-			dataMessage.salinity[k] = val;
-		} else {
-			dataMessage.salinity[k] = ncdf_NOTDEF;
+
+	// Rearrange data to [lat, lon] order regardless of file dimension order
+	size_t latLen = dataMessage.latLength;
+	size_t lonLen = dataMessage.lonLength;
+	size_t count_records = 0;
+
+	if (dims.lat_before_lon) {
+		for (size_t j = 0; j < latLen; j++) {
+			for (size_t k = 0; k < lonLen; k++) {
+				double val = (double)sal_vals[count_records];
+				if (!isnan(val) && isfinite(val) && val != sal_fill && val > 0.0 && val < 100.0)
+					dataMessage.salinity[count_records] = val;
+				else
+					dataMessage.salinity[count_records] = ncdf_NOTDEF;
+				count_records++;
+			}
+		}
+	} else {
+		// File order is [lon, lat] — reorder to [lat, lon]
+		float* reordered = (float*)calloc(nbr_uv, sizeof(float));
+		if (reordered) {
+			for (size_t k = 0; k < lonLen; k++)
+				for (size_t j = 0; j < latLen; j++)
+					reordered[j * lonLen + k] = sal_vals[k * latLen + j];
+			for (size_t i = 0; i < nbr_uv; i++) {
+				double val = (double)reordered[i];
+				if (!isnan(val) && isfinite(val) && val != sal_fill && val > 0.0 && val < 100.0)
+					dataMessage.salinity[i] = val;
+				else
+					dataMessage.salinity[i] = ncdf_NOTDEF;
+			}
+			free(reordered);
 		}
 	}
+
 	free(sal_vals);
-	ncdfLog("[ncdf] readSalinityFromNC: Salinity read\n");
+	ncdfLog("[ncdf] readSalinityFromNC: Salinity read, lat_before_lon=%d\n", (int)dims.lat_before_lon);
 	dataMessage.hasSalinity = true;
 	return true;
 }
@@ -1478,7 +1617,7 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 	bool hasUV = (u_varid != -1 && v_varid != -1);
 	ncdfLog("[ncdf] readTimeStepData: hasUV=%d, u_varid=%d, v_varid=%d\n", (int)hasUV, u_varid, v_varid);
 
-	// Call helper functions for each data type
+	// Load ALL available data types (not just active one) — precompute for all overlays
 	if (hasUV) {
 		if (!readUVFromNC(ncid, u_varid, v_varid, dataMessage)) {
 			ncdfLog("[ncdf] readTimeStepData: readUVFromNC failed\n");
@@ -1539,15 +1678,44 @@ void MainDialog::onDirChanged(wxCommandEvent& event)
 
 bool MainDialog::switchToFile(const wxString &fileName, const wxString &fn, int &idx)
 {
+	// Use a separate log file for crash debugging
+	FILE *dbg = fopen("C:\\ProgramData\\opencpn\\ncdf_crash_trace.log", "a");
+	if (dbg) { fprintf(dbg, "switchToFile: ENTER\n"); fflush(dbg); fclose(dbg); }
+
 	ncdfLogW(L"[ncdf] switchToFile: switching to file %ls\n", (const wchar_t*)fn.c_str());
+
+	dbg = fopen("C:\\ProgramData\\opencpn\\ncdf_crash_trace.log", "a");
+	if (dbg) { fprintf(dbg, "switchToFile: A-after logW\n"); fflush(dbg); fclose(dbg); }
+
 	myDataVector.clear();
+
+	dbg = fopen("C:\\ProgramData\\opencpn\\ncdf_crash_trace.log", "a");
+	if (dbg) { fprintf(dbg, "switchToFile: B-after clear vector\n"); fflush(dbg); fclose(dbg); }
+
 	m_lastSelectedTimeIndex = -1;
 	m_choiceTime->Clear();
 
-	// Clean up old data before loading new file
+	dbg = fopen("C:\\ProgramData\\opencpn\\ncdf_crash_trace.log", "a");
+	if (dbg) { fprintf(dbg, "switchToFile: C-before myMessage.clear\n"); fflush(dbg); fclose(dbg); }
+
 	myMessage.clear();
-	pPlugIn->GetncdfOverlayFactory()->reset();
-	pPlugIn->GetncdfOverlayFactory()->m_animate.Cleanup();
+
+	dbg = fopen("C:\\ProgramData\\opencpn\\ncdf_crash_trace.log", "a");
+	if (dbg) { fprintf(dbg, "switchToFile: D-after myMessage.clear, pPlugIn=%p\n", (void*)pPlugIn); fflush(dbg); fclose(dbg); }
+
+	if (pPlugIn) {
+		ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
+		if (pof) {
+			dbg = fopen("C:\\ProgramData\\opencpn\\ncdf_crash_trace.log", "a");
+			if (dbg) { fprintf(dbg, "switchToFile: D3-calling reset\n"); fflush(dbg); fclose(dbg); }
+			pof->m_bReadyToRender = false;
+			dbg = fopen("C:\\ProgramData\\opencpn\\ncdf_crash_trace.log", "a");
+			if (dbg) { fprintf(dbg, "switchToFile: D4-readyToRender=false\n"); fflush(dbg); fclose(dbg); }
+		}
+	}
+
+	dbg = fopen("C:\\ProgramData\\opencpn\\ncdf_crash_trace.log", "a");
+	if (dbg) { fprintf(dbg, "switchToFile: E-after reset\n"); fflush(dbg); fclose(dbg); }
 
 	int ret = nc_get(fileName);
 	if (ret != 0) {
@@ -1628,6 +1796,9 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 	        return;
 	    }
 
+	    // Update current file path so switchToFile won't redundantly re-load
+	    m_currentFilePath = fileName;
+
 	    // Clean up old data before loading new file
 	    myMessage.clear();
 	    m_lastSelectedTimeIndex = -1;
@@ -1707,32 +1878,35 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 			myDataVector[m_lastSelectedTimeIndex].clearData();
 		}
 
-		myData = myDataVector[idx];
-		ncdfLog("[ncdf] onTreeSelectionChanged: AFTER COPY idx=%d, ucurr.size=%zu latValues=%p lonValues=%p fileName='%s' timeIndex=%d\n",
-			idx, myData.ucurr.size(), (void*)myData.latValues, (void*)myData.lonValues,
-			(const char*)myData.fileName.mb_str(), myData.timeIndex);
+		// Use reference directly — avoid 300MB deep copy into myData
+		ncdfDataMessage& dataRef = myDataVector[idx];
+		ncdfLog("[ncdf] onTreeSelectionChanged: AFTER REF idx=%d, ucurr.size=%zu latValues=%p lonValues=%p fileName='%s' timeIndex=%d\n",
+			idx, dataRef.ucurr.size(), (void*)dataRef.latValues, (void*)dataRef.lonValues,
+			(const char*)dataRef.fileName.mb_str(), dataRef.timeIndex);
 		m_lastSelectedTimeIndex = idx;
 
 		// Sync slider with tree selection (guard against OnTimeline re-entrancy)
 		m_isTreeUpdating = true;
 		m_sTimeline->SetValue(idx);
 		m_isTreeUpdating = false;
-		
+
 		wxString timeText;
-		if (myData.timeValid) {
-			timeText = myData.dataDateTime.Format(_T("%Y-%m-%d %H:00"));
+		if (dataRef.timeValid) {
+			timeText = dataRef.dataDateTime.Format(_T("%Y-%m-%d %H:00"));
 		} else {
 			timeText = wxString::Format(_("time%d"), idx + 1);
 		}
 		m_staticTextDateTime->SetLabel(timeText);
 
-		if (readTimeStepData(myData)) {
+		if (readTimeStepData(dataRef)) {
 			ncdfLog("[ncdf] onTreeSelectionChanged: readTimeStepData OK, ucurr.size=%zu vcurr.size=%zu sst.size=%zu hasSeaTemp=%d\n",
-				myData.ucurr.size(), myData.vcurr.size(), myData.sst.size(), (int)myData.hasSeaTemp);
+				dataRef.ucurr.size(), dataRef.vcurr.size(), dataRef.sst.size(), (int)dataRef.hasSeaTemp);
 			ncdfLog("[ncdf] onTreeSelectionChanged: calling readncdfFile...\n");
-			this->my_ncdfReader->readncdfFile(myData);
+			this->my_ncdfReader->readncdfFile(dataRef);
 			ncdfLog("[ncdf] onTreeSelectionChanged: readncdfFile done, myMessage.ucurr.size=%zu myMessage.sst.size=%zu\n",
 				myMessage.ucurr.size(), myMessage.sst.size());
+			// Release data from myDataVector (now in myMessage, no need to keep duplicate)
+			dataRef.clearData();
 			pPlugIn->GetncdfOverlayFactory()->renderSelectionRectangle = false;
 			ncdfLog("[ncdf] onTreeSelectionChanged: requesting refresh\n");
 			RequestRefresh(m_parent);
@@ -1835,79 +2009,10 @@ void MainDialog::OnTimeline(wxScrollEvent& event)
     // Skip if same time step (prevent redundant readncdfFile calls)
     if (selectedIndex == m_lastSelectedTimeIndex) return;
 
-    // Only switch time steps within the current file (don't load new files)
-    if (selectedIndex >= 0 && selectedIndex < (int)myDataVector.size()) {
-        // Free previous time step's data only (keep coordinate metadata)
-        if (m_lastSelectedTimeIndex >= 0 && m_lastSelectedTimeIndex < (int)myDataVector.size()) {
-            myDataVector[m_lastSelectedTimeIndex].clearData();
-        }
-
-        myData = myDataVector[selectedIndex];
-        m_lastSelectedTimeIndex = selectedIndex;
-
-        // Sync choice control
-        m_choiceTime->SetSelection(selectedIndex);
-
-        wxString timeText;
-        if (myData.timeValid) {
-            timeText = myData.dataDateTime.Format(_T("%Y-%m-%d %H:00"));
-        } else {
-            timeText = wxString::Format(_("time%d"), selectedIndex + 1);
-        }
-        m_staticTextDateTime->SetLabel(timeText);
-
-        // Sync tree control selection (use m_isTreeUpdating to prevent event recursion)
-        m_isTreeUpdating = true;
-        wxTreeItemId currentItem = m_treeCtrl->GetFocusedItem();
-        if (currentItem.IsOk()) {
-            wxTreeItemId fileNode = m_treeCtrl->GetItemParent(currentItem);
-            if (!fileNode.IsOk() || fileNode == m_treeCtrl->GetRootItem()) {
-                fileNode = currentItem;
-            }
-            if (m_treeCtrl->HasChildren(fileNode)) {
-                // Clear any previous drop highlights
-                wxTreeItemIdValue clearCookie;
-                wxTreeItemId clearChild = m_treeCtrl->GetFirstChild(fileNode, clearCookie);
-                while (clearChild.IsOk()) {
-                    m_treeCtrl->SetItemDropHighlight(clearChild, false);
-                    clearChild = m_treeCtrl->GetNextSibling(clearChild);
-                }
-
-                wxTreeItemIdValue childCookie;
-                wxTreeItemId childItem = m_treeCtrl->GetFirstChild(fileNode, childCookie);
-                int treeIdx = 0;
-                while (childItem.IsOk()) {
-                    if (treeIdx == selectedIndex) {
-                        m_treeCtrl->SelectItem(childItem);
-                        m_treeCtrl->SetFocusedItem(childItem);
-                        m_treeCtrl->EnsureVisible(childItem);
-                        break;
-                    }
-                    childItem = m_treeCtrl->GetNextSibling(childItem);
-                    treeIdx++;
-                }
-            }
-        }
-        m_isTreeUpdating = false;
-
-        ncdfLog("[ncdf] OnTimeline: idx=%d, ucurr.size=%zu, vcurr.size=%zu, latLen=%d, lonLen=%d\n",
-            selectedIndex, myData.ucurr.size(), myData.vcurr.size(),
-            (int)myData.latLength, (int)myData.lonLength);
-        bool readOk = readTimeStepData(myData);
-        ncdfLog("[ncdf] OnTimeline: readTimeStepData=%d, ucurr.size=%zu, vcurr.size=%zu\n",
-            (int)readOk, myData.ucurr.size(), myData.vcurr.size());
-        if (!readOk) {
-            ncdfLog("[ncdf] OnTimeline: readTimeStepData FAILED for idx=%d\n", selectedIndex);
-            return;
-        }
-        my_ncdfReader->readncdfFile(myData);
-        ncdfLog("[ncdf] OnTimeline: ucurr.size=%zu vcurr.size=%zu ni=%d nj=%d ready=%d needsRebuild=%d\n",
-            myMessage.ucurr.size(), myMessage.vcurr.size(),
-            (int)myMessage.lonLength, (int)myMessage.latLength,
-            (int)pPlugIn->GetncdfOverlayFactory()->isReadyToRender(),
-            (int)pPlugIn->GetncdfOverlayFactory()->m_currentOverlay.needsRebuild);
-        RequestRefresh(m_parent);
-    }
+    // Debounce: delay expensive I/O until user stops dragging for 100ms
+    if (m_sliderDebounceTimer.IsRunning())
+        m_sliderDebounceTimer.Stop();
+    m_sliderDebounceTimer.StartOnce(100);
 }
 
 void MainDialog::onTreeItemRightClick(wxTreeEvent& event)
@@ -1939,6 +2044,15 @@ void MainDialog::onBmpCurrentForceClick(wxCommandEvent& event)
 		pPlugIn->m_bShowSalinity = false;
 	}
 	s_guard = false;
+	// Reload data for the active overlay type (only loads Current data now)
+	if (checked && m_lastSelectedTimeIndex >= 0 && m_lastSelectedTimeIndex < (int)myDataVector.size()) {
+		myMessage.clear();
+		ncdfDataMessage& dataRef = myDataVector[m_lastSelectedTimeIndex];
+		if (readTimeStepData(dataRef)) {
+			my_ncdfReader->readncdfFile(dataRef);
+			dataRef.clearData();
+		}
+	}
 	RequestRefresh(m_parent);
 }
 
@@ -1963,6 +2077,15 @@ void MainDialog::onSeaTempClick(wxCommandEvent& event)
 		pPlugIn->m_bShowSalinity = false;
 	}
 	s_guard = false;
+	// Reload data for the active overlay type
+	if (checked && m_lastSelectedTimeIndex >= 0 && m_lastSelectedTimeIndex < (int)myDataVector.size()) {
+		myMessage.clear();
+		ncdfDataMessage& dataRef = myDataVector[m_lastSelectedTimeIndex];
+		if (readTimeStepData(dataRef)) {
+			my_ncdfReader->readncdfFile(dataRef);
+			dataRef.clearData();
+		}
+	}
 	RequestRefresh(m_parent);
 }
 
@@ -1997,6 +2120,15 @@ void MainDialog::onSalinityClick(wxCommandEvent& event)
 		pPlugIn->m_bShowSeaTemp = false;
 	}
 	s_guard = false;
+	// Reload data for the active overlay type
+	if (checked && m_lastSelectedTimeIndex >= 0 && m_lastSelectedTimeIndex < (int)myDataVector.size()) {
+		myMessage.clear();
+		ncdfDataMessage& dataRef = myDataVector[m_lastSelectedTimeIndex];
+		if (readTimeStepData(dataRef)) {
+			my_ncdfReader->readncdfFile(dataRef);
+			dataRef.clearData();
+		}
+	}
 	RequestRefresh(m_parent);
 }
 
@@ -2165,17 +2297,15 @@ void MainDialog::fillDirTree(wxString path, bool start, wxTreeItemId id)
 	if(start == true)
 	{
 		ncdfLog("[ncdf] fillDirTree: deleting all tree items\n");
-		
+
 		m_isTreeUpdating = true;
 		m_treeCtrl->Freeze();
 		this->m_treeCtrl->DeleteAllItems();
-		
+
 		id = this->m_treeCtrl->AddRoot(_T(""));
 		this->m_treeCtrl->SetItemText(id,_("ncdf-Files"));
 		this->m_treeCtrl->SelectItem(id);
-		m_isTreeUpdating = false;
-		m_treeCtrl->Thaw();
-		
+		// Keep m_isTreeUpdating=true and Freeze() active through addChildren loop
 		ncdfLog("[ncdf] fillDirTree: root item created\n");
 	}
 
@@ -2183,24 +2313,46 @@ void MainDialog::fillDirTree(wxString path, bool start, wxTreeItemId id)
 	if(dir.IsOpened() && dir.HasFiles())
 	{
 		ncdfLog("[ncdf] fillDirTree: directory opened successfully\n");
+
+		// Save global state before addChildren loop modifies it
+		std::vector<ncdfDataMessage> savedVector = myDataVector;
+		wxString savedPath = m_currentFilePath;
+		int savedTimeIndex = m_lastSelectedTimeIndex;
+
 		wxString s;
 		if (dir.GetFirst(&s, wxEmptyString, wxDIR_FILES)) {
 			do {
 				wxString ext = s.Mid(s.find_last_of('.') + 1).Lower();
 				if (ext == "nc" || ext == "nc4") {
 					ncdfLogW(L"[ncdf] fillDirTree: adding file: %ls\n", (const wchar_t*)s.c_str());
-					
+
 					wxTreeItemId iid = this->m_treeCtrl->AppendItem(id, s);
-					
+
 					ncdfLogW(L"[ncdf] fillDirTree: calling addChildren for %ls\n", (const wchar_t*)s.c_str());
 					addChildren(iid, s);
-					
+
 					ncdfLog("[ncdf] fillDirTree: addChildren returned\n");
 				}
 			} while (dir.GetNext(&s));
 		}
+
+		// Restore global state after tree building
+		myDataVector = savedVector;
+		m_currentFilePath = savedPath;
+		m_lastSelectedTimeIndex = savedTimeIndex;
+		if (!myDataVector.empty() && m_sTimeline) {
+			m_sTimeline->SetRange(0, (int)myDataVector.size() - 1);
+			if (m_lastSelectedTimeIndex >= 0)
+				m_sTimeline->SetValue(m_lastSelectedTimeIndex);
+		}
+		ncdfLog("[ncdf] fillDirTree: restored global state, myDataVector size=%d\n",
+			(int)myDataVector.size());
 	}
-	
+
+	// Release tree update guard and thaw display
+	m_isTreeUpdating = false;
+	if (start) m_treeCtrl->Thaw();
+
 	ncdfLog("[ncdf] fillDirTree: completed\n");
 }
 

@@ -6,10 +6,15 @@
 #include "shader/ncdf_shader.h"
 #include <cmath>
 
+extern void ncdfLog(const char* format, ...);
+extern void BicubicSplinePrefilterWrapAware(float* dst, const float* src,
+                                             const unsigned char* mask,
+                                             int w, int h, bool isGlobal);
+
 bool CurrentOverlay::s_smoothColors = false;
 
 void CurrentOverlay::Init() {
-    glTexture = 0; hasTexture = false; needsRebuild = true;
+    glTexture = 0; hasTexture = false; needsRebuild = true; dataReady = false;
     dataDim[0] = dataDim[1] = 0;
     glDim[0] = glDim[1] = 0;
     lutID = 0; hasLUT = false;
@@ -17,6 +22,9 @@ void CurrentOverlay::Init() {
     uploadBuf = NULL; uploadBufSize = 0;
     cachedGrid.reset(); cachedNj = cachedNi = 0;
     cachedU = NULL; cachedV = NULL; cachedUNj = cachedVNi = 0;
+    cachedCoeffU = NULL; cachedCoeffV = NULL;
+    cachedCoefU_min = cachedCoefU_max = cachedCoefV_min = cachedCoefV_max = 0;
+    cachedCoeffNj = cachedCoeffNi = 0;
     cachedDataMin = 0; cachedDataMax = 1;
     cachedCoefMin = 0; cachedCoefMax = 1;
     cachedPhysMin = 0; cachedPhysMax = 1;
@@ -39,6 +47,8 @@ void CurrentOverlay::Cleanup() {
     }
     if (cachedU) { for (int j = 0; j < cachedUNj; j++) delete[] cachedU[j]; delete[] cachedU; cachedU = NULL; }
     if (cachedV) { for (int j = 0; j < cachedUNj; j++) delete[] cachedV[j]; delete[] cachedV; cachedV = NULL; }
+    if (cachedCoeffU) { free(cachedCoeffU); cachedCoeffU = NULL; }
+    if (cachedCoeffV) { free(cachedCoeffV); cachedCoeffV = NULL; }
     if (cachedVorticity) {
         for (int j = 0; j < vortNj; j++) delete[] cachedVorticity[j];
         cachedVorticity.reset();
@@ -56,7 +66,85 @@ void CurrentOverlay::Invalidate() {
         physicalTexID = 0;
     }
     hasPhysicalTex = false;
-    // Don't delete cachedU/cachedV here — they'll be rebuilt on next render
+}
+
+void CurrentOverlay::prepareData(MainDialog *gui, ncdf_pi *plugin, ncdfOverlayFactory *factory) {
+    if (!gui || !gui->myMessage.hasCurrent()) return;
+    int ni = gui->myMessage.lonLength;
+    int nj = gui->myMessage.latLength;
+    if (ni < 2 || nj < 2) return;
+
+    // 1. Build speed grid
+    if (!cachedGrid) {
+        auto src = std::make_unique<double*[]>(nj);
+        for (int j = 0; j < nj; j++) {
+            src[j] = new double[ni];
+            for (int i = 0; i < ni; i++) {
+                double u = gui->myMessage.getU(i, j), v = gui->myMessage.getV(i, j);
+                if (u == ncdf_NOTDEF || v == ncdf_NOTDEF || u != u || v != v)
+                    src[j][i] = ncdf_NOTDEF;
+                else
+                    src[j][i] = sqrt(u * u + v * v);
+            }
+        }
+        cachedGrid = std::move(src);
+        cachedNj = nj; cachedNi = ni;
+
+        if (plugin->m_settingsCurrent.anisoDiffusion) {
+            double** ad = ncdfOverlayFactory::BuildAnisoDiffusedGrid(cachedGrid.get(), nj, ni);
+            if (ad) { for (int j = 0; j < nj; j++) delete[] cachedGrid[j]; cachedGrid.reset(ad); }
+        }
+        if (plugin->m_settingsCurrent.sharpen) {
+            double** sh = ncdfOverlayFactory::BuildSharpenedGrid(cachedGrid.get(), nj, ni);
+            if (sh) { for (int j = 0; j < nj; j++) delete[] cachedGrid[j]; cachedGrid.reset(sh); }
+        }
+
+        // Compute data range
+        double dMin = 1e30, dMax = -1e30;
+        for (int jj = 0; jj < nj; jj++)
+            for (int ii = 0; ii < ni; ii++) {
+                double v = cachedGrid[jj][ii];
+                if (v != ncdf_NOTDEF && v == v && isfinite(v)) {
+                    if (v < dMin) dMin = v; if (v > dMax) dMax = v;
+                }
+            }
+        cachedDataMin = (dMin < dMax) ? (float)dMin : 0;
+        cachedDataMax = (dMin < dMax) ? (float)dMax : 1;
+    }
+
+    // 2. Build U/V grids + B-spline coefficients
+    if (!cachedU || !cachedV) {
+        cachedU = new double*[nj]; cachedV = new double*[nj];
+        for (int j = 0; j < nj; j++) {
+            cachedU[j] = new double[ni]; cachedV[j] = new double[ni];
+            for (int i = 0; i < ni; i++) {
+                cachedU[j][i] = gui->myMessage.getU(i, j);
+                cachedV[j][i] = gui->myMessage.getV(i, j);
+            }
+        }
+        cachedUNj = nj; cachedVNi = ni;
+    }
+
+    if (!cachedCoeffU || !cachedCoeffV || cachedCoeffNj != nj || cachedCoeffNi != ni) {
+        if (cachedCoeffU) free(cachedCoeffU);
+        if (cachedCoeffV) free(cachedCoeffV);
+        cachedCoeffU = (float*)calloc(nj * ni, sizeof(float));
+        cachedCoeffV = (float*)calloc(nj * ni, sizeof(float));
+        if (cachedCoeffU && cachedCoeffV) {
+            double lonMin = factory->tlon, lonMax = factory->blon;
+            double gridSpacingLon = (lonMax - lonMin) / (ni - 1);
+            bool isGlobal = (lonMax - lonMin + gridSpacingLon >= 360);
+            ncdfOverlayFactory::PrefilterCoefficients(
+                cachedCoeffU, cachedCoeffV, cachedU, cachedV,
+                ni, nj, isGlobal,
+                cachedCoefU_min, cachedCoefU_max, cachedCoefV_min, cachedCoefV_max);
+            cachedCoeffNj = nj; cachedCoeffNi = ni;
+        }
+    }
+
+    dataReady = true;
+    needsRebuild = false;  // Data is ready — RenderColorMap will just create textures
+    ncdfLog("[render] CurrentOverlay::prepareData done, ni=%d nj=%d\n", ni, nj);
 }
 
 wxColour CurrentOverlay::GetColor(double val_in) {
@@ -69,7 +157,7 @@ wxColour CurrentOverlay::GetColor(double val_in) {
 }
 
 bool CurrentOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_pi *plugin,
-                                     ncdfOverlayFactory *factory, bool useShader,
+                                     ncdfOverlayFactory *factory,
                                      double** animatedGrid, double** animUGrid, double** animVGrid) {
     if (!gui) return false;
     int ni = gui->myMessage.lonLength;
@@ -96,29 +184,28 @@ bool CurrentOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
         cachedDataMin = (dMin < dMax) ? (float)dMin : 0;
         cachedDataMax = (dMin < dMax) ? (float)dMax : 1;
         needsRebuild = true;  // force texture rebuild every animation frame
-    } else if (!gui->myMessage.hasCurrent()) {
+    } else if (!cachedGrid) {
         return false;
     } else {
     // Compute speed grid on-the-fly from u/v (NaN-safe)
     // Also serves as cached grid for aniso diffusion / sharpening
     if (needsRebuild || !cachedGrid) {
-        if (cachedGrid) { for (int j = 0; j < nj; j++) delete[] cachedGrid[j]; }
-        cachedGrid.reset();
-        cachedNj = nj; cachedNi = ni;
-
-        // Build speed grid: sqrt(u² + v²), NaN if either component is invalid
-        auto src = std::make_unique<double*[]>(nj);
-        for (int j = 0; j < nj; j++) {
-            src[j] = new double[ni];
-            for (int i = 0; i < ni; i++) {
-                double u = gui->myMessage.getU(i, j), v = gui->myMessage.getV(i, j);
-                if (u == ncdf_NOTDEF || v == ncdf_NOTDEF || u != u || v != v)
-                    src[j][i] = ncdf_NOTDEF;
-                else
-                    src[j][i] = sqrt(u * u + v * v);
+        // Only rebuild from myMessage if cachedGrid doesn't exist yet
+        if (!cachedGrid) {
+            cachedNj = nj; cachedNi = ni;
+            auto src = std::make_unique<double*[]>(nj);
+            for (int j = 0; j < nj; j++) {
+                src[j] = new double[ni];
+                for (int i = 0; i < ni; i++) {
+                    double u = gui->myMessage.getU(i, j), v = gui->myMessage.getV(i, j);
+                    if (u == ncdf_NOTDEF || v == ncdf_NOTDEF || u != u || v != v)
+                        src[j][i] = ncdf_NOTDEF;
+                    else
+                        src[j][i] = sqrt(u * u + v * v);
+                }
             }
+            cachedGrid = std::move(src);
         }
-        cachedGrid = std::move(src);
         if (plugin->m_settingsCurrent.anisoDiffusion) {
             double** ad = ncdfOverlayFactory::BuildAnisoDiffusedGrid(cachedGrid.get(), nj, ni);
             if (ad) { for (int j = 0; j < nj; j++) delete[] cachedGrid[j]; cachedGrid.reset(ad); }
@@ -147,7 +234,7 @@ bool CurrentOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
     // Slope shading (vorticity)
     double** slopeGrid = NULL;
     slopeSource = glTexture;
-    if (plugin->m_settingsCurrent.slopeShading && gui->myMessage.hasCurrent()) {
+    if (plugin->m_settingsCurrent.slopeShading && cachedU && cachedV) {
         if (needsRebuild || !cachedVorticity) {
             if (cachedVorticity) { for (int j=0;j<vortNj;j++) delete[] cachedVorticity[j]; }
             cachedVorticity.reset();
@@ -168,7 +255,6 @@ bool CurrentOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
 
     // Build shader settings
     ncdfOverlayFactory::RenderSettings settings;
-    settings.useShader = useShader;
     settings.smoothColors = plugin->m_settingsCurrent.smoothColors;
 
     // Vector mode: pass u/v grids for shader-side speed computation
@@ -177,28 +263,63 @@ bool CurrentOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
         settings.vectorMode = true;
         settings.uGrid = animUGrid;
         settings.vGrid = animVGrid;
-    } else if (!animatedGrid && gui->myMessage.hasCurrent()) {
+    } else if (!animatedGrid && cachedU && cachedV) {
         // Static mode: use cached u/v grids (only rebuild when data changes)
         settings.vectorMode = true;
         if (needsRebuild || !cachedU || !cachedV) {
-            if (cachedU) { for (int j = 0; j < cachedNj; j++) delete[] cachedU[j]; delete[] cachedU; }
-            if (cachedV) { for (int j = 0; j < cachedNj; j++) delete[] cachedV[j]; delete[] cachedV; }
-            cachedU = new double*[nj]; cachedV = new double*[nj];
-            for (int j = 0; j < nj; j++) {
-                cachedU[j] = new double[ni]; cachedV[j] = new double[ni];
-                for (int i = 0; i < ni; i++) {
-                    cachedU[j][i] = gui->myMessage.getU(i, j);
-                    cachedV[j][i] = gui->myMessage.getV(i, j);
+            // Only rebuild from myMessage if cachedU/V don't exist yet
+            if (!cachedU || !cachedV) {
+                if (cachedU) { for (int j = 0; j < cachedNj; j++) delete[] cachedU[j]; delete[] cachedU; }
+                if (cachedV) { for (int j = 0; j < cachedNj; j++) delete[] cachedV[j]; delete[] cachedV; }
+                cachedU = new double*[nj]; cachedV = new double*[nj];
+                for (int j = 0; j < nj; j++) {
+                    cachedU[j] = new double[ni]; cachedV[j] = new double[ni];
+                    for (int i = 0; i < ni; i++) {
+                        cachedU[j][i] = gui->myMessage.getU(i, j);
+                        cachedV[j][i] = gui->myMessage.getV(i, j);
+                    }
                 }
+                cachedUNj = nj; cachedVNi = ni;
             }
-            cachedUNj = nj; cachedVNi = ni;
+            // Only invalidate coefficients if dimensions changed
+            if (cachedCoeffNj != nj || cachedCoeffNi != ni) {
+                if (cachedCoeffU) { free(cachedCoeffU); cachedCoeffU = NULL; }
+                if (cachedCoeffV) { free(cachedCoeffV); cachedCoeffV = NULL; }
+                cachedCoeffNj = cachedCoeffNi = 0;
+            }
+        }
+
+        // B-spline prefilter: only when coefficients don't exist yet
+        if (!cachedCoeffU || !cachedCoeffV || cachedCoeffNj != nj || cachedCoeffNi != ni) {
+            if (cachedCoeffU) free(cachedCoeffU);
+            if (cachedCoeffV) free(cachedCoeffV);
+            cachedCoeffU = (float*)calloc(nj * ni, sizeof(float));
+            cachedCoeffV = (float*)calloc(nj * ni, sizeof(float));
+            if (cachedCoeffU && cachedCoeffV) {
+                double lonMin = factory->tlon, lonMax = factory->blon;
+                double gridSpacingLon = (lonMax - lonMin) / (ni - 1);
+                bool isGlobal = (lonMax - lonMin + gridSpacingLon >= 360);
+                ncdfOverlayFactory::PrefilterCoefficients(
+                    cachedCoeffU, cachedCoeffV, cachedU, cachedV,
+                    ni, nj, isGlobal,
+                    cachedCoefU_min, cachedCoefU_max, cachedCoefV_min, cachedCoefV_max);
+                cachedCoeffNj = nj; cachedCoeffNi = ni;
+            }
         }
         settings.uGrid = cachedU;
         settings.vGrid = cachedV;
+        settings.precompCoeffU = cachedCoeffU;
+        settings.precompCoeffV = cachedCoeffV;
+        settings.precompCoefU_min = cachedCoefU_min;
+        settings.precompCoefU_max = cachedCoefU_max;
+        settings.precompCoefV_min = cachedCoefV_min;
+        settings.precompCoefV_max = cachedCoefV_max;
     } else {
         settings.vectorMode = false;
         settings.uGrid = NULL;
         settings.vGrid = NULL;
+        settings.precompCoeffU = NULL;
+        settings.precompCoeffV = NULL;
     }
 
     // Compute speed range for shader normalization (only when data changes)
@@ -248,7 +369,7 @@ bool CurrentOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
         slopeGrid, hasVortTexture ? vortTexture : 0,
         &physicalTexID, &hasPhysicalTex);
 
-    // Cache coefMin/coefMax and physMin/physMax from RenderGridOverlay for subsequent frames
+    // Texture is now on GPU — release CPU-side data
     if (hasTexture) {
         cachedCoefMin = settings.dataMin;
         cachedCoefMax = settings.dataMax;
@@ -258,6 +379,12 @@ bool CurrentOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
         cachedPhysMax = settings.physMax;
         cachedPhysMinV = settings.physMinV;
         cachedPhysMaxV = settings.physMaxV;
+        // Free CPU caches — data is now on GPU
+        if (cachedGrid) { for (int j = 0; j < cachedNj; j++) delete[] cachedGrid[j]; cachedGrid.reset(); }
+        if (cachedU) { for (int j = 0; j < cachedNj; j++) delete[] cachedU[j]; delete[] cachedU; cachedU = NULL; }
+        if (cachedV) { for (int j = 0; j < cachedNj; j++) delete[] cachedV[j]; delete[] cachedV; cachedV = NULL; }
+        if (cachedCoeffU) { free(cachedCoeffU); cachedCoeffU = NULL; }
+        if (cachedCoeffV) { free(cachedCoeffV); cachedCoeffV = NULL; }
     }
 
     return true;
