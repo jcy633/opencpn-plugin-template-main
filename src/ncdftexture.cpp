@@ -420,9 +420,15 @@ static void FillVectorCoeffTex(TexBuildContext &ctx,
     float coefMinU, coefMaxU, coefMinV, coefMaxV;
 
     if (settings.precompCoeffU && settings.precompCoeffV) {
-        // Use pre-computed B-spline coefficients (cached from RenderColorMap)
+        // Use pre-computed B-spline coefficients (cached from prepareData)
         coefMinU = settings.precompCoefU_min; coefMaxU = settings.precompCoefU_max;
         coefMinV = settings.precompCoefV_min; coefMaxV = settings.precompCoefV_max;
+        // Set dataMin/Max to physical value range (coefRange * bsplineScale)
+        const float bsplineScale = 2.5858f;
+        settings.dataMin = coefMinU * bsplineScale;
+        settings.dataMax = coefMaxU * bsplineScale;
+        settings.dataMinV = coefMinV * bsplineScale;
+        settings.dataMaxV = coefMaxV * bsplineScale;
         // Build valid mask from uGrid
         unsigned char* validMask = (unsigned char*)calloc(nj * ni, 1);
         if (validMask && settings.uGrid && settings.vGrid) {

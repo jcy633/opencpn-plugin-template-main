@@ -103,6 +103,10 @@ void CurrentOverlay::prepareData(MainDialog *gui, ncdf_pi *plugin, ncdfOverlayFa
                 ni, nj, isGlobal,
                 cachedCoefU_min, cachedCoefU_max, cachedCoefV_min, cachedCoefV_max);
             cachedCoeffNj = nj; cachedCoeffNi = ni;
+            // Set physical value range for shader denormalization (coefRange * bsplineScale)
+            const float bsplineScale = 2.5858f;
+            cachedCoefMin = cachedCoefU_min * bsplineScale;
+            cachedCoefMax = cachedCoefU_max * bsplineScale;
         }
     }
 
@@ -149,11 +153,13 @@ bool CurrentOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
 
     // Texture reuse: GPU texture already exists, just draw it (view pan / refresh)
     if (hasTexture && !needsRebuild && !animatedGrid) {
+        ncdfLog("[perf] Current REUSE: cachedCoefMin=%f cachedCoefMax=%f hasTex=%d\n",
+            cachedCoefMin, cachedCoefMax, (int)hasTexture);
         ncdfOverlayFactory::RenderSettings settings;
         settings.smoothColors = false;
-        settings.vectorMode = false;
-        settings.uGrid = NULL;
-        settings.vGrid = NULL;
+        settings.vectorMode = true;  // Texture was created in vector mode (R=U, G=V)
+        settings.uGrid = cachedU;
+        settings.vGrid = cachedV;
         settings.precompCoeffU = NULL;
         settings.precompCoeffV = NULL;
         settings.dataMin = cachedCoefMin;
@@ -249,6 +255,8 @@ bool CurrentOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
     }
 
     // Use cached coefMin/coefMax if texture exists (set by RenderGridOverlay on first frame)
+    ncdfLog("[perf] Current RENDER: hasTex=%d coefMin=%f coefMax=%f dataMin=%f dataMax=%f\n",
+        (int)hasTexture, cachedCoefMin, cachedCoefMax, cachedDataMin, cachedDataMax);
     if (hasTexture) {
         settings.dataMin = cachedCoefMin;
         settings.dataMax = cachedCoefMax;
@@ -288,6 +296,9 @@ bool CurrentOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
 
     // Texture is now on GPU — release CPU-side data
     if (hasTexture) {
+        // Save physical value range (set by FillVectorCoeffMin: coefMin/Max * bsplineScale)
+        ncdfLog("[perf] Current SAVE: settings.dataMin=%f settings.dataMax=%f\n",
+            settings.dataMin, settings.dataMax);
         cachedCoefMin = settings.dataMin;
         cachedCoefMax = settings.dataMax;
         cachedDataMinV = settings.dataMinV;
