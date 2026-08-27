@@ -271,8 +271,8 @@ bool CurrentOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
         settings.dataMax = cachedDataMax;
         settings.dataMinV = 0.0f;
         settings.dataMaxV = 1.0f;
-        settings.physMin = 0.0f;
-        settings.physMax = 1.0f;
+        settings.physMin = cachedDataMin;   // Speed range for physical texture denormalization
+        settings.physMax = cachedDataMax;
         settings.physMinV = 0.0f;
         settings.physMaxV = 1.0f;
     }

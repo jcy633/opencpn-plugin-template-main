@@ -148,7 +148,7 @@ void SalinityOverlay::prepareData(MainDialog *gui, ncdf_pi *plugin, ncdfOverlayF
     auto t2 = std::chrono::high_resolution_clock::now();
 
     dataReady = true;
-    needsRebuild = false;
+    needsRebuild = true;  // Force texture rebuild on next render (has GL context)
     auto gridMs = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
     auto bsplineMs = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
     auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t0).count();

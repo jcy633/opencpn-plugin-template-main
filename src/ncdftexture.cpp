@@ -259,7 +259,8 @@ bool ncdfOverlayFactory::RenderScalarColorMap(
         settings.dataMinV = 0.0f; settings.dataMaxV = 1.0f;
         settings.physMinV = 0.0f; settings.physMaxV = 1.0f;
         settings.lutMin = lutMin; settings.lutMax = lutMax;
-        RenderGridOverlay(vp, (float**)(size_t)1, colorFunc, settings,
+        float** rebuildGrid = *st.p_cachedBaseGrid ? st.p_cachedBaseGrid->get() : NULL;
+        RenderGridOverlay(vp, rebuildGrid, colorFunc, settings,
             *st.p_glTexture, *st.p_hasTexture, *st.p_needsRebuild,
             st.p_dataDim, st.p_glDim, *st.p_lutID, *st.p_hasLUT,
             *st.p_uploadBuf, *st.p_uploadBufSize);
@@ -301,16 +302,19 @@ bool ncdfOverlayFactory::RenderScalarColorMap(
     settings.precompScalarCoefMax = *st.p_cachedCoefScalarMax;
     settings.precompScalarPhysMin = *st.p_cachedPhysScalarMin;
     settings.precompScalarPhysMax = *st.p_cachedPhysScalarMax;
+    // Use coefficient range for B-spline denormalization, physical range for fallback
     settings.dataMin = *st.p_cachedCoefMin;
     settings.dataMax = *st.p_cachedCoefMax;
-    settings.physMin = *st.p_cachedPhysMin;
-    settings.physMax = *st.p_cachedPhysMax;
+    settings.physMin = *st.p_cachedPhysScalarMin;  // Physical value range (from prepareData)
+    settings.physMax = *st.p_cachedPhysScalarMax;
     settings.dataMinV = 0.0f; settings.dataMaxV = 1.0f;
     settings.physMinV = 0.0f; settings.physMaxV = 1.0f;
     settings.lutMin = lutMin; settings.lutMax = lutMax;
 
-    float** gridPtr = animFloatGrid ? animFloatGrid :
-        (*st.p_cachedBaseGrid ? st.p_cachedBaseGrid->get() : (float**)(size_t)1);
+    float** gridPtr = animatedGrid ? (float**)animatedGrid :
+        (*st.p_cachedBaseGrid ? st.p_cachedBaseGrid->get() : NULL);
+    ncdfLog("[debug] RenderScalarColorMap: p_cachedBaseGrid=%p gridPtr=%p hasCoeff=%d\n",
+        (void*)st.p_cachedBaseGrid, (void*)gridPtr, (int)(*st.p_cachedCoeff != NULL));
     RenderGridOverlay(vp, gridPtr, colorFunc, settings,
         *st.p_glTexture, *st.p_hasTexture, *st.p_needsRebuild,
         st.p_dataDim, st.p_glDim, *st.p_lutID, *st.p_hasLUT,
@@ -523,6 +527,7 @@ static void FillScalarCoeffTex(TexBuildContext &ctx,
     int tw = ctx.tw, th = ctx.th, borderH = ctx.borderH;
     unsigned char *texData = ctx.texData;
     bool hasGrid = (grid && (uintptr_t)grid > 0x100);
+    int landTexCount = 0, oceanTexCount = 0;
     for (int j = 0; j < nj; j++) {
         int texRow = (ctx.gui->myMessage.jDirectionIncr >= 0) ? j : (nj - 1 - j);
         for (int i = 0; i < ni; i++) {
@@ -533,13 +538,18 @@ static void FillScalarCoeffTex(TexBuildContext &ctx,
             float val = hasGrid ? grid[j][i] : 0.0f;
             if (hasGrid && !isfinite(val)) {
                 texData[off] = 0; texData[off+1] = 0; texData[off+2] = 0; texData[off+3] = 0;
+                landTexCount++;
             } else {
                 texData[off]   = (unsigned char)(fminf(fmaxf((coeffBuf[k] - coefMin) / coefRange, 0.0f), 1.0f) * 255.0f + 0.5f);
                 texData[off+1] = (unsigned char)(fminf(fmaxf((val - physMin) / physRange, 0.0f), 1.0f) * 255.0f + 0.5f);
                 texData[off+2] = 0; texData[off+3] = 255;
+                oceanTexCount++;
             }
         }
     }
+
+    ncdfLog("[debug] FillScalarCoeffTex: land(alpha=0)=%d ocean=%d hasGrid=%d\n",
+        landTexCount, oceanTexCount, (int)hasGrid);
 
     const float bsplineScale = 2.5858f;
     settings.dataMin = coefMin * bsplineScale;

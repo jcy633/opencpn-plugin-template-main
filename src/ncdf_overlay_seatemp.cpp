@@ -66,13 +66,21 @@ void SeaTempOverlay::prepareData(MainDialog *gui, ncdf_pi *plugin, ncdfOverlayFa
     // 1. Build base grid as float (kept for first-frame texture build in RenderScalarColorMap)
     if (!cachedBaseGrid) {
         auto src = std::make_unique<float*[]>(nj);
+        int landCount = 0, oceanCount = 0;
         for (int j = 0; j < nj; j++) {
             src[j] = new float[ni];
             for (int i = 0; i < ni; i++) {
                 double val = gui->myMessage.getSST(i, j);
-                src[j][i] = (val == ncdf_NOTDEF || !isfinite(val)) ? NAN : (float)val;
+                if (val == ncdf_NOTDEF || !isfinite(val)) {
+                    src[j][i] = NAN;
+                    landCount++;
+                } else {
+                    src[j][i] = (float)val;
+                    oceanCount++;
+                }
             }
         }
+        ncdfLog("[debug] SeaTemp grid: land(NAN)=%d ocean=%d total=%d\n", landCount, oceanCount, landCount+oceanCount);
         cachedBaseGrid = std::move(src);
         cachedNj = nj; cachedNi = ni;
     }
@@ -110,6 +118,9 @@ void SeaTempOverlay::prepareData(MainDialog *gui, ncdf_pi *plugin, ncdfOverlayFa
                         if (val > pMax) pMax = val;
                     }
                 }
+            int maskLand = 0;
+            for (int k = 0; k < ni * nj; k++) if (!byteMask[k]) maskLand++;
+            ncdfLog("[debug] SeaTemp B-spline mask: land(byteMask=0)=%d ocean=%d\n", maskLand, ni*nj-maskLand);
             cachedPhysScalarMin = pMin;
             cachedPhysScalarMax = pMax;
 
@@ -157,7 +168,7 @@ void SeaTempOverlay::prepareData(MainDialog *gui, ncdf_pi *plugin, ncdfOverlayFa
     auto t2 = std::chrono::high_resolution_clock::now();
 
     dataReady = true;
-    needsRebuild = false;
+    needsRebuild = true;  // Force texture rebuild on next render (has GL context)
     auto gridMs = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
     auto bsplineMs = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
     auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t0).count();
