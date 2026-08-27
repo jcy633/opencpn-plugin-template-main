@@ -35,12 +35,10 @@ struct CurrentOverlay {
     unsigned char *uploadBuf;
     int uploadBufSize;
 
-    // Cached processed grid (sharpened / diffused), owns the 2D array
-    std::unique_ptr<double*[]> cachedGrid;
     int cachedNj, cachedNi;
 
-    // Cached U/V grids for vector mode (avoid per-frame rebuild)
-    double **cachedU, **cachedV;
+    // Cached U/V grids for vector mode (float, avoid per-frame rebuild)
+    float **cachedU, **cachedV;
     int cachedUNj, cachedVNi;
 
     // Cached B-spline coefficients for vector mode (computed once per data change)

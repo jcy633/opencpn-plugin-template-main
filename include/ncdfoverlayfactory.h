@@ -141,8 +141,8 @@ public:
          float physMin, physMax;
          float physMinV, physMaxV;
          bool vectorMode;
-         double** uGrid;
-         double** vGrid;
+         float** uGrid;
+         float** vGrid;
          // Pre-computed B-spline coefficients (skip prefilter if provided)
          float *precompCoeffU, *precompCoeffV;
          float precompCoefU_min, precompCoefU_max;
@@ -168,8 +168,7 @@ public:
          int *p_dataDim; int *p_glDim;
          GLuint *p_lutID; bool *p_hasLUT;
          unsigned char **p_uploadBuf; int *p_uploadBufSize;
-         std::unique_ptr<double*[]> *p_cachedGrid;
-         std::unique_ptr<double*[]> *p_cachedBaseGrid;  // base grid for re-filtering on settings change
+         std::unique_ptr<float*[]> *p_cachedBaseGrid;  // raw data grid (float), freed after first texture build
          int *p_cachedNj, *p_cachedNi;
          float *p_cachedDataMin, *p_cachedDataMax;
          float *p_cachedCoefMin, *p_cachedCoefMax;
@@ -197,7 +196,7 @@ public:
      static void FreeSharpenedGrid(double** grid, int nj);
      // B-spline prefilter wrapper for overlay use
      static void PrefilterCoefficients(float* coeffU, float* coeffV,
-                                        double** uGrid, double** vGrid,
+                                        float** uGrid, float** vGrid,
                                         int ni, int nj, bool isGlobal,
                                         float &coefU_min, float &coefU_max,
                                         float &coefV_min, float &coefV_max);
@@ -208,7 +207,7 @@ public:
                               double tlat, double tlon, double blat, double blon,
                               double jDirectionIncr);
      void RenderGridOverlay(PlugIn_ViewPort *vp,
-                            double **grid,
+                            float **grid,
                             ColorFunc colorFunc,
                             RenderSettings &settings,
                             GLuint &texID, bool &hasTex, bool &needsRebuild,

@@ -5,6 +5,7 @@
 #include "ncdfoverlayfactory.h"
 #include "shader/ncdf_shader.h"
 #include <cmath>
+#include <chrono>
 
 extern void ncdfLog(const char* format, ...);
 extern void BicubicSplinePrefilterWrapAware(float* dst, const float* src,
@@ -19,7 +20,7 @@ void SeaTempOverlay::Init() {
     glDim[0] = glDim[1] = 0;
     lutID = 0; hasLUT = false;
     uploadBuf = NULL; uploadBufSize = 0;
-    cachedGrid.reset(); cachedNj = cachedNi = 0;
+    cachedBaseGrid.reset(); cachedNj = cachedNi = 0;
     cachedDataMin = 0; cachedDataMax = 1;
     cachedCoefMin = 0; cachedCoefMax = 1;
     cachedPhysMin = 0; cachedPhysMax = 1;
@@ -35,10 +36,6 @@ void SeaTempOverlay::Cleanup() {
     if (hasTexture && glTexture) { glDeleteTextures(1, &glTexture); }
     if (hasLUT && lutID) { glDeleteTextures(1, &lutID); }
     if (uploadBuf) { free(uploadBuf); uploadBuf = NULL; }
-    if (cachedGrid) {
-        for (int j = 0; j < cachedNj; j++) delete[] cachedGrid[j];
-        cachedGrid.reset();
-    }
     if (cachedBaseGrid) {
         for (int j = 0; j < cachedNj; j++) delete[] cachedBaseGrid[j];
         cachedBaseGrid.reset();
@@ -52,87 +49,86 @@ void SeaTempOverlay::Invalidate() {
     needsIsoRebuild = true;
     if (hasLUT && lutID) { glDeleteTextures(1, &lutID); lutID = 0; }
     hasLUT = false;
-    // Clear processed grid — will be rebuilt from cachedBaseGrid in RenderColorMap
-    if (cachedGrid) {
-        for (int j = 0; j < cachedNj; j++) delete[] cachedGrid[j];
-        cachedGrid.reset();
-    }
 }
 
 void SeaTempOverlay::prepareData(MainDialog *gui, ncdf_pi *plugin, ncdfOverlayFactory *factory) {
+    ncdfLog("[perf] SeaTemp::prepareData ENTER, gui=%p hasSST=%d sst.size=%zu\n",
+        (void*)gui, gui ? (int)gui->myMessage.hasSSTData() : -1,
+        gui ? gui->myMessage.sst.size() : 0);
     if (!gui || !gui->myMessage.hasSSTData()) return;
     int ni = gui->myMessage.lonLength;
     int nj = gui->myMessage.latLength;
     if (ni < 2 || nj < 2) return;
 
-    // 1. Build SST grid
+    ncdfLog("[perf] SeaTemp::prepareData ni=%d nj=%d\n", ni, nj);
+    auto t0 = std::chrono::high_resolution_clock::now();
+
+    // 1. Build base grid as float (kept for first-frame texture build in RenderScalarColorMap)
     if (!cachedBaseGrid) {
-        auto src = std::make_unique<double*[]>(nj);
+        auto src = std::make_unique<float*[]>(nj);
         for (int j = 0; j < nj; j++) {
-            src[j] = new double[ni];
-            for (int i = 0; i < ni; i++) src[j][i] = gui->myMessage.getSST(i, j);
+            src[j] = new float[ni];
+            for (int i = 0; i < ni; i++) {
+                double val = gui->myMessage.getSST(i, j);
+                src[j][i] = (val == ncdf_NOTDEF || !isfinite(val)) ? NAN : (float)val;
+            }
         }
         cachedBaseGrid = std::move(src);
         cachedNj = nj; cachedNi = ni;
     }
-    // Always rebuild filtered grid from base grid (new data or settings change)
-    if (cachedGrid) { for (int j = 0; j < cachedNj; j++) delete[] cachedGrid[j]; cachedGrid.reset(); }
-    {
-        cachedGrid.reset(new double*[nj]);
-        for (int j = 0; j < nj; j++) {
-            cachedGrid[j] = new double[ni];
-            memcpy(cachedGrid[j], cachedBaseGrid[j], ni * sizeof(double));
-        }
-        if (plugin->m_settingsSeaTemp.anisoDiffusion) {
-            double** ad = ncdfOverlayFactory::BuildAnisoDiffusedGrid(cachedGrid.get(), nj, ni);
-            if (ad) { for (int j = 0; j < nj; j++) delete[] cachedGrid[j]; cachedGrid.reset(ad); }
-        }
-        if (plugin->m_settingsSeaTemp.sharpen) {
-            double** sh = ncdfOverlayFactory::BuildSharpenedGrid(cachedGrid.get(), nj, ni);
-            if (sh) { for (int j = 0; j < nj; j++) delete[] cachedGrid[j]; cachedGrid.reset(sh); }
-        }
 
-        double dMin = 1e30, dMax = -1e30;
-        for (int jj = 0; jj < nj; jj++)
-            for (int ii = 0; ii < ni; ii++) {
-                double v = cachedGrid[jj][ii];
-                if (v != ncdf_NOTDEF && v == v && isfinite(v)) {
-                    if (v < dMin) dMin = v; if (v > dMax) dMax = v;
-                }
+    // Compute data range from base grid
+    double dMin = 1e30, dMax = -1e30;
+    for (int jj = 0; jj < nj; jj++)
+        for (int ii = 0; ii < ni; ii++) {
+            float v = cachedBaseGrid[jj][ii];
+            if (isfinite(v)) {
+                if (v < dMin) dMin = v; if (v > dMax) dMax = v;
             }
-        cachedDataMin = (dMin < dMax) ? (float)dMin : 0;
-        cachedDataMax = (dMin < dMax) ? (float)dMax : 1;
-    }
+        }
+    cachedDataMin = (dMin < dMax) ? (float)dMin : 0;
+    cachedDataMax = (dMin < dMax) ? (float)dMax : 1;
+    auto t1 = std::chrono::high_resolution_clock::now();
 
-    // 2. Compute B-spline coefficients
+    // 2. Compute B-spline coefficients directly from float base grid
     if (!cachedCoeff || cachedCoeffNj != nj || cachedCoeffNi != ni) {
         if (cachedCoeff) { free(cachedCoeff); cachedCoeff = NULL; }
         float *coeffBuf = (float*)calloc(ni * nj, sizeof(float));
         unsigned char *byteMask = (unsigned char*)malloc(ni * nj);
-        if (coeffBuf && byteMask && cachedGrid) {
-            float *rawBuf = (float*)calloc(ni * nj, sizeof(float));
-            if (rawBuf) {
-                float pMin = 1e30f, pMax = -1e30f;
-                for (int j = 0; j < nj; j++)
-                    for (int i = 0; i < ni; i++) {
-                        int k = j * ni + i;
-                        double val = cachedGrid[j][i];
-                        if (val == ncdf_NOTDEF || isnan(val) || !isfinite(val)) {
-                            rawBuf[k] = 0; byteMask[k] = 0;
-                        } else {
-                            rawBuf[k] = (float)val; byteMask[k] = 1;
-                            if (rawBuf[k] < pMin) pMin = rawBuf[k];
-                            if (rawBuf[k] > pMax) pMax = rawBuf[k];
-                        }
+        if (coeffBuf && byteMask && cachedBaseGrid) {
+            // Build mask directly from float grid (no double→float conversion needed)
+            float pMin = 1e30f, pMax = -1e30f;
+            for (int j = 0; j < nj; j++)
+                for (int i = 0; i < ni; i++) {
+                    int k = j * ni + i;
+                    float val = cachedBaseGrid[j][i];
+                    if (!isfinite(val)) {
+                        coeffBuf[k] = 0; byteMask[k] = 0;
+                    } else {
+                        coeffBuf[k] = val; byteMask[k] = 1;
+                        if (val < pMin) pMin = val;
+                        if (val > pMax) pMax = val;
                     }
-                cachedPhysScalarMin = pMin;
-                cachedPhysScalarMax = pMax;
+                }
+            cachedPhysScalarMin = pMin;
+            cachedPhysScalarMax = pMax;
 
+            // B-spline prefilter: use coeffBuf as both input and output
+            // First copy to rawBuf, prefilter into coeffBuf
+            float *rawBuf = (float*)malloc(ni * nj * sizeof(float));
+            if (rawBuf) {
+                memcpy(rawBuf, coeffBuf, ni * nj * sizeof(float));
                 double lonMin = wxMin(gui->myMessage.firstGridPointLong, gui->myMessage.lastGridPointLong);
                 double lonMax = wxMax(gui->myMessage.firstGridPointLong, gui->myMessage.lastGridPointLong);
                 double gridSpacingLon = (lonMax - lonMin) / (ni - 1);
                 bool repeat = (lonMax - lonMin + gridSpacingLon >= 360);
+                ncdfLog("[perf] SeaTemp: calling B-spline, ni=%d nj=%d repeat=%d total_cells=%d\n",
+                    ni, nj, (int)repeat, ni*nj);
+                auto bs0 = std::chrono::high_resolution_clock::now();
                 BicubicSplinePrefilterWrapAware(coeffBuf, rawBuf, byteMask, ni, nj, repeat);
+                auto bs1 = std::chrono::high_resolution_clock::now();
+                ncdfLog("[perf] SeaTemp: B-spline done, %lldms\n",
+                    (long long)std::chrono::duration_cast<std::chrono::milliseconds>(bs1 - bs0).count());
                 free(rawBuf);
 
                 float cMin = 1e30f, cMax = -1e30f;
@@ -158,10 +154,15 @@ void SeaTempOverlay::prepareData(MainDialog *gui, ncdf_pi *plugin, ncdfOverlayFa
         if (coeffBuf) free(coeffBuf);
         if (byteMask) free(byteMask);
     }
+    auto t2 = std::chrono::high_resolution_clock::now();
 
     dataReady = true;
-    needsRebuild = false;  // Data is ready — RenderColorMap will just create textures
-    ncdfLog("[render] SeaTempOverlay::prepareData done, ni=%d nj=%d\n", ni, nj);
+    needsRebuild = false;
+    auto gridMs = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+    auto bsplineMs = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
+    auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t0).count();
+    ncdfLog("[perf] SeaTemp::prepareData ni=%d nj=%d grid=%lldms bspline=%lldms total=%lldms\n",
+        ni, nj, (long long)gridMs, (long long)bsplineMs, (long long)totalMs);
 }
 
 wxColour SeaTempOverlay::GetColor(double temp_c) {
@@ -192,7 +193,7 @@ bool SeaTempOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
     ncdfOverlayFactory::ScalarOverlayState st = {
         &glTexture, &hasTexture, &needsRebuild,
         dataDim, glDim, &lutID, &hasLUT, &uploadBuf, &uploadBufSize,
-        &cachedGrid, &cachedBaseGrid, &cachedNj, &cachedNi,
+        &cachedBaseGrid, &cachedNj, &cachedNi,
         &cachedDataMin, &cachedDataMax, &cachedCoefMin, &cachedCoefMax,
         &cachedPhysMin, &cachedPhysMax, &cachedPhysMinV, &cachedPhysMaxV,
         &cachedCoeff, &cachedCoefScalarMin, &cachedCoefScalarMax,
@@ -201,11 +202,9 @@ bool SeaTempOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
     bool ok = factory->RenderScalarColorMap(vp, gui, plugin, st,
         SeaTempOverlay::GetColor, -2.0f, 32.0f,
         HasSSTData, FillSSTGrid,
-        plugin->m_settingsSeaTemp.smoothColors,
-        plugin->m_settingsSeaTemp.sharpen,
-        plugin->m_settingsSeaTemp.anisoDiffusion,
+        false, false, false,
         animatedGrid);
-    s_smoothColors = plugin->m_settingsSeaTemp.smoothColors;
+    s_smoothColors = false;
     return ok;
 }
 

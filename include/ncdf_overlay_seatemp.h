@@ -33,11 +33,9 @@ struct SeaTempOverlay {
     unsigned char *uploadBuf;
     int uploadBufSize;
 
-    // Cached processed grid (sharpened / diffused), owns the 2D array
-    std::unique_ptr<double*[]> cachedGrid;
+    // Cached base grid (raw data from file, float), used for first-frame texture build
+    std::unique_ptr<float*[]> cachedBaseGrid;
     int cachedNj, cachedNi;
-    // Cached base grid (before sharpen/diffusion), for re-applying filters on settings change
-    std::unique_ptr<double*[]> cachedBaseGrid;
 
     // Cached data range (computed during rebuild, not every frame)
     float cachedDataMin, cachedDataMax;

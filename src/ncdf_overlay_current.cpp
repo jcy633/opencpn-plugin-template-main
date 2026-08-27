@@ -5,6 +5,7 @@
 #include "ncdfoverlayfactory.h"
 #include "shader/ncdf_shader.h"
 #include <cmath>
+#include <chrono>
 
 extern void ncdfLog(const char* format, ...);
 extern void BicubicSplinePrefilterWrapAware(float* dst, const float* src,
@@ -20,7 +21,7 @@ void CurrentOverlay::Init() {
     lutID = 0; hasLUT = false;
     physicalTexID = 0; hasPhysicalTex = false;
     uploadBuf = NULL; uploadBufSize = 0;
-    cachedGrid.reset(); cachedNj = cachedNi = 0;
+    cachedNj = cachedNi = 0;
     cachedU = NULL; cachedV = NULL; cachedUNj = cachedVNi = 0;
     cachedCoeffU = NULL; cachedCoeffV = NULL;
     cachedCoefU_min = cachedCoefU_max = cachedCoefV_min = cachedCoefV_max = 0;
@@ -41,10 +42,6 @@ void CurrentOverlay::Cleanup() {
     if (hasLUT && lutID) { glDeleteTextures(1, &lutID); }
     if (hasPhysicalTex && physicalTexID) { glDeleteTextures(1, &physicalTexID); }
     if (uploadBuf) { free(uploadBuf); uploadBuf = NULL; }
-    if (cachedGrid) {
-        for (int j = 0; j < cachedNj; j++) delete[] cachedGrid[j];
-        cachedGrid.reset();
-    }
     if (cachedU) { for (int j = 0; j < cachedUNj; j++) delete[] cachedU[j]; delete[] cachedU; cachedU = NULL; }
     if (cachedV) { for (int j = 0; j < cachedUNj; j++) delete[] cachedV[j]; delete[] cachedV; cachedV = NULL; }
     if (cachedCoeffU) { free(cachedCoeffU); cachedCoeffU = NULL; }
@@ -74,57 +71,24 @@ void CurrentOverlay::prepareData(MainDialog *gui, ncdf_pi *plugin, ncdfOverlayFa
     int nj = gui->myMessage.latLength;
     if (ni < 2 || nj < 2) return;
 
-    // 1. Build speed grid
-    if (!cachedGrid) {
-        auto src = std::make_unique<double*[]>(nj);
+    auto t0 = std::chrono::high_resolution_clock::now();
+
+    // 1. Build U/V grids as float
+    if (!cachedU || !cachedV) {
+        cachedU = new float*[nj]; cachedV = new float*[nj];
         for (int j = 0; j < nj; j++) {
-            src[j] = new double[ni];
+            cachedU[j] = new float[ni]; cachedV[j] = new float[ni];
             for (int i = 0; i < ni; i++) {
                 double u = gui->myMessage.getU(i, j), v = gui->myMessage.getV(i, j);
-                if (u == ncdf_NOTDEF || v == ncdf_NOTDEF || u != u || v != v)
-                    src[j][i] = ncdf_NOTDEF;
-                else
-                    src[j][i] = sqrt(u * u + v * v);
-            }
-        }
-        cachedGrid = std::move(src);
-        cachedNj = nj; cachedNi = ni;
-
-        if (plugin->m_settingsCurrent.anisoDiffusion) {
-            double** ad = ncdfOverlayFactory::BuildAnisoDiffusedGrid(cachedGrid.get(), nj, ni);
-            if (ad) { for (int j = 0; j < nj; j++) delete[] cachedGrid[j]; cachedGrid.reset(ad); }
-        }
-        if (plugin->m_settingsCurrent.sharpen) {
-            double** sh = ncdfOverlayFactory::BuildSharpenedGrid(cachedGrid.get(), nj, ni);
-            if (sh) { for (int j = 0; j < nj; j++) delete[] cachedGrid[j]; cachedGrid.reset(sh); }
-        }
-
-        // Compute data range
-        double dMin = 1e30, dMax = -1e30;
-        for (int jj = 0; jj < nj; jj++)
-            for (int ii = 0; ii < ni; ii++) {
-                double v = cachedGrid[jj][ii];
-                if (v != ncdf_NOTDEF && v == v && isfinite(v)) {
-                    if (v < dMin) dMin = v; if (v > dMax) dMax = v;
-                }
-            }
-        cachedDataMin = (dMin < dMax) ? (float)dMin : 0;
-        cachedDataMax = (dMin < dMax) ? (float)dMax : 1;
-    }
-
-    // 2. Build U/V grids + B-spline coefficients
-    if (!cachedU || !cachedV) {
-        cachedU = new double*[nj]; cachedV = new double*[nj];
-        for (int j = 0; j < nj; j++) {
-            cachedU[j] = new double[ni]; cachedV[j] = new double[ni];
-            for (int i = 0; i < ni; i++) {
-                cachedU[j][i] = gui->myMessage.getU(i, j);
-                cachedV[j][i] = gui->myMessage.getV(i, j);
+                cachedU[j][i] = (u == ncdf_NOTDEF || !isfinite(u)) ? NAN : (float)u;
+                cachedV[j][i] = (v == ncdf_NOTDEF || !isfinite(v)) ? NAN : (float)v;
             }
         }
         cachedUNj = nj; cachedVNi = ni;
     }
+    auto t1 = std::chrono::high_resolution_clock::now();
 
+    // 2. B-spline coefficients for U and V
     if (!cachedCoeffU || !cachedCoeffV || cachedCoeffNj != nj || cachedCoeffNi != ni) {
         if (cachedCoeffU) free(cachedCoeffU);
         if (cachedCoeffV) free(cachedCoeffV);
@@ -142,9 +106,28 @@ void CurrentOverlay::prepareData(MainDialog *gui, ncdf_pi *plugin, ncdfOverlayFa
         }
     }
 
+    // Compute speed range from U/V (for shader normalization)
+    float dMin = 1e30f, dMax = -1e30f;
+    for (int jj = 0; jj < nj; jj++)
+        for (int ii = 0; ii < ni; ii++) {
+            float u = cachedU[jj][ii], v = cachedV[jj][ii];
+            if (isfinite(u) && isfinite(v)) {
+                float spd = sqrtf(u * u + v * v);
+                if (spd < dMin) dMin = spd; if (spd > dMax) dMax = spd;
+            }
+        }
+    cachedDataMin = (dMin < dMax) ? dMin : 0;
+    cachedDataMax = (dMin < dMax) ? dMax : 1;
+
+    auto t3 = std::chrono::high_resolution_clock::now();
+
     dataReady = true;
-    needsRebuild = false;  // Data is ready — RenderColorMap will just create textures
-    ncdfLog("[render] CurrentOverlay::prepareData done, ni=%d nj=%d\n", ni, nj);
+    needsRebuild = false;
+    auto uvMs = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+    auto bsplineMs = std::chrono::duration_cast<std::chrono::milliseconds>(t3 - t1).count();
+    auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(t3 - t0).count();
+    ncdfLog("[perf] Current::prepareData ni=%d nj=%d uv_grid=%lldms bspline(U+V)=%lldms total=%lldms\n",
+        ni, nj, (long long)uvMs, (long long)bsplineMs, (long long)totalMs);
 }
 
 wxColour CurrentOverlay::GetColor(double val_in) {
@@ -164,13 +147,36 @@ bool CurrentOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
     int nj = gui->myMessage.latLength;
     if (ni < 2 || nj < 2) return false;
 
+    // Texture reuse: GPU texture already exists, just draw it (view pan / refresh)
+    if (hasTexture && !needsRebuild && !animatedGrid) {
+        ncdfOverlayFactory::RenderSettings settings;
+        settings.smoothColors = false;
+        settings.vectorMode = false;
+        settings.uGrid = NULL;
+        settings.vGrid = NULL;
+        settings.precompCoeffU = NULL;
+        settings.precompCoeffV = NULL;
+        settings.dataMin = cachedCoefMin;
+        settings.dataMax = cachedCoefMax;
+        settings.dataMinV = cachedDataMinV;
+        settings.dataMaxV = cachedDataMaxV;
+        settings.physMin = cachedPhysMin;
+        settings.physMax = cachedPhysMax;
+        settings.physMinV = cachedPhysMinV;
+        settings.physMaxV = cachedPhysMaxV;
+        settings.lutMin = 0.0f;
+        settings.lutMax = 1.5f;
+        factory->RenderGridOverlay(vp, (float**)(size_t)1,
+            CurrentOverlay::GetColor, settings,
+            glTexture, hasTexture, needsRebuild,
+            dataDim, glDim, lutID, hasLUT, uploadBuf, uploadBufSize,
+            NULL, 0,
+            &physicalTexID, &hasPhysicalTex);
+        return true;
+    }
+
     // If animated grid provided, use it directly (animation replaces static color map)
     if (animatedGrid) {
-        // Release old owned grid (animatedGrid is not owned by us)
-        if (cachedGrid) {
-            for (int j = 0; j < cachedNj; j++) delete[] cachedGrid[j];
-            cachedGrid.reset();
-        }
         cachedNj = nj; cachedNi = ni;
         // Compute data range from animated grid (speed)
         double dMin = 1e30, dMax = -1e30;
@@ -184,128 +190,33 @@ bool CurrentOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
         cachedDataMin = (dMin < dMax) ? (float)dMin : 0;
         cachedDataMax = (dMin < dMax) ? (float)dMax : 1;
         needsRebuild = true;  // force texture rebuild every animation frame
-    } else if (!cachedGrid) {
-        return false;
     } else {
-    // Compute speed grid on-the-fly from u/v (NaN-safe)
-    // Also serves as cached grid for aniso diffusion / sharpening
-    if (needsRebuild || !cachedGrid) {
-        // Only rebuild from myMessage if cachedGrid doesn't exist yet
-        if (!cachedGrid) {
-            cachedNj = nj; cachedNi = ni;
-            auto src = std::make_unique<double*[]>(nj);
-            for (int j = 0; j < nj; j++) {
-                src[j] = new double[ni];
-                for (int i = 0; i < ni; i++) {
-                    double u = gui->myMessage.getU(i, j), v = gui->myMessage.getV(i, j);
-                    if (u == ncdf_NOTDEF || v == ncdf_NOTDEF || u != u || v != v)
-                        src[j][i] = ncdf_NOTDEF;
-                    else
-                        src[j][i] = sqrt(u * u + v * v);
-                }
-            }
-            cachedGrid = std::move(src);
-        }
-        if (plugin->m_settingsCurrent.anisoDiffusion) {
-            double** ad = ncdfOverlayFactory::BuildAnisoDiffusedGrid(cachedGrid.get(), nj, ni);
-            if (ad) { for (int j = 0; j < nj; j++) delete[] cachedGrid[j]; cachedGrid.reset(ad); }
-        }
-        if (plugin->m_settingsCurrent.sharpen) {
-            double** sh = ncdfOverlayFactory::BuildSharpenedGrid(cachedGrid.get(), nj, ni);
-            if (sh) { for (int j=0;j<nj;j++) delete[] cachedGrid[j]; cachedGrid.reset(sh); }
-        }
-
-        // Cache data range during rebuild (not every frame)
-        if (cachedGrid) {
-            double dMin = 1e30, dMax = -1e30;
-            for (int jj = 0; jj < nj; jj++)
-                for (int ii = 0; ii < ni; ii++) {
-                    double v = cachedGrid[jj][ii];
-                    if (v != ncdf_NOTDEF && v == v && isfinite(v)) {
-                        if (v < dMin) dMin = v; if (v > dMax) dMax = v;
-                    }
-                }
-            cachedDataMin = (dMin < dMax) ? (float)dMin : 0;
-            cachedDataMax = (dMin < dMax) ? (float)dMax : 1;
-        }
-    }
-    } // end else (not animated)
-
-    // Slope shading (vorticity)
-    double** slopeGrid = NULL;
-    slopeSource = glTexture;
-    if (plugin->m_settingsCurrent.slopeShading && cachedU && cachedV) {
-        if (needsRebuild || !cachedVorticity) {
-            if (cachedVorticity) { for (int j=0;j<vortNj;j++) delete[] cachedVorticity[j]; }
-            cachedVorticity.reset();
-            // Build temporary 2D grids for vorticity computation
-            double** tmpU = new double*[nj], **tmpV = new double*[nj];
-            for (int j = 0; j < nj; j++) {
-                tmpU[j] = new double[ni]; tmpV[j] = new double[ni];
-                for (int i = 0; i < ni; i++) { tmpU[j][i] = gui->myMessage.getU(i, j); tmpV[j][i] = gui->myMessage.getV(i, j); }
-            }
-            cachedVorticity.reset(ncdfOverlayFactory::BuildVorticityGrid(tmpU, tmpV, nj, ni));
-            for (int j = 0; j < nj; j++) { delete[] tmpU[j]; delete[] tmpV[j]; }
-            delete[] tmpU; delete[] tmpV;
-            vortNj = nj; vortNi = ni;
-        }
-        slopeGrid = cachedVorticity.get();
-        // TODO: build vorticity texture for shader slope path
+        // Static mode: no speed grid needed — U/V grids and coefficients are cached
+        if (!cachedU || !cachedV || !cachedCoeffU || !cachedCoeffV) return false;
     }
 
     // Build shader settings
     ncdfOverlayFactory::RenderSettings settings;
-    settings.smoothColors = plugin->m_settingsCurrent.smoothColors;
+    settings.smoothColors = false;
 
     // Vector mode: pass u/v grids for shader-side speed computation
     if (animUGrid && animVGrid) {
-        // Animation mode: use advected u/v grids for vector interpolation
+        // Animation mode: convert advected double** grids to float**
         settings.vectorMode = true;
-        settings.uGrid = animUGrid;
-        settings.vGrid = animVGrid;
+        // Allocate temporary float grids for animation
+        float** animUF = new float*[nj]; float** animVF = new float*[nj];
+        for (int j = 0; j < nj; j++) {
+            animUF[j] = new float[ni]; animVF[j] = new float[ni];
+            for (int i = 0; i < ni; i++) {
+                animUF[j][i] = (float)animUGrid[j][i];
+                animVF[j][i] = (float)animVGrid[j][i];
+            }
+        }
+        settings.uGrid = animUF;
+        settings.vGrid = animVF;
     } else if (!animatedGrid && cachedU && cachedV) {
         // Static mode: use cached u/v grids (only rebuild when data changes)
         settings.vectorMode = true;
-        if (needsRebuild || !cachedU || !cachedV) {
-            // Only rebuild from myMessage if cachedU/V don't exist yet
-            if (!cachedU || !cachedV) {
-                if (cachedU) { for (int j = 0; j < cachedNj; j++) delete[] cachedU[j]; delete[] cachedU; }
-                if (cachedV) { for (int j = 0; j < cachedNj; j++) delete[] cachedV[j]; delete[] cachedV; }
-                cachedU = new double*[nj]; cachedV = new double*[nj];
-                for (int j = 0; j < nj; j++) {
-                    cachedU[j] = new double[ni]; cachedV[j] = new double[ni];
-                    for (int i = 0; i < ni; i++) {
-                        cachedU[j][i] = gui->myMessage.getU(i, j);
-                        cachedV[j][i] = gui->myMessage.getV(i, j);
-                    }
-                }
-                cachedUNj = nj; cachedVNi = ni;
-            }
-            // Only invalidate coefficients if dimensions changed
-            if (cachedCoeffNj != nj || cachedCoeffNi != ni) {
-                if (cachedCoeffU) { free(cachedCoeffU); cachedCoeffU = NULL; }
-                if (cachedCoeffV) { free(cachedCoeffV); cachedCoeffV = NULL; }
-                cachedCoeffNj = cachedCoeffNi = 0;
-            }
-        }
-
-        // B-spline prefilter: only when coefficients don't exist yet
-        if (!cachedCoeffU || !cachedCoeffV || cachedCoeffNj != nj || cachedCoeffNi != ni) {
-            if (cachedCoeffU) free(cachedCoeffU);
-            if (cachedCoeffV) free(cachedCoeffV);
-            cachedCoeffU = (float*)calloc(nj * ni, sizeof(float));
-            cachedCoeffV = (float*)calloc(nj * ni, sizeof(float));
-            if (cachedCoeffU && cachedCoeffV) {
-                double lonMin = factory->tlon, lonMax = factory->blon;
-                double gridSpacingLon = (lonMax - lonMin) / (ni - 1);
-                bool isGlobal = (lonMax - lonMin + gridSpacingLon >= 360);
-                ncdfOverlayFactory::PrefilterCoefficients(
-                    cachedCoeffU, cachedCoeffV, cachedU, cachedV,
-                    ni, nj, isGlobal,
-                    cachedCoefU_min, cachedCoefU_max, cachedCoefV_min, cachedCoefV_max);
-                cachedCoeffNj = nj; cachedCoeffNi = ni;
-            }
-        }
         settings.uGrid = cachedU;
         settings.vGrid = cachedV;
         settings.precompCoeffU = cachedCoeffU;
@@ -324,12 +235,12 @@ bool CurrentOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
 
     // Compute speed range for shader normalization (only when data changes)
     if (settings.vectorMode && settings.uGrid && settings.vGrid && (needsRebuild || !hasTexture)) {
-        double dMin = 1e30, dMax = -1e30;
+        float dMin = 1e30f, dMax = -1e30f;
         for (int jj = 0; jj < nj; jj++)
             for (int ii = 0; ii < ni; ii++) {
-                double u = settings.uGrid[jj][ii], v = settings.vGrid[jj][ii];
-                if (u != ncdf_NOTDEF && v != ncdf_NOTDEF && isfinite(u) && isfinite(v)) {
-                    double spd = sqrt(u*u + v*v);
+                float u = settings.uGrid[jj][ii], v = settings.vGrid[jj][ii];
+                if (isfinite(u) && isfinite(v)) {
+                    float spd = sqrtf(u*u + v*v);
                     if (spd < dMin) dMin = spd; if (spd > dMax) dMax = spd;
                 }
             }
@@ -361,13 +272,19 @@ bool CurrentOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
     settings.lutMax = 1.5f;
 
     s_smoothColors = settings.smoothColors;
-    double** renderGrid = animatedGrid ? animatedGrid : cachedGrid.get();
+    float** renderGrid = (float**)(size_t)1;
     factory->RenderGridOverlay(vp, renderGrid,
         CurrentOverlay::GetColor, settings,
         glTexture, hasTexture, needsRebuild,
         dataDim, glDim, lutID, hasLUT, uploadBuf, uploadBufSize,
-        slopeGrid, hasVortTexture ? vortTexture : 0,
+        NULL, 0,
         &physicalTexID, &hasPhysicalTex);
+
+    // Free temporary animation float grids
+    if (animUGrid && animVGrid && settings.uGrid != cachedU) {
+        for (int j = 0; j < nj; j++) { delete[] settings.uGrid[j]; delete[] settings.vGrid[j]; }
+        delete[] settings.uGrid; delete[] settings.vGrid;
+    }
 
     // Texture is now on GPU — release CPU-side data
     if (hasTexture) {
@@ -380,7 +297,6 @@ bool CurrentOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
         cachedPhysMinV = settings.physMinV;
         cachedPhysMaxV = settings.physMaxV;
         // Free CPU caches — data is now on GPU
-        if (cachedGrid) { for (int j = 0; j < cachedNj; j++) delete[] cachedGrid[j]; cachedGrid.reset(); }
         if (cachedU) { for (int j = 0; j < cachedNj; j++) delete[] cachedU[j]; delete[] cachedU; cachedU = NULL; }
         if (cachedV) { for (int j = 0; j < cachedNj; j++) delete[] cachedV[j]; delete[] cachedV; cachedV = NULL; }
         if (cachedCoeffU) { free(cachedCoeffU); cachedCoeffU = NULL; }

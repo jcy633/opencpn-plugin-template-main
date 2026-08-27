@@ -31,6 +31,8 @@
 #include "ncdf_pi.h"
 #include "IsoLine2.h"
 #include "shader/ncdf_shader.h"
+#include <chrono>
+#include <thread>
 #include <wx/colour.h>
 #include <wx/dynarray.h>
 
@@ -166,6 +168,14 @@ void ncdfOverlayFactory::setData(MainDialog *gui, ncdf_pi *plugin, const ncdfDat
 	m_currentOverlay.Invalidate();
 	m_seaTempOverlay.Invalidate();
 	m_salinityOverlay.Invalidate();
+	// Clear cached B-spline coefficients (stale from previous time step)
+	if (m_currentOverlay.cachedCoeffU) { free(m_currentOverlay.cachedCoeffU); m_currentOverlay.cachedCoeffU = NULL; }
+	if (m_currentOverlay.cachedCoeffV) { free(m_currentOverlay.cachedCoeffV); m_currentOverlay.cachedCoeffV = NULL; }
+	m_currentOverlay.cachedCoeffNj = m_currentOverlay.cachedCoeffNi = 0;
+	if (m_seaTempOverlay.cachedCoeff) { free(m_seaTempOverlay.cachedCoeff); m_seaTempOverlay.cachedCoeff = NULL; }
+	m_seaTempOverlay.cachedCoeffNj = m_seaTempOverlay.cachedCoeffNi = 0;
+	if (m_salinityOverlay.cachedCoeff) { free(m_salinityOverlay.cachedCoeff); m_salinityOverlay.cachedCoeff = NULL; }
+	m_salinityOverlay.cachedCoeffNj = m_salinityOverlay.cachedCoeffNi = 0;
 	ClearParticles();
 	m_last_vp_scale = -1;
 	m_last_vp_latMax = -99999.0;
@@ -180,10 +190,12 @@ void ncdfOverlayFactory::setData(MainDialog *gui, ncdf_pi *plugin, const ncdfDat
 		if (m_currentOverlay.cachedCoeffV) { free(m_currentOverlay.cachedCoeffV); m_currentOverlay.cachedCoeffV = NULL; }
 	}
 	if (!(plugin && plugin->m_bShowSeaTemp)) {
-		if (m_seaTempOverlay.cachedGrid) { for (int j = 0; j < m_seaTempOverlay.cachedNj; j++) delete[] m_seaTempOverlay.cachedGrid[j]; m_seaTempOverlay.cachedGrid.reset(); }
+		if (m_seaTempOverlay.cachedBaseGrid) { for (int j = 0; j < m_seaTempOverlay.cachedNj; j++) delete[] m_seaTempOverlay.cachedBaseGrid[j]; m_seaTempOverlay.cachedBaseGrid.reset(); }
+		if (m_seaTempOverlay.cachedCoeff) { free(m_seaTempOverlay.cachedCoeff); m_seaTempOverlay.cachedCoeff = NULL; }
 	}
 	if (!(plugin && plugin->m_bShowSalinity)) {
-		if (m_salinityOverlay.cachedGrid) { for (int j = 0; j < m_salinityOverlay.cachedNj; j++) delete[] m_salinityOverlay.cachedGrid[j]; m_salinityOverlay.cachedGrid.reset(); }
+		if (m_salinityOverlay.cachedBaseGrid) { for (int j = 0; j < m_salinityOverlay.cachedNj; j++) delete[] m_salinityOverlay.cachedBaseGrid[j]; m_salinityOverlay.cachedBaseGrid.reset(); }
+		if (m_salinityOverlay.cachedCoeff) { free(m_salinityOverlay.cachedCoeff); m_salinityOverlay.cachedCoeff = NULL; }
 	}
 
 	// Don't deep copy data — use gui->myMessage directly (avoids 140MB copy for global data)
@@ -216,20 +228,38 @@ void ncdfOverlayFactory::prepareAllOverlays()
     ncdfLog("[render] prepareAllOverlays: ENTER, hasCurrent=%d hasSST=%d hasSal=%d\n",
         (int)gui->myMessage.hasCurrent(), (int)gui->myMessage.hasSSTData(), (int)gui->myMessage.hasSalData());
 
+    auto t0 = std::chrono::high_resolution_clock::now();
+
     // Clear base grids from previous time step (forces rebuild from new data)
     m_seaTempOverlay.cachedBaseGrid.reset();
     m_salinityOverlay.cachedBaseGrid.reset();
 
-    // Precompute grids + B-spline coefficients for all available data types
-    if (gui->myMessage.hasCurrent()) {
-        m_currentOverlay.prepareData(gui, plugin, this);
+    // Launch all available overlay computations in parallel
+    bool hasCurr = gui->myMessage.hasCurrent();
+    bool hasSST = gui->myMessage.hasSSTData();
+    bool hasSal = gui->myMessage.hasSalData();
+
+    std::thread tCurr, tSST, tSal;
+    if (hasCurr) {
+        tCurr = std::thread([this]() {
+            m_currentOverlay.prepareData(gui, plugin, this);
+        });
     }
-    if (gui->myMessage.hasSSTData()) {
-        m_seaTempOverlay.prepareData(gui, plugin, this);
+    if (hasSST) {
+        tSST = std::thread([this]() {
+            m_seaTempOverlay.prepareData(gui, plugin, this);
+        });
     }
-    if (gui->myMessage.hasSalData()) {
-        m_salinityOverlay.prepareData(gui, plugin, this);
+    if (hasSal) {
+        tSal = std::thread([this]() {
+            m_salinityOverlay.prepareData(gui, plugin, this);
+        });
     }
+
+    // Wait for all threads to complete
+    if (hasCurr && tCurr.joinable()) tCurr.join();
+    if (hasSST && tSST.joinable()) tSST.join();
+    if (hasSal && tSal.joinable()) tSal.join();
 
     // Free CPU-side raw data — all computations are now cached in overlay structs
     // Texture upload will happen lazily on first RenderColorMap (needs GL context)
@@ -238,6 +268,9 @@ void ncdfOverlayFactory::prepareAllOverlays()
     gui->myMessage.sst.clear();
     gui->myMessage.salinity.clear();
 
+    auto t1 = std::chrono::high_resolution_clock::now();
+    auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+    ncdfLog("[perf] prepareAllOverlays: TOTAL=%lldms (parallel)\n", (long long)totalMs);
     ncdfLog("[render] prepareAllOverlays: DONE, CPU data freed\n");
 }
 
@@ -432,9 +465,9 @@ void ncdfOverlayFactory::RenderCurrentOverlay(PlugIn_ViewPort *vp, double **anim
         glDisable(GL_TEXTURE_2D);
         glBindTexture(GL_TEXTURE_2D, 0);
         m_currentInterpMode = 0;
-        m_currentSmoothColors = plugin->m_settingsCurrent.smoothColors;
-        m_currentSCurve = plugin->m_settingsCurrent.sCurve;
-        m_currentSlopeShading = plugin->m_settingsCurrent.slopeShading;
+        m_currentSmoothColors = false;
+        m_currentSCurve = false;
+        m_currentSlopeShading = false;
         m_currentSlopeMode = 0;
         m_currentOverlay.RenderColorMap(vp, gui, plugin, this, animGrid, animUGrid, animVGrid);
         m_currentDataMin = m_currentOverlay.cachedDataMin;
@@ -451,9 +484,9 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp, double **anim
         ncdfLog("[render] RenderSeaTempOverlay: ENTER, needsRebuild=%d hasTexture=%d sst.size=%zu\n",
             (int)m_seaTempOverlay.needsRebuild, (int)m_seaTempOverlay.hasTexture, gui->myMessage.sst.size());
         m_currentInterpMode = 0;
-        m_currentSmoothColors = plugin->m_settingsSeaTemp.smoothColors;
-        m_currentSCurve = plugin->m_settingsSeaTemp.sCurve;
-        m_currentSlopeShading = plugin->m_settingsSeaTemp.slopeShading;
+        m_currentSmoothColors = false;
+        m_currentSCurve = false;
+        m_currentSlopeShading = false;
         m_currentSlopeMode = 1;
         m_seaTempOverlay.RenderColorMap(vp, gui, plugin, this, animGrid);
         m_currentDataMin = m_seaTempOverlay.cachedDataMin;
@@ -472,9 +505,9 @@ void ncdfOverlayFactory::RenderSalinityOverlay(PlugIn_ViewPort *vp, double **ani
     if (plugin->m_bShowSalinity && gui && m_salinityOverlay.dataReady && !m_pdc) {
 #ifdef ocpnUSE_GL
         m_currentInterpMode = 0;
-        m_currentSmoothColors = plugin->m_settingsSalinity.smoothColors;
-        m_currentSCurve = plugin->m_settingsSalinity.sCurve;
-        m_currentSlopeShading = plugin->m_settingsSalinity.slopeShading;
+        m_currentSmoothColors = false;
+        m_currentSCurve = false;
+        m_currentSlopeShading = false;
         m_currentSlopeMode = 0;
         m_salinityOverlay.RenderColorMap(vp, gui, plugin, this, animGrid);
         m_currentDataMin = m_salinityOverlay.cachedDataMin;

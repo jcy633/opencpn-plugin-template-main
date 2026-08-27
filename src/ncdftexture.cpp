@@ -7,6 +7,7 @@
 #include "ncdf_pi.h"
 #include "ncdfdata.h"
 #include "shader/ncdf_shader.h"
+#include <thread>
 
 extern void ncdfLog(const char* format, ...);
 
@@ -157,7 +158,7 @@ void BicubicSplinePrefilterWrapAware(float* dst, const float* src,
 //===================================================================
 void ncdfOverlayFactory::PrefilterCoefficients(
     float* coeffU, float* coeffV,
-    double** uGrid, double** vGrid,
+    float** uGrid, float** vGrid,
     int ni, int nj, bool isGlobal,
     float &coefU_min, float &coefU_max,
     float &coefV_min, float &coefV_max)
@@ -171,15 +172,18 @@ void ncdfOverlayFactory::PrefilterCoefficients(
     }
     for (int j = 0; j < nj; j++)
         for (int i = 0; i < ni; i++) {
-            double u = uGrid[j][i], v = vGrid[j][i];
-            if (u == ncdf_NOTDEF || v == ncdf_NOTDEF || !isfinite(u) || !isfinite(v)) {
+            float u = uGrid[j][i], v = vGrid[j][i];
+            if (!isfinite(u) || !isfinite(v)) {
                 rawU[j*ni+i] = 0; rawV[j*ni+i] = 0; validMask[j*ni+i] = 0;
             } else {
-                rawU[j*ni+i] = (float)u; rawV[j*ni+i] = (float)v; validMask[j*ni+i] = 1;
+                rawU[j*ni+i] = u; rawV[j*ni+i] = v; validMask[j*ni+i] = 1;
             }
         }
-    BicubicSplinePrefilterWrapAware(coeffU, rawU, validMask, ni, nj, isGlobal);
-    BicubicSplinePrefilterWrapAware(coeffV, rawV, validMask, ni, nj, isGlobal);
+    // B-spline prefilter U and V in parallel (independent buffers, shared read-only mask)
+    std::thread tU([&]() { BicubicSplinePrefilterWrapAware(coeffU, rawU, validMask, ni, nj, isGlobal); });
+    std::thread tV([&]() { BicubicSplinePrefilterWrapAware(coeffV, rawV, validMask, ni, nj, isGlobal); });
+    tU.join();
+    tV.join();
     coefU_min = 1e30f; coefU_max = -1e30f;
     coefV_min = 1e30f; coefV_max = -1e30f;
     for (int k = 0; k < nj * ni; k++) {
@@ -211,177 +215,119 @@ bool ncdfOverlayFactory::RenderScalarColorMap(
     int nj = gui->myMessage.latLength;
     if (ni < 2 || nj < 2) return false;
 
-    if (animatedGrid) {
-        // Animation: use provided grid directly
-        if (*st.p_cachedGrid) {
-            for (int j = 0; j < *st.p_cachedNj; j++) delete[] (*st.p_cachedGrid)[j];
-            st.p_cachedGrid->reset();
-        }
-        *st.p_cachedNj = nj; *st.p_cachedNi = ni;
-        double dMin = 1e30, dMax = -1e30;
-        for (int jj = 0; jj < nj; jj++)
-            for (int ii = 0; ii < ni; ii++) {
-                double v = animatedGrid[jj][ii];
-                if (v != ncdf_NOTDEF && v == v && isfinite(v)) {
-                    if (v < dMin) dMin = v; if (v > dMax) dMax = v;
-                }
-            }
-        *st.p_cachedDataMin = (dMin < dMax) ? (float)dMin : 0;
-        *st.p_cachedDataMax = (dMin < dMax) ? (float)dMax : 1;
-        *st.p_needsRebuild = true;
-    } else if (!hasData(*gui) && !*st.p_cachedGrid) {
-        return false;
-    } else {
-        if (*st.p_needsRebuild || !*st.p_cachedGrid) {
-            ncdfLog("[render] RenderScalarColorMap: rebuilding grid, needsRebuild=%d cachedGrid=%p\n",
-                (int)*st.p_needsRebuild, (void*)st.p_cachedGrid->get());
-            // Only call fillGrid if cachedGrid doesn't exist yet (first time or new file)
-            // If cachedGrid exists from prepareData, just apply filters
-            if (!*st.p_cachedGrid) {
-                *st.p_cachedNj = nj; *st.p_cachedNi = ni;
-                // Try cachedBaseGrid first (prepared by prepareData, survives Invalidate)
-                if (*st.p_cachedBaseGrid) {
-                    st.p_cachedGrid->reset(new(std::nothrow) double*[nj]);
-                    for (int j = 0; j < nj; j++) {
-                        (*st.p_cachedGrid)[j] = new(std::nothrow) double[ni];
-                        memcpy((*st.p_cachedGrid)[j], (*st.p_cachedBaseGrid)[j], ni * sizeof(double));
-                    }
-                } else {
-                    fillGrid(*gui, *st.p_cachedGrid, nj, ni);
-                }
-            }
-            if (anisoDiffusion) {
-                double** ad = BuildAnisoDiffusedGrid(st.p_cachedGrid->get(), nj, ni);
-                if (ad) { for (int j = 0; j < nj; j++) delete[] (*st.p_cachedGrid)[j]; st.p_cachedGrid->reset(ad); }
-            }
-            if (sharpen) {
-                double** sh = BuildSharpenedGrid(st.p_cachedGrid->get(), nj, ni);
-                if (sh) { for (int j = 0; j < nj; j++) delete[] (*st.p_cachedGrid)[j]; st.p_cachedGrid->reset(sh); }
-            }
-            if (*st.p_cachedGrid) {
-                double dMin = 1e30, dMax = -1e30;
-                for (int jj = 0; jj < nj; jj++)
-                    for (int ii = 0; ii < ni; ii++) {
-                        double v = (*st.p_cachedGrid)[jj][ii];
-                        if (v != ncdf_NOTDEF && v == v && isfinite(v)) {
-                            if (v < dMin) dMin = v; if (v > dMax) dMax = v;
-                        }
-                    }
-                *st.p_cachedDataMin = (dMin < dMax) ? (float)dMin : 0;
-                *st.p_cachedDataMax = (dMin < dMax) ? (float)dMax : 1;
-            }
-        }
+    // Texture reuse: GPU texture already exists, just draw it (view pan / refresh)
+    if (*st.p_hasTexture && !*st.p_needsRebuild && !animatedGrid) {
+        RenderSettings settings;
+        settings.smoothColors = smoothColors;
+        settings.vectorMode = false;
+        settings.uGrid = NULL;
+        settings.vGrid = NULL;
+        settings.precompCoeffU = NULL;
+        settings.precompCoeffV = NULL;
+        settings.precompScalarCoeff = NULL;
+        settings.dataMin = *st.p_cachedCoefMin;
+        settings.dataMax = *st.p_cachedCoefMax;
+        settings.physMin = *st.p_cachedPhysMin;
+        settings.physMax = *st.p_cachedPhysMax;
+        settings.dataMinV = 0.0f; settings.dataMaxV = 1.0f;
+        settings.physMinV = 0.0f; settings.physMaxV = 1.0f;
+        settings.lutMin = lutMin;
+        settings.lutMax = lutMax;
+        RenderGridOverlay(vp, (float**)(size_t)1, colorFunc, settings,
+            *st.p_glTexture, *st.p_hasTexture, *st.p_needsRebuild,
+            st.p_dataDim, st.p_glDim, *st.p_lutID, *st.p_hasLUT,
+            *st.p_uploadBuf, *st.p_uploadBufSize);
+        return true;
     }
 
-    // Compute B-spline coefficients once and cache (expensive for large grids)
-    if (*st.p_needsRebuild || !*st.p_cachedCoeff || *st.p_cachedCoeffNj != nj || *st.p_cachedCoeffNi != ni) {
-        if (*st.p_cachedCoeff) { free(*st.p_cachedCoeff); *st.p_cachedCoeff = NULL; }
-        ncdfLog("[render] RenderScalarColorMap: computing B-spline coefficients, ni=%d nj=%d\n", ni, nj);
-        float *coeffBuf = (float*)calloc(ni * nj, sizeof(float));
-        unsigned char *byteMask = (unsigned char*)malloc(ni * nj);
-        if (coeffBuf && byteMask && *st.p_cachedGrid) {
-            // Build mask and float data from cached grid
-            float *rawBuf = (float*)calloc(ni * nj, sizeof(float));
-            if (rawBuf) {
-                float pMin = 1e30f, pMax = -1e30f;
-                for (int j = 0; j < nj; j++)
-                    for (int i = 0; i < ni; i++) {
-                        int k = j * ni + i;
-                        double val = (*st.p_cachedGrid)[j][i];
-                        if (val == ncdf_NOTDEF || isnan(val) || !isfinite(val)) {
-                            rawBuf[k] = 0; byteMask[k] = 0;
-                        } else {
-                            rawBuf[k] = (float)val; byteMask[k] = 1;
-                            if (rawBuf[k] < pMin) pMin = rawBuf[k];
-                            if (rawBuf[k] > pMax) pMax = rawBuf[k];
-                        }
-                    }
-                *st.p_cachedPhysScalarMin = pMin;
-                *st.p_cachedPhysScalarMax = pMax;
-
-                // Compute repeat from message data (same logic as RenderGridOverlay)
-                double lonMin = wxMin(gui->myMessage.firstGridPointLong, gui->myMessage.lastGridPointLong);
-                double lonMax = wxMax(gui->myMessage.firstGridPointLong, gui->myMessage.lastGridPointLong);
-                double gridSpacingLon = (lonMax - lonMin) / (ni - 1);
-                bool repeat = (lonMax - lonMin + gridSpacingLon >= 360);
-                BicubicSplinePrefilterWrapAware(coeffBuf, rawBuf, byteMask, ni, nj, repeat);
-                free(rawBuf);
-
-                // Scan coefficient range
-                float cMin = 1e30f, cMax = -1e30f;
-                for (int k = 0; k < ni * nj; k++) {
-                    if (!byteMask[k]) continue;
-                    if (coeffBuf[k] < cMin) cMin = coeffBuf[k];
-                    if (coeffBuf[k] > cMax) cMax = coeffBuf[k];
-                }
-                if (cMax <= cMin) { cMin = 0; cMax = 1; }
-                *st.p_cachedCoefScalarMin = cMin;
-                *st.p_cachedCoefScalarMax = cMax;
-                // Sync shader denormalization range immediately
-                // (dataMin/Max = coefRange * bsplineScale)
-                const float bsplineScale = 2.5858f;
-                *st.p_cachedCoefMin = cMin * bsplineScale;
-                *st.p_cachedCoefMax = cMax * bsplineScale;
-                *st.p_cachedPhysMin = *st.p_cachedPhysScalarMin;
-                *st.p_cachedPhysMax = *st.p_cachedPhysScalarMax;
-                *st.p_cachedCoeff = coeffBuf;
-                coeffBuf = NULL;  // Ownership transferred to cache
-                *st.p_cachedCoeffNj = nj;
-                *st.p_cachedCoeffNi = ni;
-                ncdfLog("[render] RenderScalarColorMap: B-spline cached, coefMin=%f coefMax=%f\n", cMin, cMax);
-            } else {
-                free(coeffBuf); coeffBuf = NULL;
-            }
-        } else {
-            if (coeffBuf) { free(coeffBuf); coeffBuf = NULL; }
+    // Texture missing but coefficients exist — recreate texture without recomputing
+    if (*st.p_cachedCoeff && !*st.p_hasTexture && !animatedGrid) {
+        RenderSettings settings;
+        settings.smoothColors = smoothColors;
+        settings.vectorMode = false;
+        settings.uGrid = NULL; settings.vGrid = NULL;
+        settings.precompCoeffU = NULL; settings.precompCoeffV = NULL;
+        settings.precompScalarCoeff = *st.p_cachedCoeff;
+        settings.precompScalarCoefMin = *st.p_cachedCoefScalarMin;
+        settings.precompScalarCoefMax = *st.p_cachedCoefScalarMax;
+        settings.precompScalarPhysMin = *st.p_cachedPhysScalarMin;
+        settings.precompScalarPhysMax = *st.p_cachedPhysScalarMax;
+        settings.dataMin = *st.p_cachedCoefMin;
+        settings.dataMax = *st.p_cachedCoefMax;
+        settings.physMin = *st.p_cachedPhysMin;
+        settings.physMax = *st.p_cachedPhysMax;
+        settings.dataMinV = 0.0f; settings.dataMaxV = 1.0f;
+        settings.physMinV = 0.0f; settings.physMaxV = 1.0f;
+        settings.lutMin = lutMin; settings.lutMax = lutMax;
+        RenderGridOverlay(vp, (float**)(size_t)1, colorFunc, settings,
+            *st.p_glTexture, *st.p_hasTexture, *st.p_needsRebuild,
+            st.p_dataDim, st.p_glDim, *st.p_lutID, *st.p_hasLUT,
+            *st.p_uploadBuf, *st.p_uploadBufSize);
+        if (*st.p_hasTexture) {
+            *st.p_cachedCoefMin = settings.dataMin;
+            *st.p_cachedCoefMax = settings.dataMax;
+            *st.p_cachedPhysMin = settings.physMin;
+            *st.p_cachedPhysMax = settings.physMax;
         }
-        if (byteMask) free(byteMask);
+        *st.p_needsRebuild = false;
+        return true;
+    }
+
+    // First frame: need coefficients and texture
+    if (!*st.p_cachedCoeff) return false;
+
+    // Convert animation grid (double**) to float** if needed
+    float** animFloatGrid = NULL;
+    if (animatedGrid) {
+        animFloatGrid = (float**)malloc(nj * sizeof(float*));
+        if (animFloatGrid) {
+            for (int j = 0; j < nj; j++) {
+                animFloatGrid[j] = (float*)malloc(ni * sizeof(float));
+                for (int i = 0; i < ni; i++) {
+                    double val = animatedGrid[j][i];
+                    animFloatGrid[j][i] = (val == ncdf_NOTDEF || !isfinite(val)) ? NAN : (float)val;
+                }
+            }
+        }
     }
 
     RenderSettings settings;
     settings.smoothColors = smoothColors;
     settings.vectorMode = false;
-    settings.uGrid = NULL;
-    settings.vGrid = NULL;
-    settings.precompCoeffU = NULL;
-    settings.precompCoeffV = NULL;
-    // Pass cached scalar B-spline coefficients to FillScalarCoeffTex
+    settings.uGrid = NULL; settings.vGrid = NULL;
+    settings.precompCoeffU = NULL; settings.precompCoeffV = NULL;
     settings.precompScalarCoeff = *st.p_cachedCoeff;
     settings.precompScalarCoefMin = *st.p_cachedCoefScalarMin;
     settings.precompScalarCoefMax = *st.p_cachedCoefScalarMax;
     settings.precompScalarPhysMin = *st.p_cachedPhysScalarMin;
     settings.precompScalarPhysMax = *st.p_cachedPhysScalarMax;
-    if (*st.p_hasTexture) {
-        settings.dataMin = *st.p_cachedCoefMin;
-        settings.dataMax = *st.p_cachedCoefMax;
-        settings.physMin = *st.p_cachedPhysMin;
-        settings.physMax = *st.p_cachedPhysMax;
-    } else {
-        settings.dataMin = *st.p_cachedDataMin;
-        settings.dataMax = *st.p_cachedDataMax;
-        settings.physMin = 0.0f;
-        settings.physMax = 1.0f;
-    }
+    settings.dataMin = *st.p_cachedCoefMin;
+    settings.dataMax = *st.p_cachedCoefMax;
+    settings.physMin = *st.p_cachedPhysMin;
+    settings.physMax = *st.p_cachedPhysMax;
     settings.dataMinV = 0.0f; settings.dataMaxV = 1.0f;
     settings.physMinV = 0.0f; settings.physMaxV = 1.0f;
-    settings.lutMin = lutMin;
-    settings.lutMax = lutMax;
+    settings.lutMin = lutMin; settings.lutMax = lutMax;
 
-    double** renderGrid = animatedGrid ? animatedGrid : st.p_cachedGrid->get();
-    ncdfLog("[render] RenderScalarColorMap: calling RenderGridOverlay, grid=%p hasTex=%d needsRebuild=%d\n",
-        (void*)renderGrid, (int)*st.p_hasTexture, (int)*st.p_needsRebuild);
-    RenderGridOverlay(vp, renderGrid, colorFunc, settings,
+    float** gridPtr = animFloatGrid ? animFloatGrid :
+        (*st.p_cachedBaseGrid ? st.p_cachedBaseGrid->get() : (float**)(size_t)1);
+    RenderGridOverlay(vp, gridPtr, colorFunc, settings,
         *st.p_glTexture, *st.p_hasTexture, *st.p_needsRebuild,
         st.p_dataDim, st.p_glDim, *st.p_lutID, *st.p_hasLUT,
         *st.p_uploadBuf, *st.p_uploadBufSize);
-    ncdfLog("[render] RenderScalarColorMap: RenderGridOverlay done\n");
 
-    // Texture is now on GPU — release CPU-side coefficient cache and grid
+    // Free temporary animation float grid
+    if (animFloatGrid) {
+        for (int j = 0; j < nj; j++) free(animFloatGrid[j]);
+        free(animFloatGrid);
+    }
+
+    // Texture is now on GPU — release CPU-side coefficient cache and base grid
     if (*st.p_cachedCoeff) { free(*st.p_cachedCoeff); *st.p_cachedCoeff = NULL; }
     *st.p_cachedCoeffNj = *st.p_cachedCoeffNi = 0;
-    if (*st.p_cachedGrid) {
-        for (int j = 0; j < *st.p_cachedNj; j++) delete[] (*st.p_cachedGrid)[j];
-        st.p_cachedGrid->reset();
+    if (*st.p_cachedBaseGrid) {
+        for (int j = 0; j < *st.p_cachedNj; j++) delete[] (*st.p_cachedBaseGrid)[j];
+        st.p_cachedBaseGrid->reset();
     }
 
     if (*st.p_hasTexture) {
@@ -482,8 +428,8 @@ static void FillVectorCoeffTex(TexBuildContext &ctx,
         if (validMask && settings.uGrid && settings.vGrid) {
             for (int j = 0; j < nj; j++)
                 for (int i = 0; i < ni; i++) {
-                    double u = settings.uGrid[j][i], v = settings.vGrid[j][i];
-                    validMask[j*ni+i] = (u != ncdf_NOTDEF && v != ncdf_NOTDEF && isfinite(u) && isfinite(v)) ? 1 : 0;
+                    float u = settings.uGrid[j][i], v = settings.vGrid[j][i];
+                    validMask[j*ni+i] = (isfinite(u) && isfinite(v)) ? 1 : 0;
                 }
         }
         FillCoeffTexture(ctx, settings.precompCoeffU, coefMinU, coefMaxU - coefMinU,
@@ -491,12 +437,12 @@ static void FillVectorCoeffTex(TexBuildContext &ctx,
         if (validMask) free(validMask);
     } else {
         // No pre-computed coefficients — run full B-spline prefilter
-        double dMin = 1e30, dMax = -1e30;
+        float dMin = 1e30f, dMax = -1e30f;
         for (int j = 0; j < nj; j++)
             for (int i = 0; i < ni; i++) {
-                double u = settings.uGrid[j][i], v = settings.vGrid[j][i];
-                if (u != ncdf_NOTDEF && v != ncdf_NOTDEF && isfinite(u) && isfinite(v)) {
-                    double spd = sqrt(u*u + v*v);
+                float u = settings.uGrid[j][i], v = settings.vGrid[j][i];
+                if (isfinite(u) && isfinite(v)) {
+                    float spd = sqrtf(u*u + v*v);
                     if (spd < dMin) dMin = spd; if (spd > dMax) dMax = spd;
                 }
             }
@@ -512,11 +458,11 @@ static void FillVectorCoeffTex(TexBuildContext &ctx,
         if (rawU && rawV && coeffU && coeffV && validMask) {
             for (int j = 0; j < nj; j++)
                 for (int i = 0; i < ni; i++) {
-                    double u = settings.uGrid[j][i], v = settings.vGrid[j][i];
-                    if (u == ncdf_NOTDEF || v == ncdf_NOTDEF || !isfinite(u) || !isfinite(v)) {
+                    float u = settings.uGrid[j][i], v = settings.vGrid[j][i];
+                    if (!isfinite(u) || !isfinite(v)) {
                         rawU[j*ni+i] = 0; rawV[j*ni+i] = 0; validMask[j*ni+i] = 0;
                     } else {
-                        rawU[j*ni+i] = (float)u; rawV[j*ni+i] = (float)v; validMask[j*ni+i] = 1;
+                        rawU[j*ni+i] = u; rawV[j*ni+i] = v; validMask[j*ni+i] = 1;
                     }
                 }
             BicubicSplinePrefilterWrapAware(coeffU, rawU, validMask, ni, nj, repeat);
@@ -554,7 +500,7 @@ static void FillVectorCoeffTex(TexBuildContext &ctx,
 // No B-spline computation here — coefficients come from overlay cache.
 //===================================================================
 static void FillScalarCoeffTex(TexBuildContext &ctx,
-                               double **grid,
+                               float **grid,
                                ncdfOverlayFactory::RenderSettings &settings,
                                float *coeffBuf,
                                float coefMin, float coefMax,
@@ -570,6 +516,7 @@ static void FillScalarCoeffTex(TexBuildContext &ctx,
 
     int tw = ctx.tw, th = ctx.th, borderH = ctx.borderH;
     unsigned char *texData = ctx.texData;
+    bool hasGrid = (grid && (uintptr_t)grid > 0x100);
     for (int j = 0; j < nj; j++) {
         int texRow = (ctx.gui->myMessage.jDirectionIncr >= 0) ? j : (nj - 1 - j);
         for (int i = 0; i < ni; i++) {
@@ -577,12 +524,12 @@ static void FillScalarCoeffTex(TexBuildContext &ctx,
             if (x >= tw - 1 || y >= th - 1) continue;
             int off = 4 * (y * tw + x);
             int k = j * ni + i;
-            double val = grid[j][i];
-            if (val == ncdf_NOTDEF || isnan(val) || !isfinite(val)) {
+            float val = hasGrid ? grid[j][i] : 0.0f;
+            if (hasGrid && !isfinite(val)) {
                 texData[off] = 0; texData[off+1] = 0; texData[off+2] = 0; texData[off+3] = 0;
             } else {
                 texData[off]   = (unsigned char)(fminf(fmaxf((coeffBuf[k] - coefMin) / coefRange, 0.0f), 1.0f) * 255.0f + 0.5f);
-                texData[off+1] = (unsigned char)(fminf(fmaxf(((float)val - physMin) / physRange, 0.0f), 1.0f) * 255.0f + 0.5f);
+                texData[off+1] = (unsigned char)(fminf(fmaxf((val - physMin) / physRange, 0.0f), 1.0f) * 255.0f + 0.5f);
                 texData[off+2] = 0; texData[off+3] = 255;
             }
         }
@@ -696,7 +643,7 @@ static void UploadCoeffTexture(GLuint &texID, bool &hasTex, int tw, int th,
 // (g) Physical texture creation (bilinear fallback)
 //===================================================================
 static void BuildPhysicalTex(TexBuildContext &ctx,
-                             double **grid,
+                             float **grid,
                              ncdfOverlayFactory::RenderSettings &settings,
                              bool repeat,
                              GLuint *physicalTexID, bool *hasPhysicalTex)
@@ -709,6 +656,7 @@ static void BuildPhysicalTex(TexBuildContext &ctx,
         unsigned char *physData = (unsigned char*)malloc(tw * th * 4);
         if (physData) {
             memset(physData, 0, tw * th * 4);
+            bool hasGrid = (grid && (uintptr_t)grid > 0x100);
             // Find physical data range for normalization
             double physMin = 1e30, physMax = -1e30;
             double uMin = 1e30, uMax = -1e30;
@@ -716,14 +664,14 @@ static void BuildPhysicalTex(TexBuildContext &ctx,
             for (int j = 0; j < nj; j++)
                 for (int i = 0; i < ni; i++) {
                     if (settings.vectorMode && settings.uGrid && settings.vGrid) {
-                        double u = settings.uGrid[j][i], v = settings.vGrid[j][i];
-                        if (u != ncdf_NOTDEF && v != ncdf_NOTDEF && isfinite(u) && isfinite(v)) {
+                        float u = settings.uGrid[j][i], v = settings.vGrid[j][i];
+                        if (isfinite(u) && isfinite(v)) {
                             if (u < uMin) uMin = u; if (u > uMax) uMax = u;
                             if (v < vMin) vMin = v; if (v > vMax) vMax = v;
                         }
-                    } else if (grid[j]) {
-                        double val = grid[j][i];
-                        if (val != ncdf_NOTDEF && isfinite(val)) {
+                    } else if (hasGrid && grid[j]) {
+                        float val = grid[j][i];
+                        if (isfinite(val)) {
                             if (val < physMin) physMin = val;
                             if (val > physMax) physMax = val;
                         }
@@ -750,21 +698,20 @@ static void BuildPhysicalTex(TexBuildContext &ctx,
                     if (x >= tw - 1 || y >= th - 1) continue;
                     int off = 4 * (y * tw + x);
                     if (settings.vectorMode && settings.uGrid && settings.vGrid) {
-                        double u = settings.uGrid[j][i], v = settings.vGrid[j][i];
-                        if (u == ncdf_NOTDEF || v == ncdf_NOTDEF || !isfinite(u) || !isfinite(v)) {
+                        float u = settings.uGrid[j][i], v = settings.vGrid[j][i];
+                        if (!isfinite(u) || !isfinite(v)) {
                             physData[off] = 0; physData[off+1] = 0; physData[off+2] = 0; physData[off+3] = 0;
                         } else {
-                            // Normalize u,v independently to [0,1]
-                            physData[off]   = (unsigned char)(fmin(fmax((u - physMin) / physRange, 0.0), 1.0) * 255.0 + 0.5);
-                            physData[off+1] = (unsigned char)(fmin(fmax((v - physMinV) / physRangeV, 0.0), 1.0) * 255.0 + 0.5);
+                            physData[off]   = (unsigned char)(fminf(fmaxf((u - (float)physMin) / (float)physRange, 0.0f), 1.0f) * 255.0f + 0.5f);
+                            physData[off+1] = (unsigned char)(fminf(fmaxf((v - (float)physMinV) / (float)physRangeV, 0.0f), 1.0f) * 255.0f + 0.5f);
                             physData[off+2] = 0; physData[off+3] = 255;
                         }
-                    } else if (grid[j]) {
-                        double val = grid[j][i];
-                        if (val == ncdf_NOTDEF || !isfinite(val)) {
+                    } else if (hasGrid && grid[j]) {
+                        float val = grid[j][i];
+                        if (!isfinite(val)) {
                             physData[off] = 0; physData[off+1] = 0; physData[off+2] = 0; physData[off+3] = 0;
                         } else {
-                            physData[off] = (unsigned char)(fmin(fmax((val - physMin) / physRange, 0.0), 1.0) * 255.0 + 0.5);
+                            physData[off] = (unsigned char)(fminf(fmaxf((val - (float)physMin) / (float)physRange, 0.0f), 1.0f) * 255.0f + 0.5f);
                             physData[off+1] = 0; physData[off+2] = 0; physData[off+3] = 255;
                         }
                     }
@@ -984,7 +931,7 @@ static void DrawShaderPath(PlugIn_ViewPort *vp,
 // Shared grid overlay renderer
 //===================================================================
 void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
-                                           double **grid,
+                                           float **grid,
                                            ColorFunc colorFunc,
                                            RenderSettings &settings,
                                            GLuint &texID, bool &hasTex, bool &needsRebuild,
