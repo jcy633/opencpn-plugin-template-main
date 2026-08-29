@@ -94,6 +94,13 @@ public:
 	int m_cached_sst_varid = -1;     // Cached NetCDF variable ID for SST
 	int m_cached_sal_varid = -1;     // Cached NetCDF variable ID for salinity
 
+	// Pre-allocated data buffers (file-level, reused across time steps to avoid 32-bit heap fragmentation)
+	std::vector<double> m_fileUBuffer;
+	std::vector<double> m_fileVBuffer;
+	std::vector<double> m_fileSSTBuffer;
+	std::vector<double> m_fileSalBuffer;
+	bool m_fileBufferReady;
+
 	ncdfDataMessage myncdfData, myData, myMessage;
 	vector<ncdfDataMessage> myDataVector;
 	int m_lastSelectedTimeIndex;
@@ -111,8 +118,9 @@ public:
 	
 	bool readTimeStepData(ncdfDataMessage& dataMessage);
 	bool m_isTreeUpdating;
+	bool m_isLoading{false};  // Guard against re-entrant time step loads
 	wxString m_currentFilePath;  // Track which file is currently loaded
-	wxTimer m_sliderDebounceTimer;  // Debounce rapid slider events
+
 
 private:
 	void UpdateTrackingControls();
@@ -132,10 +140,7 @@ protected:
 	virtual void onCloseDialog( wxCloseEvent& event );
 	virtual void OnExitClick( wxCommandEvent& event );
 	virtual void onFileButtonClick(wxCommandEvent& event);
-	virtual void onTimeChange(wxCommandEvent& event);
-	void OnTimeline(wxScrollEvent& event);
-	virtual void onPrev(wxCommandEvent& event);
-	virtual void onNext(wxCommandEvent& event);
+
 
 
 	wxDateTime GetDateFromHours(int hours_in);

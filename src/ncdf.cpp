@@ -34,6 +34,7 @@
 #include "ncdfoverlayfactory.h"
 #include "ncdf_animate.h"
 #include <vector>
+#include <algorithm>
 
 using namespace std;
 
@@ -89,38 +90,6 @@ MainDialog::MainDialog(wxWindow *parent) : ncdfDialog( parent ), m_isTreeUpdatin
 	m_staticTextSalinity->Hide();
 	m_textCtrlSalinity->Hide();
 
-	// Connect prev/next buttons to handlers
-	m_bpPrev->Connect( wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler( MainDialog::onPrev ), NULL, this );
-	m_bpNext->Connect( wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler( MainDialog::onNext ), NULL, this );
-
-	// Debounce slider: delay data loading until user stops dragging
-	m_sliderDebounceTimer.Bind(wxEVT_TIMER, [this](wxTimerEvent&) {
-		int idx = m_sTimeline->GetValue();
-		if (idx == m_lastSelectedTimeIndex) return;
-		if (idx >= 0 && idx < (int)myDataVector.size()) {
-			if (m_lastSelectedTimeIndex >= 0 && m_lastSelectedTimeIndex < (int)myDataVector.size())
-				myDataVector[m_lastSelectedTimeIndex].clearData();
-			ncdfDataMessage& data = myDataVector[idx];
-			m_lastSelectedTimeIndex = idx;
-			m_isTreeUpdating = true;
-			m_sTimeline->SetValue(idx);
-			m_isTreeUpdating = false;
-			m_choiceTime->SetSelection(idx);
-			wxString timeText;
-			if (data.timeValid)
-				timeText = data.dataDateTime.Format(_T("%Y-%m-%d %H:00"));
-			else
-				timeText = wxString::Format(_("time%d"), idx + 1);
-			m_staticTextDateTime->SetLabel(timeText);
-			if (readTimeStepData(data)) {
-				my_ncdfReader->readncdfFile(data);
-				data.clearData();  // Release data from myDataVector (now in myMessage)
-				pPlugIn->GetncdfOverlayFactory()->renderSelectionRectangle = false;
-				RequestRefresh(m_parent);
-			}
-		}
-	});
-
 	BuildHelpPage();
 
 	/* Ensure dialog and its contents can be resized */
@@ -134,8 +103,7 @@ MainDialog::~MainDialog()
 	ncdfLog("[ncdf] ~MainDialog: started\n");
 
 	// Disconnect prev/next buttons
-	m_bpPrev->Disconnect( wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler( MainDialog::onPrev ), NULL, this );
-	m_bpNext->Disconnect( wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler( MainDialog::onNext ), NULL, this );
+
 
 	if(log_window_m)
 		delete log_window_m;
@@ -146,7 +114,7 @@ MainDialog::~MainDialog()
 	
 	ncdfLog("[ncdf] ~MainDialog: my_ncdfReader deleted\n");
 	
-	pPlugIn->m_choice = m_choiceTime->GetSelection();
+
 	pPlugIn->m_bShowCurrentDir = m_checkBoxDCurrent->GetValue();
 	pPlugIn->m_bShowCurrentDir = m_checkBoxDCurrent->GetValue();
 	pPlugIn->m_bShowCurrentForce = m_checkBoxBmpCurrentForce->GetValue();
@@ -168,7 +136,6 @@ void MainDialog::setPlugIn(ncdf_pi *p)
   this->pPlugIn = p;
   this->m_textCtrlDir->SetValue(pPlugIn->m_ncdf_dir);
   fillDirTree(pPlugIn->m_ncdf_dir, true, 0);
-  m_choiceTime->SetSelection(pPlugIn->m_choice);
   m_checkBoxDCurrent->SetValue(pPlugIn->m_bShowCurrentDir);
   m_checkBoxBmpCurrentForce->SetValue(pPlugIn->m_bShowCurrentForce);
   m_checkBoxParticles->SetValue(pPlugIn->m_bShowParticles);
@@ -291,60 +258,6 @@ double** MainDialog::makeGridDataCURRENT(ncdfDataMessage message, wxString curre
 	return grid;
 }
 
-void MainDialog::onPrev(wxCommandEvent& event) {
-
-	// show some info about this item
-	wxTreeItemId itemId = m_treeCtrl->GetFocusedItem();
-	MyTreeItemData *item = (MyTreeItemData *)this->m_treeCtrl->GetItemData(itemId);
-	this->m_treeCtrl->SetItemDropHighlight(itemId, false);
-
-	if (item != NULL)
-	{
-		wxTreeItemId tid;
-		tid = this->m_treeCtrl->GetPrevSibling(itemId);
-		if (tid.IsOk() == true){
-			this->m_treeCtrl->SetItemDropHighlight(tid, true);
-			this->m_treeCtrl->SetFocusedItem(tid);
-			readData(tid);
-		}
-		else {
-			this->m_treeCtrl->SetItemDropHighlight(itemId, true);
-			return;
-		}
-	}
-	else {
-		return;
-	}
-
-}
-
-void MainDialog::onNext(wxCommandEvent& event) {
-
-	// show some info about this item
-	wxTreeItemId itemId = m_treeCtrl->GetFocusedItem();
-	MyTreeItemData *item = (MyTreeItemData *)this->m_treeCtrl->GetItemData(itemId);
-	this->m_treeCtrl->SetItemDropHighlight(itemId, false);
-
-	if (item != NULL)
-	{
-		wxTreeItemId tid;
-		tid = this->m_treeCtrl->GetNextSibling(itemId);
-		if (tid.IsOk() == true){
-			this->m_treeCtrl->SetItemDropHighlight(tid, true);
-			this->m_treeCtrl->SetFocusedItem(tid);
-			readData(tid);
-		}
-		else {
-			this->m_treeCtrl->SetItemDropHighlight(itemId, true);
-			return;
-		}
-	}
-	else {
-
-		return;
-	}
-
-}
 
 void MainDialog::readData(wxTreeItemId itemId) {
     FILE *logFile = fopen("C:\\ProgramData\\opencpn\\ncdf_debug.log", "a");
@@ -417,11 +330,6 @@ void MainDialog::readData(wxTreeItemId itemId) {
     }
 	
 	m_lastSelectedTimeIndex = idx;
-
-	// Sync slider with current time step
-	if (m_sTimeline) {
-		m_sTimeline->SetValue(idx);
-	}
 
 	if (logFile) {
         fwprintf(logFile, L"[ncdf] readData: updated m_lastSelectedTimeIndex=%d\n", m_lastSelectedTimeIndex);
@@ -1125,22 +1033,43 @@ int MainDialog::nc_get(wxString filestr){
 		}
 	}
 	
-	// 
+	//
 	wxDouble iDirectionIncr = (lastGridPointLon - firstGridPointLon) / (lonlength > 1 ? lonlength - 1 : 1);
 	wxDouble jDirectionIncr = (lastGridPointLat - firstGridPointLat) / (latlength > 1 ? latlength - 1 : 1);
-	
-	// Create message for each timestep (metadata only)
+
+	// Item 1: Allocate shared coordinate arrays once (all time steps share the same data)
+	std::shared_ptr<SharedCoords> sharedCoords = std::make_shared<SharedCoords>();
+	sharedCoords->latValues = (wxDouble*)calloc(latlength, sizeof(wxDouble));
+	sharedCoords->lonValues = (wxDouble*)calloc(lonlength, sizeof(wxDouble));
+	sharedCoords->timeValues = (double*)calloc(timelength, sizeof(double));
+	sharedCoords->latLength = latlength;
+
+	// Pre-allocate file-level data buffers (reused across time steps, avoids 32-bit heap fragmentation)
+	size_t nbr_uv = latlength * lonlength;
+	m_fileUBuffer.reserve(nbr_uv);
+	m_fileVBuffer.reserve(nbr_uv);
+	m_fileSSTBuffer.reserve(nbr_uv);
+	m_fileSalBuffer.reserve(nbr_uv);
+	m_fileBufferReady = true;
+	ncdfLog("[ncdf] nc_get: file buffers reserved, nbr_uv=%zu\n", nbr_uv);
+	sharedCoords->lonLength = lonlength;
+	sharedCoords->timeLength = timelength;
+	memcpy(sharedCoords->latValues, lats, latlength * sizeof(wxDouble));
+	memcpy(sharedCoords->lonValues, lons, lonlength * sizeof(wxDouble));
+	memcpy(sharedCoords->timeValues, time_out, timelength * sizeof(double));
+
+	// Create message for each timestep (metadata only, shared coords)
 	for (size_t i = 0; i < timelength; i++) {
-		
+
 		myncdfData.clear();
 		myncdfData.timeValid = timeInfo.valid;
-		
+
 		if (timeInfo.valid) {
 			wxTimeSpan span = wxTimeSpan::Seconds((long long)(time_out[i] * timeInfo.secondsPerUnit));
 			myncdfData.dataDateTime = timeInfo.baseDateTime;
 			myncdfData.dataDateTime.Add(span);
 			myncdfData.minutesAfterStart = (int)(time_out[i] * timeInfo.secondsPerUnit / 60.0);
-			
+
 			wxString dateStr = myncdfData.dataDateTime.Format("%Y-%m-%d %H:%M:%S");
 			ncdfLog("[ncdf] nc_get: timestep=%d, raw_time=%f, calculated_date=%s\n",
 				(int)i, time_out[i], (const char*)dateStr.mb_str());
@@ -1171,20 +1100,13 @@ int MainDialog::nc_get(wxString filestr){
 		myncdfData.hasSeaTemp = hasSST;
 		myncdfData.hasSalinity = hasSalinity;
 		/*myncdfData.depthLength = depthlength;*/
-		
-		myncdfData.latValues = (wxDouble*)calloc(latlength, sizeof(wxDouble));
-		myncdfData.lonValues = (wxDouble*)calloc(lonlength, sizeof(wxDouble));
-		myncdfData.timeValues = (double*)calloc(timelength, sizeof(double));
-		
-		/*if (depthlength > 0 && depths) {
-			myncdfData.depthValues = (wxDouble*)calloc(depthlength, sizeof(wxDouble));
-			memcpy(myncdfData.depthValues, depths, depthlength * sizeof(wxDouble));
-		}*/
-		
-		memcpy(myncdfData.latValues, lats, latlength * sizeof(wxDouble));
-		memcpy(myncdfData.lonValues, lons, lonlength * sizeof(wxDouble));
-		memcpy(myncdfData.timeValues, time_out, timelength * sizeof(double));
-		
+
+		// Share coordinate arrays across all time steps (one allocation)
+		myncdfData.sharedCoords = sharedCoords;
+		myncdfData.latValues = sharedCoords->latValues;
+		myncdfData.lonValues = sharedCoords->lonValues;
+		myncdfData.timeValues = sharedCoords->timeValues;
+
 		myDataVector.push_back(myncdfData);
 	}
 	
@@ -1199,12 +1121,6 @@ int MainDialog::nc_get(wxString filestr){
 	
 	delete[] filename;
 
-	// Update slider range to match current file's time steps
-	int nSteps = (int)myDataVector.size();
-	if (nSteps > 0 && m_sTimeline) {
-		m_sTimeline->SetRange(0, nSteps - 1);
-		m_sTimeline->SetValue(0);
-	}
 
 	return 0;
 }
@@ -1549,13 +1465,14 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 		return false;
 	}
 
-	// Clear stale data before reading
+	// Reuse vector capacity: assign() overwrites values in-place when capacity is sufficient.
+	// First call allocates, subsequent calls reuse the same buffer (zero allocation).
+	size_t nbr_uv = dataMessage.latLength * dataMessage.lonLength;
+	ncdfLog("[ncdf] readTimeStepData: nbr_uv=%zu, ucurr.cap=%zu\n", nbr_uv, dataMessage.ucurr.capacity());
+	dataMessage.ucurr.assign(nbr_uv, ncdf_NOTDEF);
+	dataMessage.vcurr.assign(nbr_uv, ncdf_NOTDEF);
 	dataMessage.sst.clear();
-	dataMessage.hasSeaTemp = false;
 	dataMessage.salinity.clear();
-	dataMessage.hasSalinity = false;
-	dataMessage.ucurr.clear();
-	dataMessage.vcurr.clear();
 
 	int ncid;
 	int retval;
@@ -1602,7 +1519,13 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 	if (hasUV) {
 		if (!readUVFromNC(ncid, u_varid, v_varid, dataMessage)) {
 			ncdfLog("[ncdf] readTimeStepData: readUVFromNC failed\n");
+			dataMessage.ucurr.clear();
+			dataMessage.vcurr.clear();
 		}
+	} else {
+		// No UV data in file — clear the pre-filled ncdf_NOTDEF values
+		dataMessage.ucurr.clear();
+		dataMessage.vcurr.clear();
 	}
 
 	if (ncid >= 0 && m_fileHasSeaTemp) {
@@ -1674,7 +1597,6 @@ bool MainDialog::switchToFile(const wxString &fileName, const wxString &fn, int 
 	if (dbg) { fprintf(dbg, "switchToFile: B-after clear vector\n"); fflush(dbg); fclose(dbg); }
 
 	m_lastSelectedTimeIndex = -1;
-	m_choiceTime->Clear();
 
 	dbg = fopen("C:\\ProgramData\\opencpn\\ncdf_crash_trace.log", "a");
 	if (dbg) { fprintf(dbg, "switchToFile: C-before myMessage.clear\n"); fflush(dbg); fclose(dbg); }
@@ -1719,7 +1641,7 @@ bool MainDialog::switchToFile(const wxString &fileName, const wxString &fn, int 
 	m_staticTextSalinity->Show(showSal);
 	m_textCtrlSalinity->Show(showSal);
 	Layout();
-	// Only disable overlays when data is NOT available (same as Path A)
+	// Disable unavailable types. Don't auto-enable — use persisted settings.
 	if (!showCur) {
 		pPlugIn->m_bShowCurrentDir = false;
 		pPlugIn->m_bShowCurrentForce = false;
@@ -1760,116 +1682,52 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 	}
 	
 	if (this->m_treeCtrl->HasChildren(event.GetItem())){
-	    // File node clicked: load data and auto-select first time step
-	    wxString fn = m_treeCtrl->GetItemText(event.GetItem());
-	    wxString fileName = m_textCtrlDir->GetValue() + _T("\\") + fn;
-	    ncdfLogW(L"[ncdf] file node clicked: fn=%ls, fileName=%ls\n", (const wchar_t*)fn.c_str(), (const wchar_t*)fileName.c_str());
-
-	    // Guard against re-entrant calls: nc_get + SelectItem can trigger
-	    // onTreeSelectionChanged again. Block it and process manually.
-	    m_isTreeUpdating = true;
-	    int ret = nc_get(fileName);
-	    ncdfLog("[ncdf] nc_get returned: %d, myDataVector size=%d\n", ret, (int)myDataVector.size());
-	    m_isTreeUpdating = false;
-
-	    if (ret != 0 || myDataVector.empty()) {
-	        ncdfDialog::onTreeSelectionChanged(event);
-	        return;
-	    }
-
-	    // Update current file path so switchToFile won't redundantly re-load
-	    m_currentFilePath = fileName;
-
-	    // Clean up old data before loading new file
-	    myMessage.clear();
-	    m_lastSelectedTimeIndex = -1;
-	    pPlugIn->GetncdfOverlayFactory()->reset();
-
-	    // Set up timeline range (data loaded lazily when user selects a time step)
-	    int nSteps = (int)myDataVector.size();
-	    if (nSteps > 0 && m_sTimeline) {
-	        m_sTimeline->SetRange(0, nSteps - 1);
-	        m_sTimeline->SetValue(0);
-	    }
-
-		ncdfDialog::onTreeSelectionChanged(event);
-		// Show checkboxes based on file-level data availability
-		bool showCurrent = m_fileHasCurrent;
-		bool showSST = m_fileHasSeaTemp;
-		m_checkBoxBmpCurrentForce->Show(showCurrent);
-		m_staticText40->Show(showCurrent);
-		m_textCtrlCurrentForce->Show(showCurrent);
-		m_checkBoxSeaTemp->Show(showSST);
-		m_staticTextSeaTemp->Show(showSST);
-		m_textCtrlSeaTemp->Show(showSST);
-		bool showSalinity = m_fileHasSalinity;
-		m_checkBoxSalinity->Show(showSalinity);
-		m_staticTextSalinity->Show(showSalinity);
-		m_textCtrlSalinity->Show(showSalinity);
-		Layout();
-		if (!showCurrent) {
-			pPlugIn->m_bShowCurrentDir = false;
-			pPlugIn->m_bShowCurrentForce = false;
-			pPlugIn->m_bShowParticles = false;
-			m_checkBoxBmpCurrentForce->SetValue(false);
-		}
-		// When data IS available, keep user's persisted setting (no auto-enable)
-		if (!showSST) {
-			pPlugIn->m_bShowSeaTemp = false;
-			pPlugIn->m_bShowSeaTempIso = false;
-			m_checkBoxSeaTemp->SetValue(false);
-		}
-		if (!showSalinity) {
-			pPlugIn->m_bShowSalinity = false;
-			m_checkBoxSalinity->SetValue(false);
-		}
-		return;
-    }
+	    // File node clicked: just expand/collapse (same as clicking the expand button)
+	    if (m_treeCtrl->IsExpanded(event.GetItem()))
+	        m_treeCtrl->Collapse(event.GetItem());
+	    else
+	        m_treeCtrl->Expand(event.GetItem());
+	    return;
+	}
 
 	ncdfDialog::onTreeSelectionChanged(event);
+
+	// Re-entrancy guard: if a load is already in progress, skip this event
+	if (m_isLoading) {
+		ncdfLog("[ncdf] onTreeSelectionChanged: SKIP (load in progress)\n");
+		return;
+	}
+	m_isLoading = true;
 
 	MyTreeItemData* data = (MyTreeItemData*)this->m_treeCtrl->GetItemData(event.GetItem());
 	if (data) {
 		int idx = data->m_index;
 
 		// Check if we need to load a different file first
+		bool fileSwitched = false;
 		wxTreeItemId parentItem = m_treeCtrl->GetItemParent(event.GetItem());
 		if (parentItem.IsOk()) {
 			wxString fn = m_treeCtrl->GetItemText(parentItem);
 			wxString fileName = m_textCtrlDir->GetValue() + _T("\\") + fn;
 			if (fileName != m_currentFilePath) {
 				if (!switchToFile(fileName, fn, idx)) {
+					m_isLoading = false;
 					return;
 				}
+				fileSwitched = true;
 			}
 		}
 
-		ncdfLog("[ncdf] onTreeSelectionChanged: got MyTreeItemData=%p, index=%d, vectorSize=%d\n",
-			data, idx, (int)myDataVector.size());
-		
 		if (idx < 0 || idx >= (int)myDataVector.size()) {
 			ncdfLog("[ncdf] onTreeSelectionChanged: index out of range\n");
-			ncdfLog("[ncdf] onTreeSelectionChanged: completed\n");
+			m_isLoading = false;
 			return;
 		}
 
-		// Free previous time step's data only (keep coordinate metadata)
-		if (m_lastSelectedTimeIndex >= 0 && m_lastSelectedTimeIndex != idx &&
-		    m_lastSelectedTimeIndex < (int)myDataVector.size()) {
-			myDataVector[m_lastSelectedTimeIndex].clearData();
-		}
-
-		// Use reference directly — avoid 300MB deep copy into myData
 		ncdfDataMessage& dataRef = myDataVector[idx];
-		ncdfLog("[ncdf] onTreeSelectionChanged: AFTER REF idx=%d, ucurr.size=%zu latValues=%p lonValues=%p fileName='%s' timeIndex=%d\n",
-			idx, dataRef.ucurr.size(), (void*)dataRef.latValues, (void*)dataRef.lonValues,
-			(const char*)dataRef.fileName.mb_str(), dataRef.timeIndex);
+		ncdfLog("[ncdf] onTreeSelectionChanged: idx=%d fileSwitched=%d ucurr.size=%zu\n",
+			idx, (int)fileSwitched, dataRef.ucurr.size());
 		m_lastSelectedTimeIndex = idx;
-
-		// Sync slider with tree selection (guard against OnTimeline re-entrancy)
-		m_isTreeUpdating = true;
-		m_sTimeline->SetValue(idx);
-		m_isTreeUpdating = false;
 
 		wxString timeText;
 		if (dataRef.timeValid) {
@@ -1879,121 +1737,123 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 		}
 		m_staticTextDateTime->SetLabel(timeText);
 
-		if (readTimeStepData(dataRef)) {
-			ncdfLog("[ncdf] onTreeSelectionChanged: readTimeStepData OK, ucurr.size=%zu vcurr.size=%zu sst.size=%zu hasSeaTemp=%d\n",
-				dataRef.ucurr.size(), dataRef.vcurr.size(), dataRef.sst.size(), (int)dataRef.hasSeaTemp);
-			ncdfLog("[ncdf] onTreeSelectionChanged: calling readncdfFile...\n");
-			this->my_ncdfReader->readncdfFile(dataRef);
-			ncdfLog("[ncdf] onTreeSelectionChanged: readncdfFile done, myMessage.ucurr.size=%zu myMessage.sst.size=%zu\n",
-				myMessage.ucurr.size(), myMessage.sst.size());
-			// Release data from myDataVector (now in myMessage, no need to keep duplicate)
-			dataRef.clearData();
-			pPlugIn->GetncdfOverlayFactory()->renderSelectionRectangle = false;
-			ncdfLog("[ncdf] onTreeSelectionChanged: requesting refresh\n");
-			RequestRefresh(m_parent);
-			ncdfLog("[ncdf] onTreeSelectionChanged: refresh requested\n");
+		ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
+		if (pof) pof->m_bReadyToRender = false;
+
+		if (fileSwitched) {
+			// Cross-file: clear old data, sync checkboxes from persisted settings.
+			// Disable types not available in the new file. No auto-check.
+			this->myMessage.clearData();
+			if (!m_fileHasCurrent) {
+				m_checkBoxBmpCurrentForce->SetValue(false);
+				pPlugIn->m_bShowCurrentForce = false;
+				pPlugIn->m_bShowCurrentDir = false;
+				pPlugIn->m_bShowParticles = false;
+			} else {
+				// Restore from persisted setting
+				m_checkBoxBmpCurrentForce->SetValue(pPlugIn->m_bShowCurrentForce);
+			}
+			if (!m_fileHasSeaTemp) {
+				m_checkBoxSeaTemp->SetValue(false);
+				pPlugIn->m_bShowSeaTemp = false;
+				pPlugIn->m_bShowSeaTempIso = false;
+			} else {
+				m_checkBoxSeaTemp->SetValue(pPlugIn->m_bShowSeaTemp);
+			}
+			if (!m_fileHasSalinity) {
+				m_checkBoxSalinity->SetValue(false);
+				pPlugIn->m_bShowSalinity = false;
+			} else {
+				m_checkBoxSalinity->SetValue(pPlugIn->m_bShowSalinity);
+			}
+		}
+
+		// Both cross-file and same-file: read directly into myMessage (lightweight path)
+		// Cross-file: readncdfFile was removed — too expensive (Cleanup + full rebuild in 32-bit)
+		this->myMessage.noPointsParallel = dataRef.noPointsParallel;
+		this->myMessage.noPointsMeridian = dataRef.noPointsMeridian;
+		this->myMessage.firstGridPointLat = dataRef.firstGridPointLat;
+		this->myMessage.firstGridPointLong = dataRef.firstGridPointLong;
+		this->myMessage.lastGridPointLat = dataRef.lastGridPointLat;
+		this->myMessage.lastGridPointLong = dataRef.lastGridPointLong;
+		this->myMessage.iDirectionIncr = dataRef.iDirectionIncr;
+		this->myMessage.jDirectionIncr = dataRef.jDirectionIncr;
+		this->myMessage.latLength = dataRef.latLength;
+		this->myMessage.lonLength = dataRef.lonLength;
+		this->myMessage.timeLength = dataRef.timeLength;
+		this->myMessage.hasSeaTemp = dataRef.hasSeaTemp;
+		this->myMessage.hasSalinity = dataRef.hasSalinity;
+		this->myMessage.sharedCoords = dataRef.sharedCoords;
+		this->myMessage.latValues = dataRef.latValues;
+		this->myMessage.lonValues = dataRef.lonValues;
+		this->myMessage.timeValues = dataRef.timeValues;
+		this->myMessage.timeIndex = dataRef.timeIndex;
+		this->myMessage.timeValid = dataRef.timeValid;
+		this->myMessage.dataDateTime = dataRef.dataDateTime;
+		this->myMessage.fileName = dataRef.fileName;
+
+		ncdfLog("[ncdf] onTreeSelectionChanged: reading timeStep idx=%d\n", idx);
+		if (readTimeStepData(this->myMessage)) {
+			ncdfLog("[ncdf] onTreeSelectionChanged: read OK, ucurr.size=%zu sst.size=%zu\n",
+				this->myMessage.ucurr.size(), this->myMessage.sst.size());
+			if (pof) {
+				// Set gui/plugin pointers if not yet initialized (first load only)
+				if (!pof->isInitialized()) {
+					pof->setData(this, pPlugIn, this->myMessage,
+						this->myMessage.numberOfPoints,
+						this->myMessage.firstGridPointLat, this->myMessage.firstGridPointLong,
+						this->myMessage.lastGridPointLat, this->myMessage.lastGridPointLong);
+				}
+				pof->m_bReadyToRender = false;  // block render during data switch
+				pof->updateTimeStep();
+				pof->prepareAllOverlays();
+				pof->m_bReadyToRender = true;
+			}
+			pof->renderSelectionRectangle = false;
 		} else {
 			ncdfLog("[ncdf] onTreeSelectionChanged: readTimeStepData failed\n");
+			if (pof) pof->m_bReadyToRender = true;
 		}
+
+		// Show/hide checkboxes based on file-level data availability
+		bool showCurrent = m_fileHasCurrent;
+		bool showSST = m_fileHasSeaTemp;
+		bool showSalinity = m_fileHasSalinity;
+		m_checkBoxBmpCurrentForce->Show(showCurrent);
+		m_staticText40->Show(showCurrent);
+		m_textCtrlCurrentForce->Show(showCurrent);
+		m_checkBoxSeaTemp->Show(showSST);
+		m_staticTextSeaTemp->Show(showSST);
+		m_textCtrlSeaTemp->Show(showSST);
+		m_checkBoxSalinity->Show(showSalinity);
+		m_staticTextSalinity->Show(showSalinity);
+		m_textCtrlSalinity->Show(showSalinity);
+		Layout();
+		// Sync checkbox state from persisted settings. Disable unavailable types.
+		if (!showCurrent) {
+			m_checkBoxBmpCurrentForce->SetValue(false);
+			pPlugIn->m_bShowCurrentDir = false;
+			pPlugIn->m_bShowCurrentForce = false;
+			pPlugIn->m_bShowParticles = false;
+		}
+		if (!showSST) {
+			m_checkBoxSeaTemp->SetValue(false);
+			pPlugIn->m_bShowSeaTemp = false;
+			pPlugIn->m_bShowSeaTempIso = false;
+		}
+		if (!showSalinity) {
+			m_checkBoxSalinity->SetValue(false);
+			pPlugIn->m_bShowSalinity = false;
+		}
+
+		RequestRefresh(m_parent);
+		ncdfLog("[ncdf] onTreeSelectionChanged: completed\n");
 	} else {
 		ncdfLog("[ncdf] onTreeSelectionChanged: GetItemData returned NULL\n");
 	}
 
-	// Show/hide checkboxes based on file-level data availability (like GRIB plugin)
-	bool showCurrent = m_fileHasCurrent;
-	bool showSST = m_fileHasSeaTemp;
-	bool showSalinity = m_fileHasSalinity;
-	ncdfLog("[ncdf] onTreeSelectionChanged: showCurrent=%d showSST=%d showSalinity=%d (file-level)\n",
-		(int)showCurrent, (int)showSST, (int)showSalinity);
-	// Current checkboxes: show if file has current data
-	m_checkBoxBmpCurrentForce->Show(showCurrent);
-	m_staticText40->Show(showCurrent);
-	m_textCtrlCurrentForce->Show(showCurrent);
-	// SST checkboxes: show if file has SST data
-	m_checkBoxSeaTemp->Show(showSST);
-	m_staticTextSeaTemp->Show(showSST);
-	m_textCtrlSeaTemp->Show(showSST);
-	// Salinity checkboxes: show if file has salinity data
-	bool showSal = m_fileHasSalinity;
-	m_checkBoxSalinity->Show(showSal);
-	m_staticTextSalinity->Show(showSal);
-	m_textCtrlSalinity->Show(showSal);
-	// Force layout update
-	Layout();
-	// Disable plugin state for unavailable data types (keep user setting when available)
-	if (!showCurrent) {
-		pPlugIn->m_bShowCurrentDir = false;
-		pPlugIn->m_bShowCurrentForce = false;
-		pPlugIn->m_bShowParticles = false;
-		m_checkBoxBmpCurrentForce->SetValue(false);
-	}
-	if (!showSST) {
-		pPlugIn->m_bShowSeaTemp = false;
-		pPlugIn->m_bShowSeaTempIso = false;
-		m_checkBoxSeaTemp->SetValue(false);
-	}
-	if (!showSalinity) {
-		pPlugIn->m_bShowSalinity = false;
-		m_checkBoxSalinity->SetValue(false);
-	}
-
 	ncdfLog("[ncdf] onTreeSelectionChanged: completed\n");
-}
-
-void MainDialog::onTimeChange(wxCommandEvent& event){
-    if (m_isTreeUpdating) return;
-    int selectedIndex = m_choiceTime->GetSelection();
-
-    if (selectedIndex >= 0 && selectedIndex < (int)myDataVector.size() &&
-        selectedIndex != m_lastSelectedTimeIndex) {
-        myData = myDataVector[selectedIndex];
-        m_lastSelectedTimeIndex = selectedIndex;
-
-        wxString timeText;
-        if (myData.timeValid) {
-            timeText = myData.dataDateTime.Format(_T("%Y-%m-%d %H:00"));
-        } else {
-            timeText = wxString::Format(_("time%d"), selectedIndex + 1);
-        }
-        m_staticTextDateTime->SetLabel(timeText);
-
-        // Sync slider (guard against OnTimeline re-entrancy)
-        m_isTreeUpdating = true;
-        m_sTimeline->SetValue(selectedIndex);
-        m_isTreeUpdating = false;
-
-        ncdfLog("[ncdf] onTimeChange: idx=%d, ucurr.size=%zu, vcurr.size=%zu, latLen=%d, lonLen=%d\n",
-            selectedIndex, myData.ucurr.size(), myData.vcurr.size(),
-            (int)myData.latLength, (int)myData.lonLength);
-        bool readOk = readTimeStepData(myData);
-        ncdfLog("[ncdf] onTimeChange: readTimeStepData=%d, ucurr.size=%zu, vcurr.size=%zu\n",
-            (int)readOk, myData.ucurr.size(), myData.vcurr.size());
-        if (!readOk) {
-            ncdfLog("[ncdf] onTimeChange: readTimeStepData FAILED for idx=%d\n", selectedIndex);
-            return;
-        }
-        my_ncdfReader->readncdfFile(myData);
-        ncdfLog("[ncdf] onTimeChange: ucurr.size=%zu vcurr.size=%zu ni=%d nj=%d ready=%d needsRebuild=%d\n",
-            myMessage.ucurr.size(), myMessage.vcurr.size(),
-            (int)myMessage.lonLength, (int)myMessage.latLength,
-            (int)pPlugIn->GetncdfOverlayFactory()->isReadyToRender(),
-            (int)pPlugIn->GetncdfOverlayFactory()->m_currentOverlay.needsRebuild);
-        RequestRefresh(m_parent);
-    }
-}
-
-void MainDialog::OnTimeline(wxScrollEvent& event)
-{
-    if (m_isTreeUpdating) return;
-    int selectedIndex = m_sTimeline->GetValue();
-
-    // Skip if same time step (prevent redundant readncdfFile calls)
-    if (selectedIndex == m_lastSelectedTimeIndex) return;
-
-    // Debounce: delay expensive I/O until user stops dragging for 100ms
-    if (m_sliderDebounceTimer.IsRunning())
-        m_sliderDebounceTimer.Stop();
-    m_sliderDebounceTimer.StartOnce(100);
+	m_isLoading = false;
 }
 
 void MainDialog::onTreeItemRightClick(wxTreeEvent& event)
@@ -2013,7 +1873,7 @@ void MainDialog::onDCurrentClick( wxCommandEvent& event )
 void MainDialog::onBmpCurrentForceClick(wxCommandEvent& event)
 {
 	static bool s_guard = false;
-	if (s_guard) return;
+	if (s_guard || m_isLoading) return;
 	s_guard = true;
 	bool checked = m_checkBoxBmpCurrentForce->GetValue();
 	pPlugIn->m_bShowCurrentForce = checked;
@@ -2025,13 +1885,22 @@ void MainDialog::onBmpCurrentForceClick(wxCommandEvent& event)
 		pPlugIn->m_bShowSalinity = false;
 	}
 	s_guard = false;
-	// Reload data for the active overlay type (only loads Current data now)
+	// Lightweight overlay switch: read data into myMessage, then prepare.
 	if (checked && m_lastSelectedTimeIndex >= 0 && m_lastSelectedTimeIndex < (int)myDataVector.size()) {
-		myMessage.clear();
-		ncdfDataMessage& dataRef = myDataVector[m_lastSelectedTimeIndex];
-		if (readTimeStepData(dataRef)) {
-			my_ncdfReader->readncdfFile(dataRef);
-			dataRef.clearData();
+		ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
+		if (pof) {
+			pof->m_bReadyToRender = false;
+			if (readTimeStepData(this->myMessage)) {
+				if (!pof->isInitialized()) {
+					pof->setData(this, pPlugIn, this->myMessage,
+						this->myMessage.numberOfPoints,
+						this->myMessage.firstGridPointLat, this->myMessage.firstGridPointLong,
+						this->myMessage.lastGridPointLat, this->myMessage.lastGridPointLong);
+				}
+				pof->updateTimeStep();
+				pof->prepareAllOverlays();
+			}
+			pof->m_bReadyToRender = true;
 		}
 	}
 	RequestRefresh(m_parent);
@@ -2046,7 +1915,7 @@ void MainDialog::onParticlesClick(wxCommandEvent& event)
 void MainDialog::onSeaTempClick(wxCommandEvent& event)
 {
 	static bool s_guard = false;
-	if (s_guard) return;
+	if (s_guard || m_isLoading) return;
 	s_guard = true;
 	bool checked = m_checkBoxSeaTemp->GetValue();
 	pPlugIn->m_bShowSeaTemp = checked;
@@ -2058,13 +1927,22 @@ void MainDialog::onSeaTempClick(wxCommandEvent& event)
 		pPlugIn->m_bShowSalinity = false;
 	}
 	s_guard = false;
-	// Reload data for the active overlay type
+	// Lightweight overlay switch
 	if (checked && m_lastSelectedTimeIndex >= 0 && m_lastSelectedTimeIndex < (int)myDataVector.size()) {
-		myMessage.clear();
-		ncdfDataMessage& dataRef = myDataVector[m_lastSelectedTimeIndex];
-		if (readTimeStepData(dataRef)) {
-			my_ncdfReader->readncdfFile(dataRef);
-			dataRef.clearData();
+		ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
+		if (pof) {
+			pof->m_bReadyToRender = false;
+			if (readTimeStepData(this->myMessage)) {
+				if (!pof->isInitialized()) {
+					pof->setData(this, pPlugIn, this->myMessage,
+						this->myMessage.numberOfPoints,
+						this->myMessage.firstGridPointLat, this->myMessage.firstGridPointLong,
+						this->myMessage.lastGridPointLat, this->myMessage.lastGridPointLong);
+				}
+				pof->updateTimeStep();
+				pof->prepareAllOverlays();
+			}
+			pof->m_bReadyToRender = true;
 		}
 	}
 	RequestRefresh(m_parent);
@@ -2089,7 +1967,7 @@ void MainDialog::onIsoSalClick(wxCommandEvent& event)
 void MainDialog::onSalinityClick(wxCommandEvent& event)
 {
 	static bool s_guard = false;
-	if (s_guard) return;
+	if (s_guard || m_isLoading) return;
 	s_guard = true;
 	bool checked = m_checkBoxSalinity->GetValue();
 	pPlugIn->m_bShowSalinity = checked;
@@ -2101,13 +1979,22 @@ void MainDialog::onSalinityClick(wxCommandEvent& event)
 		pPlugIn->m_bShowSeaTemp = false;
 	}
 	s_guard = false;
-	// Reload data for the active overlay type
+	// Lightweight overlay switch
 	if (checked && m_lastSelectedTimeIndex >= 0 && m_lastSelectedTimeIndex < (int)myDataVector.size()) {
-		myMessage.clear();
-		ncdfDataMessage& dataRef = myDataVector[m_lastSelectedTimeIndex];
-		if (readTimeStepData(dataRef)) {
-			my_ncdfReader->readncdfFile(dataRef);
-			dataRef.clearData();
+		ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
+		if (pof) {
+			pof->m_bReadyToRender = false;
+			if (readTimeStepData(this->myMessage)) {
+				if (!pof->isInitialized()) {
+					pof->setData(this, pPlugIn, this->myMessage,
+						this->myMessage.numberOfPoints,
+						this->myMessage.firstGridPointLat, this->myMessage.firstGridPointLong,
+						this->myMessage.lastGridPointLat, this->myMessage.lastGridPointLong);
+				}
+				pof->updateTimeStep();
+				pof->prepareAllOverlays();
+			}
+			pof->m_bReadyToRender = true;
 		}
 	}
 	RequestRefresh(m_parent);
@@ -2163,11 +2050,6 @@ void MainDialog::fillDirTree(wxString path, bool start, wxTreeItemId id)
 		myDataVector = savedVector;
 		m_currentFilePath = savedPath;
 		m_lastSelectedTimeIndex = savedTimeIndex;
-		if (!myDataVector.empty() && m_sTimeline) {
-			m_sTimeline->SetRange(0, (int)myDataVector.size() - 1);
-			if (m_lastSelectedTimeIndex >= 0)
-				m_sTimeline->SetValue(m_lastSelectedTimeIndex);
-		}
 		ncdfLog("[ncdf] fillDirTree: restored global state, myDataVector size=%d\n",
 			(int)myDataVector.size());
 	}
@@ -2196,7 +2078,6 @@ void MainDialog::addChildren(wxTreeItemId id, wxString fn)
 
 	myDataVector.clear();
 	m_lastSelectedTimeIndex = -1;
-	m_choiceTime->Clear();
 	m_currentFilePath = fileName;
 
 	ncdfLog("[ncdf] addChildren: calling nc_get\n");
@@ -2240,17 +2121,8 @@ void MainDialog::addChildren(wxTreeItemId id, wxString fn)
 		
 		MyTreeItemData* treeItemData = new MyTreeItemData(timeIndex);
 		this->m_treeCtrl->SetItemData(itemId, treeItemData);
-		
-		m_choiceTime->Append(itemText);
 
 		timeIndex++;
-	}
-
-	// Update slider range to match number of time steps
-	int nSteps = (int)myDataVector.size();
-	if (nSteps > 0) {
-		m_sTimeline->SetRange(0, nSteps - 1);
-		m_sTimeline->SetValue(0);
 	}
 
 	ncdfLog("[ncdf] addChildren: completed\n");

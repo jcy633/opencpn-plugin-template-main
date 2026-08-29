@@ -49,7 +49,7 @@ static void BicubicSplinePrefilterMasked(float* dst, const float* src,
         } else {
             int segStart = -1;
             for (int i = 0; i <= w; i++) {
-                bool valid = (i < w) && mrow[i];
+                bool valid = (i < w) && mrow[i];  // guard: mask[w] is past row end
                 if (valid && segStart < 0) segStart = i;
                 if ((!valid || i == w) && segStart >= 0) {
                     int segEnd = i - 1;
@@ -179,11 +179,9 @@ void ncdfOverlayFactory::PrefilterCoefficients(
                 rawU[j*ni+i] = u; rawV[j*ni+i] = v; validMask[j*ni+i] = 1;
             }
         }
-    // B-spline prefilter U and V in parallel (independent buffers, shared read-only mask)
-    std::thread tU([&]() { BicubicSplinePrefilterWrapAware(coeffU, rawU, validMask, ni, nj, isGlobal); });
-    std::thread tV([&]() { BicubicSplinePrefilterWrapAware(coeffV, rawV, validMask, ni, nj, isGlobal); });
-    tU.join();
-    tV.join();
+    // B-spline prefilter U and V sequentially (avoids concurrent heap pressure)
+    BicubicSplinePrefilterWrapAware(coeffU, rawU, validMask, ni, nj, isGlobal);
+    BicubicSplinePrefilterWrapAware(coeffV, rawV, validMask, ni, nj, isGlobal);
     coefU_min = 1e30f; coefU_max = -1e30f;
     coefV_min = 1e30f; coefV_max = -1e30f;
     for (int k = 0; k < nj * ni; k++) {
@@ -217,6 +215,8 @@ bool ncdfOverlayFactory::RenderScalarColorMap(
 
     // Texture reuse: GPU texture already exists, just draw it (view pan / refresh)
     if (*st.p_hasTexture && !*st.p_needsRebuild && !animatedGrid) {
+        ncdfLog("[render:scalar] REUSE: hasTex=%d needsRebuild=%d coefMin=%f coefMax=%f\n",
+            (int)*st.p_hasTexture, (int)*st.p_needsRebuild, *st.p_cachedCoefMin, *st.p_cachedCoefMax);
         RenderSettings settings;
         settings.smoothColors = smoothColors;
         settings.vectorMode = false;
@@ -242,6 +242,7 @@ bool ncdfOverlayFactory::RenderScalarColorMap(
 
     // Texture missing but coefficients exist — recreate texture without recomputing
     if (*st.p_cachedCoeff && !*st.p_hasTexture && !animatedGrid) {
+        ncdfLog("[render:scalar] RECREATE tex from cached coeff: cachedCoeff=%p\n", (void*)*st.p_cachedCoeff);
         RenderSettings settings;
         settings.smoothColors = smoothColors;
         settings.vectorMode = false;
@@ -275,7 +276,12 @@ bool ncdfOverlayFactory::RenderScalarColorMap(
     }
 
     // First frame: need coefficients and texture
-    if (!*st.p_cachedCoeff) return false;
+    if (!*st.p_cachedCoeff) {
+        ncdfLog("[render:scalar] NO COEFF: cachedCoeff=NULL, cannot render\n");
+        return false;
+    }
+    ncdfLog("[render:scalar] FULL REBUILD: cachedCoeff=%p hasTex=%d needsRebuild=%d\n",
+        (void*)*st.p_cachedCoeff, (int)*st.p_hasTexture, (int)*st.p_needsRebuild);
 
     // Convert animation grid (double**) to float** if needed
     float** animFloatGrid = NULL;
@@ -326,13 +332,8 @@ bool ncdfOverlayFactory::RenderScalarColorMap(
         free(animFloatGrid);
     }
 
-    // Texture is now on GPU — release CPU-side coefficient cache and base grid
-    if (*st.p_cachedCoeff) { free(*st.p_cachedCoeff); *st.p_cachedCoeff = NULL; }
-    *st.p_cachedCoeffNj = *st.p_cachedCoeffNi = 0;
-    if (*st.p_cachedBaseGrid) {
-        for (int j = 0; j < *st.p_cachedNj; j++) delete[] (*st.p_cachedBaseGrid)[j];
-        st.p_cachedBaseGrid->reset();
-    }
+    // CPU caches (cachedCoeff, cachedBaseGrid) stay alive for reuse on next time step.
+    // setData() will clear them when new data arrives.
 
     if (*st.p_hasTexture) {
         *st.p_cachedCoefMin = settings.dataMin;
@@ -403,7 +404,9 @@ static void FillCoeffTexture(TexBuildContext &ctx,
             int off = 4 * (y * tw + x);
             int mi = j * ni + i;
             if (validMask && !validMask[mi]) {
-                texData[off] = 0; texData[off+1] = 0; texData[off+2] = 0; texData[off+3] = 0;
+                // Land: a=1 (≈0.004 in shader, 0.001<ca<0.01 → green)
+                // Border: a=0 (set by ApplyTextureBorders → transparent)
+                texData[off] = 0; texData[off+1] = 0; texData[off+2] = 0; texData[off+3] = 1;
             } else {
                 texData[off]   = (unsigned char)(fmin(fmax((coeffR[mi] - coefMinR) / coefRangeR, 0.0f), 1.0f) * 255.0f + 0.5f);
                 texData[off+1] = (unsigned char)(fmin(fmax((coeffG[mi] - coefMinG) / coefRangeG, 0.0f), 1.0f) * 255.0f + 0.5f);
@@ -537,7 +540,9 @@ static void FillScalarCoeffTex(TexBuildContext &ctx,
             int k = j * ni + i;
             float val = hasGrid ? grid[j][i] : 0.0f;
             if (hasGrid && !isfinite(val)) {
-                texData[off] = 0; texData[off+1] = 0; texData[off+2] = 0; texData[off+3] = 0;
+                // Land: a=1 (≈0.004 in shader, 0.001<ca<0.01 → green)
+                // Border: a=0 (set by ApplyTextureBorders → transparent)
+                texData[off] = 0; texData[off+1] = 0; texData[off+2] = 0; texData[off+3] = 1;
                 landTexCount++;
             } else {
                 texData[off]   = (unsigned char)(fminf(fmaxf((coeffBuf[k] - coefMin) / coefRange, 0.0f), 1.0f) * 255.0f + 0.5f);
@@ -567,6 +572,8 @@ static void BuildLUTTex(ncdfOverlayFactory::ColorFunc colorFunc,
 {
     // Only rebuild when lutID doesn't exist (per-overlay, no static cache)
     if (!hasLUT || !lutID) {
+        // Delete stale LUT from previous time step (Invalidate set hasLUT=false)
+        if (lutID) { glDeleteTextures(1, &lutID); lutID = 0; }
         float lutRange = settings.lutMax - settings.lutMin;
         if (lutRange < 1e-10f) lutRange = 1.0f;
         unsigned char lutData[256 * 4];
@@ -736,6 +743,8 @@ static void BuildPhysicalTex(TexBuildContext &ctx,
 
             // Upload physical texture
             if (!(*hasPhysicalTex)) {
+                // Delete stale texture from previous time step (Invalidate set hasPhysicalTex=false)
+                if (*physicalTexID) { glDeleteTextures(1, physicalTexID); *physicalTexID = 0; }
                 glGenTextures(1, physicalTexID);
                 glBindTexture(GL_TEXTURE_2D, *physicalTexID);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, repeat ? GL_REPEAT : GL_CLAMP_TO_EDGE);

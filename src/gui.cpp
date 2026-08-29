@@ -47,10 +47,6 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 
 	fgSizer1->Add( bSizer2, 0, wxEXPAND, 5 );
 
-	// Hidden time choice (used by playback logic)
-	m_choiceTime = new wxChoice( m_panel1, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxArrayString(), 0 );
-	m_choiceTime->Hide();
-
 	m_treeCtrl = new wxTreeCtrl( m_panel1, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxTR_DEFAULT_STYLE|wxHSCROLL|wxBORDER_SUNKEN );
 	m_treeCtrl->SetFont( wxFont( 12, wxFONTFAMILY_SWISS, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_NORMAL, false, wxT("Sans") ) );
 	m_treeCtrl->SetMinSize( wxSize( -1,250 ) );
@@ -78,17 +74,8 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 
 	bSizer5->Add( 24, 0, 1, wxEXPAND, 5 );
 
-	m_bpPrev = new wxBitmapButton( m_panel1, wxID_ANY, wxBitmap(prev1), wxDefaultPosition, wxDefaultSize, wxBU_AUTODRAW|0 );
-	bSizer5->Add( m_bpPrev, 0, wxALL, 5 );
-
-	m_bpNext = new wxBitmapButton( m_panel1, wxID_ANY, wxBitmap(next1), wxDefaultPosition, wxDefaultSize, wxBU_AUTODRAW|0 );
-	bSizer5->Add( m_bpNext, 0, wxALL, 5 );
-
 	m_bpPlay = new wxBitmapButton( m_panel1, wxID_ANY, wxBitmap(play), wxDefaultPosition, wxDefaultSize, wxBU_AUTODRAW|0 );
 	bSizer5->Add( m_bpPlay, 0, wxALL|wxALIGN_CENTER_VERTICAL, 5 );
-
-	m_sTimeline = new wxSlider( m_panel1, wxID_ANY, 0, 0, 10, wxDefaultPosition, wxSize(200, -1), wxSL_HORIZONTAL );
-	bSizer5->Add( m_sTimeline, 1, wxEXPAND|wxALL|wxALIGN_CENTER_VERTICAL, 5 );
 
 
 	fgSizer7->Add( bSizer5, 1, wxEXPAND, 5 );
@@ -248,9 +235,7 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	m_checkBoxAnimateSal->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onAnimateSalClick ), NULL, this );
 	m_checkBoxSalinity->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSalinityClick ), NULL, this );
 	m_checkBoxAnimate->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onAnimateClick ), NULL, this );
-	m_choiceTime->Connect( wxEVT_COMMAND_CHOICE_SELECTED, wxCommandEventHandler( ncdfDialog::onTimeChange ), NULL, this );
-	m_sTimeline->Connect( wxEVT_SCROLL_THUMBTRACK, wxScrollEventHandler( ncdfDialog::OnTimeline ), NULL, this );
-	m_sTimeline->Connect( wxEVT_SCROLL_CHANGED, wxScrollEventHandler( ncdfDialog::OnTimeline ), NULL, this );
+
 }
 
 ncdfDialog::~ncdfDialog()
@@ -273,8 +258,6 @@ ncdfDialog::~ncdfDialog()
 	m_checkBoxAnimateSal->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onAnimateSalClick ), NULL, this );
 	m_checkBoxSalinity->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSalinityClick ), NULL, this );
 	m_checkBoxAnimate->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onAnimateClick ), NULL, this );
-	m_choiceTime->Disconnect( wxEVT_COMMAND_CHOICE_SELECTED, wxCommandEventHandler( ncdfDialog::onTimeChange ), NULL, this );
-	m_sTimeline->Disconnect( wxEVT_SCROLL_THUMBTRACK, wxScrollEventHandler( ncdfDialog::OnTimeline ), NULL, this );
-	m_sTimeline->Disconnect( wxEVT_SCROLL_CHANGED, wxScrollEventHandler( ncdfDialog::OnTimeline ), NULL, this );
+
 
 }

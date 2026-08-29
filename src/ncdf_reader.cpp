@@ -60,16 +60,18 @@ void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 	bool hasCurrent = dataMessage.hasCurrent();
 	bool hasSST = dataMessage.hasSSTData();
 	bool hasSal = dataMessage.hasSalData();
+	ncdfLog("[ncdf] readncdfFile: hasCurrent=%d hasSST=%d hasSal=%d ucurr.size=%zu sst.size=%zu\n",
+		(int)hasCurrent, (int)hasSST, (int)hasSal, dataMessage.ucurr.size(), dataMessage.sst.size());
 
-	// Free old coordinate arrays before deep copy
-	if (gui->myMessage.latValues) { free(gui->myMessage.latValues); gui->myMessage.latValues = NULL; }
-	if (gui->myMessage.lonValues) { free(gui->myMessage.lonValues); gui->myMessage.lonValues = NULL; }
-	if (gui->myMessage.timeValues) { free(gui->myMessage.timeValues); gui->myMessage.timeValues = NULL; }
+	// clear() handles coordinate lifetime via shared_ptr — no manual free needed
+	gui->myMessage.clear();
 
 	dbg = fopen("C:\\ProgramData\\opencpn\\ncdf_crash_trace.log", "a");
 	if (dbg) { fprintf(dbg, "readncdfFile: A-before copy\n"); fflush(dbg); fclose(dbg); }
 
 	gui->myMessage = dataMessage;  // deep copy
+	ncdfLog("[ncdf] readncdfFile: after copy, myMessage.ucurr.size=%zu sst.size=%zu lonLength=%zu\n",
+		gui->myMessage.ucurr.size(), gui->myMessage.sst.size(), gui->myMessage.lonLength);
 
 	dbg = fopen("C:\\ProgramData\\opencpn\\ncdf_crash_trace.log", "a");
 	if (dbg) { fprintf(dbg, "readncdfFile: B-after copy, calling reset, factory=%p plugin=%p\n",
@@ -118,8 +120,12 @@ void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 							   dataMessage.lastGridPointLong
 							   );
 
+	ncdfLog("[ncdf] readncdfFile: setData done, calling prepareAllOverlays\n");
+
 	// Precompute all overlay data (grids + B-spline coefficients) and free CPU buffers
 	gui->pPlugIn->GetncdfOverlayFactory()->prepareAllOverlays();
+
+	ncdfLog("[ncdf] readncdfFile: prepareAllOverlays done\n");
 
 	isReading = false;
 

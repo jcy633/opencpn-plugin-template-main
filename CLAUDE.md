@@ -107,4 +107,5 @@
 - 粒子密度滑块用wxSL_MIN_MAX_LABELS|wxSL_VALUE_LABEL显示标签
 - 非线性密度公式：density = 4.0 * exp(slider - 7)
 - GRIB粒子流动感关键：lip/sip双缓冲插值，整条轨迹随m_Run平滑移动
+- glDeleteTextures等GL函数必须在拥有GL上下文的线程（渲染线程）中调用；setData()在文件读取线程中执行，Invalidate()中禁止调用GL函数，必须延迟到渲染线程中删除纹理
 - koa-connect wrapper caused ctx leaks, so native rewrite is required

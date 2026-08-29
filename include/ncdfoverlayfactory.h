@@ -67,8 +67,10 @@ public:
             ~ncdfOverlayFactory();
 
 			void setData(MainDialog *gui, ncdf_pi *plugin, const ncdfDataMessage& g2data, int numberOfPoints, wxDouble tlat, wxDouble tlon, wxDouble blat, wxDouble blon);
+			bool isInitialized() const { return gui != NULL; }
      void reset();
      void prepareAllOverlays();  // Precompute grids + B-spline coefficients for all data types
+     void updateTimeStep();      // Same-file time step switch: invalidate without destroying grid caches
      void setSelectionRectangle(Selection *rect);
      bool isReadyToRender(){ return m_bReadyToRender; }
      void clearBmp();

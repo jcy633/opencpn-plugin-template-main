@@ -44,11 +44,26 @@ void SalinityOverlay::Cleanup() {
     Init();
 }
 
-void SalinityOverlay::Invalidate() {
+void SalinityOverlay::clearCache() {
+    if (cachedBaseGrid) {
+        for (int j = 0; j < cachedNj; j++) delete[] cachedBaseGrid[j];
+        cachedBaseGrid.reset();
+    }
+    cachedNj = cachedNi = 0;
+    if (cachedCoeff) { free(cachedCoeff); cachedCoeff = NULL; }
+    dataReady = false;
     needsRebuild = true;
     needsIsoRebuild = true;
-    if (hasLUT && lutID) { glDeleteTextures(1, &lutID); lutID = 0; }
-    hasLUT = false;
+    // GPU textures preserved: glTexture, lutID, uploadBuf
+}
+
+void SalinityOverlay::Invalidate() {
+    ncdfLog("[invalidate:sal] needsRebuild was=%d hasLUT=%d hasTex=%d\n", (int)needsRebuild, (int)hasLUT, (int)hasTexture);
+    needsRebuild = true;
+    needsIsoRebuild = true;
+    // Don't delete GL textures here — setData() may run on a non-GL thread.
+    // LUT will be recreated in BuildLUTTex on next render (render thread has GL context).
+    hasLUT = false;  // Mark stale; render thread will glDeleteTextures + recreate
 }
 
 void SalinityOverlay::prepareData(MainDialog *gui, ncdf_pi *plugin, ncdfOverlayFactory *factory) {
@@ -65,6 +80,7 @@ void SalinityOverlay::prepareData(MainDialog *gui, ncdf_pi *plugin, ncdfOverlayF
 
     // 1. Build base grid as float (kept for first-frame texture build in RenderScalarColorMap)
     if (!cachedBaseGrid) {
+        ncdfLog("[prepare:sal] grid cache MISS — allocating %dx%d\n", ni, nj);
         auto src = std::make_unique<float*[]>(nj);
         for (int j = 0; j < nj; j++) {
             src[j] = new float[ni];
@@ -91,7 +107,10 @@ void SalinityOverlay::prepareData(MainDialog *gui, ncdf_pi *plugin, ncdfOverlayF
     auto t1 = std::chrono::high_resolution_clock::now();
 
     // 2. Compute B-spline coefficients directly from float base grid
+    bool coeffRebuilt = false;
     if (!cachedCoeff || cachedCoeffNj != nj || cachedCoeffNi != ni) {
+        ncdfLog("[prepare:sal] coeff cache MISS — cachedCoeff=%p cachedNj=%d cachedNi=%d vs nj=%d ni=%d\n",
+            (void*)cachedCoeff, cachedCoeffNj, cachedCoeffNi, nj, ni);
         if (cachedCoeff) { free(cachedCoeff); cachedCoeff = NULL; }
         float *coeffBuf = (float*)calloc(ni * nj, sizeof(float));
         unsigned char *byteMask = (unsigned char*)malloc(ni * nj);
@@ -144,11 +163,12 @@ void SalinityOverlay::prepareData(MainDialog *gui, ncdf_pi *plugin, ncdfOverlayF
         }
         if (coeffBuf) free(coeffBuf);
         if (byteMask) free(byteMask);
+        coeffRebuilt = true;
     }
     auto t2 = std::chrono::high_resolution_clock::now();
 
     dataReady = true;
-    needsRebuild = true;  // Force texture rebuild on next render (has GL context)
+    needsRebuild = coeffRebuilt;  // Only rebuild texture when data actually changed
     auto gridMs = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
     auto bsplineMs = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
     auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t0).count();

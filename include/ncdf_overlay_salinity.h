@@ -57,6 +57,8 @@ struct SalinityOverlay {
 
     void Init();
     void Cleanup();
+    void clearCache();  // Free CPU caches only, preserve GPU textures for glTexSubImage2D reuse
+    ~SalinityOverlay() { Cleanup(); }
     void Invalidate();
     void prepareData(MainDialog *gui, ncdf_pi *plugin, ncdfOverlayFactory *factory);
 

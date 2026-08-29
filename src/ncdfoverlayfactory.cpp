@@ -164,57 +164,36 @@ void ncdfOverlayFactory::SetBicubicMode(bool enable)
 
 void ncdfOverlayFactory::setData(MainDialog *gui, ncdf_pi *plugin, const ncdfDataMessage& g2data, int numberOfPoints, wxDouble tlat, wxDouble tlon, wxDouble blat, wxDouble blon)
 {
-	// Mark textures for rebuild (GL deletion deferred to render)
-	m_currentOverlay.Invalidate();
-	m_seaTempOverlay.Invalidate();
-	m_salinityOverlay.Invalidate();
-	// Clear cached B-spline coefficients (stale from previous time step)
-	if (m_currentOverlay.cachedCoeffU) { free(m_currentOverlay.cachedCoeffU); m_currentOverlay.cachedCoeffU = NULL; }
-	if (m_currentOverlay.cachedCoeffV) { free(m_currentOverlay.cachedCoeffV); m_currentOverlay.cachedCoeffV = NULL; }
-	m_currentOverlay.cachedCoeffNj = m_currentOverlay.cachedCoeffNi = 0;
-	if (m_seaTempOverlay.cachedCoeff) { free(m_seaTempOverlay.cachedCoeff); m_seaTempOverlay.cachedCoeff = NULL; }
-	m_seaTempOverlay.cachedCoeffNj = m_seaTempOverlay.cachedCoeffNi = 0;
-	if (m_salinityOverlay.cachedCoeff) { free(m_salinityOverlay.cachedCoeff); m_salinityOverlay.cachedCoeff = NULL; }
-	m_salinityOverlay.cachedCoeffNj = m_salinityOverlay.cachedCoeffNi = 0;
+	ncdfLog("[setData] ENTER: hasCurr=%d hasSST=%d hasSal=%d | showCurr=%d showSST=%d showSal=%d\n",
+		(int)g2data.hasCurrent(), (int)g2data.hasSSTData(), (int)g2data.hasSalData(),
+		(int)(plugin && plugin->m_bShowCurrentForce), (int)(plugin && plugin->m_bShowSeaTemp), (int)(plugin && plugin->m_bShowSalinity));
+
+	// GRIB pattern: nuke all cached state (textures, grids, coefficients)
+	// Safe because setData runs on the main thread which owns the GL context
+	m_currentOverlay.Cleanup();   // deletes GL textures + frees all CPU caches
+	m_seaTempOverlay.Cleanup();
+	m_salinityOverlay.Cleanup();
+
 	ClearParticles();
 	m_last_vp_scale = -1;
 	m_last_vp_latMax = -99999.0;
 	m_bUpdateParticles = true;
 	m_particleBurstCount = 30;
 
-	// Release cached grids for overlays not currently displayed (save memory)
-	if (!(plugin && plugin->m_bShowCurrentForce)) {
-		if (m_currentOverlay.cachedU) { for (int j = 0; j < m_currentOverlay.cachedUNj; j++) delete[] m_currentOverlay.cachedU[j]; delete[] m_currentOverlay.cachedU; m_currentOverlay.cachedU = NULL; }
-		if (m_currentOverlay.cachedV) { for (int j = 0; j < m_currentOverlay.cachedUNj; j++) delete[] m_currentOverlay.cachedV[j]; delete[] m_currentOverlay.cachedV; m_currentOverlay.cachedV = NULL; }
-		if (m_currentOverlay.cachedCoeffU) { free(m_currentOverlay.cachedCoeffU); m_currentOverlay.cachedCoeffU = NULL; }
-		if (m_currentOverlay.cachedCoeffV) { free(m_currentOverlay.cachedCoeffV); m_currentOverlay.cachedCoeffV = NULL; }
-	}
-	if (!(plugin && plugin->m_bShowSeaTemp)) {
-		if (m_seaTempOverlay.cachedBaseGrid) { for (int j = 0; j < m_seaTempOverlay.cachedNj; j++) delete[] m_seaTempOverlay.cachedBaseGrid[j]; m_seaTempOverlay.cachedBaseGrid.reset(); }
-		if (m_seaTempOverlay.cachedCoeff) { free(m_seaTempOverlay.cachedCoeff); m_seaTempOverlay.cachedCoeff = NULL; }
-	}
-	if (!(plugin && plugin->m_bShowSalinity)) {
-		if (m_salinityOverlay.cachedBaseGrid) { for (int j = 0; j < m_salinityOverlay.cachedNj; j++) delete[] m_salinityOverlay.cachedBaseGrid[j]; m_salinityOverlay.cachedBaseGrid.reset(); }
-		if (m_salinityOverlay.cachedCoeff) { free(m_salinityOverlay.cachedCoeff); m_salinityOverlay.cachedCoeff = NULL; }
-	}
-
-	// Don't deep copy data — use gui->myMessage directly (avoids 140MB copy for global data)
 	this->numberOfPoints = numberOfPoints;
-    this->gui = gui;
-    this->plugin = plugin;
+	this->gui = gui;
+	this->plugin = plugin;
 
-    // Use the bounds passed from readncdfFile (from the actual data)
-    // Sort to ensure correct ordering: north > south, west < east
-    this->tlat = wxMax(tlat, blat);
-    this->blat = wxMin(tlat, blat);
-    this->tlon = wxMin(tlon, blon);
-    this->blon = wxMax(tlon, blon);
+	this->tlat = wxMax(tlat, blat);
+	this->blat = wxMin(tlat, blat);
+	this->tlon = wxMin(tlon, blon);
+	this->blon = wxMax(tlon, blon);
 
-	wxLogMessage(_T("[setData] bounds: lat[%.2f,%.2f] lon[%.2f,%.2f] ni=%d nj=%d"),
-        this->tlat, this->blat, this->tlon, this->blon,
-        (int)gui->myMessage.lonLength, (int)gui->myMessage.latLength);
+	ncdfLog("[setData] bounds: lat[%.2f,%.2f] lon[%.2f,%.2f] ni=%d nj=%d\n",
+		this->tlat, this->blat, this->tlon, this->blon,
+		(int)gui->myMessage.lonLength, (int)gui->myMessage.latLength);
 
-    this->m_bReadyToRender = true;
+	this->m_bReadyToRender = true;
 }
 
 void ncdfOverlayFactory::setSelectionRectangle(Selection *rect)
@@ -230,48 +209,42 @@ void ncdfOverlayFactory::prepareAllOverlays()
 
     auto t0 = std::chrono::high_resolution_clock::now();
 
-    // Clear base grids from previous time step (forces rebuild from new data)
-    m_seaTempOverlay.cachedBaseGrid.reset();
-    m_salinityOverlay.cachedBaseGrid.reset();
+    // setData() already Cleanup()'d all caches — no need to clear here
+    // Only prepare overlays that are currently visible (GRIB pattern)
+    bool hasCurr = gui->myMessage.hasCurrent() && plugin && plugin->m_bShowCurrentForce;
+    bool hasSST  = gui->myMessage.hasSSTData()  && plugin && plugin->m_bShowSeaTemp;
+    bool hasSal  = gui->myMessage.hasSalData()  && plugin && plugin->m_bShowSalinity;
+    ncdfLog("[prepare] hasCurr=%d hasSST=%d hasSal=%d (visible only)\n",
+        (int)hasCurr, (int)hasSST, (int)hasSal);
 
-    // Launch all available overlay computations in parallel
-    bool hasCurr = gui->myMessage.hasCurrent();
-    bool hasSST = gui->myMessage.hasSSTData();
-    bool hasSal = gui->myMessage.hasSalData();
-
-    std::thread tCurr, tSST, tSal;
-    if (hasCurr) {
-        tCurr = std::thread([this]() {
-            m_currentOverlay.prepareData(gui, plugin, this);
-        });
-    }
-    if (hasSST) {
-        tSST = std::thread([this]() {
-            m_seaTempOverlay.prepareData(gui, plugin, this);
-        });
-    }
-    if (hasSal) {
-        tSal = std::thread([this]() {
-            m_salinityOverlay.prepareData(gui, plugin, this);
-        });
-    }
-
-    // Wait for all threads to complete
-    if (hasCurr && tCurr.joinable()) tCurr.join();
-    if (hasSST && tSST.joinable()) tSST.join();
-    if (hasSal && tSal.joinable()) tSal.join();
+    if (hasCurr) { ncdfLog("[prepare] current START\n"); m_currentOverlay.prepareData(gui, plugin, this); ncdfLog("[prepare] current DONE needsRebuild=%d\n", (int)m_currentOverlay.needsRebuild); }
+    if (hasSST)  { ncdfLog("[prepare] sst START\n"); m_seaTempOverlay.prepareData(gui, plugin, this); ncdfLog("[prepare] sst DONE needsRebuild=%d\n", (int)m_seaTempOverlay.needsRebuild); }
+    if (hasSal)  { ncdfLog("[prepare] sal START\n"); m_salinityOverlay.prepareData(gui, plugin, this); ncdfLog("[prepare] sal DONE needsRebuild=%d\n", (int)m_salinityOverlay.needsRebuild); }
 
     // Free CPU-side raw data — all computations are now cached in overlay structs
     // Texture upload will happen lazily on first RenderColorMap (needs GL context)
-    gui->myMessage.ucurr.clear();
-    gui->myMessage.vcurr.clear();
-    gui->myMessage.sst.clear();
-    gui->myMessage.salinity.clear();
+    // NOTE: Do NOT clear myMessage vectors here — DoRenderncdfOverlay checks
+    // myMessage.hasSSTData()/hasCurrent()/hasSalData() as render gate.
+    // Vectors will be cleared when the next time step loads via myMessage.clearData().
 
     auto t1 = std::chrono::high_resolution_clock::now();
     auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-    ncdfLog("[perf] prepareAllOverlays: TOTAL=%lldms (parallel)\n", (long long)totalMs);
+    ncdfLog("[perf] prepareAllOverlays: TOTAL=%lldms (sequential)\n", (long long)totalMs);
     ncdfLog("[render] prepareAllOverlays: DONE, CPU data freed\n");
+}
+
+void ncdfOverlayFactory::updateTimeStep()
+{
+    ncdfLog("[updateTimeStep] ENTER — same-file time step switch\n");
+    // Free CPU-side caches only. GPU textures preserved for glTexSubImage2D reuse.
+    m_currentOverlay.clearCache();
+    m_seaTempOverlay.clearCache();
+    m_salinityOverlay.clearCache();
+    m_last_vp_scale = -1;
+    m_last_vp_latMax = -99999.0;
+    m_bUpdateParticles = true;
+    m_particleBurstCount = 30;
+    ClearParticles();
 }
 
 void ncdfOverlayFactory::reset()
@@ -394,10 +367,12 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 		s_renderDbg++;
 	}
 
-    // Dispatch to per-type renderers
-    ncdfLog("[render] DoRender: dispatching, showF=%d showD=%d showP=%d showSST=%d showSal=%d\n",
-        (int)plugin->m_bShowCurrentForce, (int)plugin->m_bShowCurrentDir, (int)plugin->m_bShowParticles,
-        (int)plugin->m_bShowSeaTemp, (int)plugin->m_bShowSalinity);
+    ncdfLog("[render] dispatch: showCurr=%d showSST=%d showSal=%d showDir=%d showP=%d | cur[dataR=%d hasTex=%d] sst[dataR=%d hasTex=%d] sal[dataR=%d hasTex=%d]\n",
+        (int)plugin->m_bShowCurrentForce, (int)plugin->m_bShowSeaTemp, (int)plugin->m_bShowSalinity,
+        (int)plugin->m_bShowCurrentDir, (int)plugin->m_bShowParticles,
+        (int)m_currentOverlay.dataReady, (int)m_currentOverlay.hasTexture,
+        (int)m_seaTempOverlay.dataReady, (int)m_seaTempOverlay.hasTexture,
+        (int)m_salinityOverlay.dataReady, (int)m_salinityOverlay.hasTexture);
     RenderCurrentOverlay(vp, animGrid, animUGrid, animVGrid);
 
     if(plugin->m_bShowCurrentDir) {
@@ -461,7 +436,9 @@ void ncdfOverlayFactory::RenderCurrentOverlay(PlugIn_ViewPort *vp, double **anim
 {
     if(plugin->m_bShowCurrentForce && m_currentOverlay.dataReady && !m_pdc) {
 #ifdef ocpnUSE_GL
-        ncdfLog("[render] RenderCurrentOverlay: ENTER\n");
+        ncdfLog("[render:current] ENTER hasTex=%d needsRebuild=%d dataReady=%d cachedU=%p cachedCoeffU=%p\n",
+            (int)m_currentOverlay.hasTexture, (int)m_currentOverlay.needsRebuild,
+            (int)m_currentOverlay.dataReady, (void*)m_currentOverlay.cachedU, (void*)m_currentOverlay.cachedCoeffU);
         glDisable(GL_TEXTURE_2D);
         glBindTexture(GL_TEXTURE_2D, 0);
         m_currentInterpMode = 0;
@@ -481,8 +458,9 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp, double **anim
 {
     if (plugin->m_bShowSeaTemp && gui && m_seaTempOverlay.dataReady && !m_pdc) {
 #ifdef ocpnUSE_GL
-        ncdfLog("[render] RenderSeaTempOverlay: ENTER, needsRebuild=%d hasTexture=%d sst.size=%zu\n",
-            (int)m_seaTempOverlay.needsRebuild, (int)m_seaTempOverlay.hasTexture, gui->myMessage.sst.size());
+        ncdfLog("[render:sst] ENTER hasTex=%d needsRebuild=%d dataReady=%d cachedCoeff=%p cachedBaseGrid=%d\n",
+            (int)m_seaTempOverlay.hasTexture, (int)m_seaTempOverlay.needsRebuild,
+            (int)m_seaTempOverlay.dataReady, (void*)m_seaTempOverlay.cachedCoeff, (int)(bool)m_seaTempOverlay.cachedBaseGrid);
         m_currentInterpMode = 0;
         m_currentSmoothColors = false;
         m_currentSCurve = false;
@@ -504,6 +482,9 @@ void ncdfOverlayFactory::RenderSalinityOverlay(PlugIn_ViewPort *vp, double **ani
 {
     if (plugin->m_bShowSalinity && gui && m_salinityOverlay.dataReady && !m_pdc) {
 #ifdef ocpnUSE_GL
+        ncdfLog("[render:sal] ENTER hasTex=%d needsRebuild=%d dataReady=%d cachedCoeff=%p cachedBaseGrid=%d\n",
+            (int)m_salinityOverlay.hasTexture, (int)m_salinityOverlay.needsRebuild,
+            (int)m_salinityOverlay.dataReady, (void*)m_salinityOverlay.cachedCoeff, (int)(bool)m_salinityOverlay.cachedBaseGrid);
         m_currentInterpMode = 0;
         m_currentSmoothColors = false;
         m_currentSCurve = false;

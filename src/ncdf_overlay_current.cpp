@@ -55,14 +55,25 @@ void CurrentOverlay::Cleanup() {
     Init();
 }
 
-void CurrentOverlay::Invalidate() {
+void CurrentOverlay::clearCache() {
+    if (cachedU) { for (int j = 0; j < cachedUNj; j++) delete[] cachedU[j]; delete[] cachedU; cachedU = NULL; }
+    if (cachedV) { for (int j = 0; j < cachedUNj; j++) delete[] cachedV[j]; delete[] cachedV; cachedV = NULL; }
+    if (cachedCoeffU) { free(cachedCoeffU); cachedCoeffU = NULL; }
+    if (cachedCoeffV) { free(cachedCoeffV); cachedCoeffV = NULL; }
+    if (cachedVorticity) { for (int j = 0; j < vortNj; j++) delete[] cachedVorticity[j]; cachedVorticity.reset(); }
+    dataReady = false;
     needsRebuild = true;
     needsLICRebuild = true;
-    if (hasPhysicalTex && physicalTexID) {
-        glDeleteTextures(1, &physicalTexID);
-        physicalTexID = 0;
-    }
-    hasPhysicalTex = false;
+    // GPU textures preserved: glTexture, lutID, physicalTexID, uploadBuf, vortTexture, licTexture
+}
+
+void CurrentOverlay::Invalidate() {
+    ncdfLog("[invalidate:cur] needsRebuild was=%d hasPhysicalTex=%d hasTex=%d\n", (int)needsRebuild, (int)hasPhysicalTex, (int)hasTexture);
+    needsRebuild = true;
+    needsLICRebuild = true;
+    // Don't delete GL textures here — setData() may run on a non-GL thread.
+    // Defer deletion to RenderGridOverlay (render thread has GL context).
+    hasPhysicalTex = false;  // Mark stale; render thread will glDeleteTextures
 }
 
 void CurrentOverlay::prepareData(MainDialog *gui, ncdf_pi *plugin, ncdfOverlayFactory *factory) {
@@ -75,6 +86,7 @@ void CurrentOverlay::prepareData(MainDialog *gui, ncdf_pi *plugin, ncdfOverlayFa
 
     // 1. Build U/V grids as float
     if (!cachedU || !cachedV) {
+        ncdfLog("[prepare:cur] grid cache MISS — allocating %dx%d\n", ni, nj);
         cachedU = new float*[nj]; cachedV = new float*[nj];
         for (int j = 0; j < nj; j++) {
             cachedU[j] = new float[ni]; cachedV[j] = new float[ni];
@@ -89,7 +101,10 @@ void CurrentOverlay::prepareData(MainDialog *gui, ncdf_pi *plugin, ncdfOverlayFa
     auto t1 = std::chrono::high_resolution_clock::now();
 
     // 2. B-spline coefficients for U and V
+    bool coeffRebuilt = false;
     if (!cachedCoeffU || !cachedCoeffV || cachedCoeffNj != nj || cachedCoeffNi != ni) {
+        ncdfLog("[prepare:cur] coeff cache MISS — cachedCoeffU=%p cachedNj=%d cachedNi=%d vs nj=%d ni=%d\n",
+            (void*)cachedCoeffU, cachedCoeffNj, cachedCoeffNi, nj, ni);
         if (cachedCoeffU) free(cachedCoeffU);
         if (cachedCoeffV) free(cachedCoeffV);
         cachedCoeffU = (float*)calloc(nj * ni, sizeof(float));
@@ -108,6 +123,7 @@ void CurrentOverlay::prepareData(MainDialog *gui, ncdf_pi *plugin, ncdfOverlayFa
             cachedCoefMin = cachedCoefU_min * bsplineScale;
             cachedCoefMax = cachedCoefU_max * bsplineScale;
         }
+        coeffRebuilt = true;
     }
 
     // Compute speed range from U/V (for shader normalization)
@@ -126,7 +142,7 @@ void CurrentOverlay::prepareData(MainDialog *gui, ncdf_pi *plugin, ncdfOverlayFa
     auto t3 = std::chrono::high_resolution_clock::now();
 
     dataReady = true;
-    needsRebuild = false;
+    needsRebuild = coeffRebuilt;  // Only rebuild texture when data actually changed
     auto uvMs = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
     auto bsplineMs = std::chrono::duration_cast<std::chrono::milliseconds>(t3 - t1).count();
     auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(t3 - t0).count();
@@ -153,8 +169,8 @@ bool CurrentOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
 
     // Texture reuse: GPU texture already exists, just draw it (view pan / refresh)
     if (hasTexture && !needsRebuild && !animatedGrid) {
-        ncdfLog("[perf] Current REUSE: cachedCoefMin=%f cachedCoefMax=%f hasTex=%d\n",
-            cachedCoefMin, cachedCoefMax, (int)hasTexture);
+        ncdfLog("[render:current] REUSE path: hasTex=%d needsRebuild=%d cachedCoefMin=%f cachedCoefMax=%f\n",
+            (int)hasTexture, (int)needsRebuild, cachedCoefMin, cachedCoefMax);
         ncdfOverlayFactory::RenderSettings settings;
         settings.smoothColors = false;
         settings.vectorMode = true;  // Texture was created in vector mode (R=U, G=V)
@@ -202,6 +218,8 @@ bool CurrentOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
     }
 
     // Build shader settings
+    ncdfLog("[render:current] REBUILD path: cachedU=%p cachedCoeffU=%p hasTex=%d needsRebuild=%d\n",
+        (void*)cachedU, (void*)cachedCoeffU, (int)hasTexture, (int)needsRebuild);
     ncdfOverlayFactory::RenderSettings settings;
     settings.smoothColors = false;
 
@@ -307,11 +325,8 @@ bool CurrentOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
         cachedPhysMax = settings.physMax;
         cachedPhysMinV = settings.physMinV;
         cachedPhysMaxV = settings.physMaxV;
-        // Free CPU caches — data is now on GPU
-        if (cachedU) { for (int j = 0; j < cachedNj; j++) delete[] cachedU[j]; delete[] cachedU; cachedU = NULL; }
-        if (cachedV) { for (int j = 0; j < cachedNj; j++) delete[] cachedV[j]; delete[] cachedV; cachedV = NULL; }
-        if (cachedCoeffU) { free(cachedCoeffU); cachedCoeffU = NULL; }
-        if (cachedCoeffV) { free(cachedCoeffV); cachedCoeffV = NULL; }
+        // CPU caches (cachedU/V, cachedCoeffU/V) stay alive for reuse on next time step.
+        // setData() will clear them when new data arrives.
     }
 
     return true;

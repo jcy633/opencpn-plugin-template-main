@@ -44,11 +44,8 @@ class ncdfDialog : public wxDialog
 	protected:
 	wxNotebook* m_notebook1;
 	wxPanel* m_panel1;
-	wxChoice* m_choiceTime;
-	wxBitmapButton* m_bpNext;
-	wxBitmapButton* m_bpPrev;
+
 	wxBitmapButton* m_bpPlay;
-	wxSlider* m_sTimeline;
 	wxStaticLine* m_staticline1;
 	wxStaticText* m_staticText333;
 	wxStaticText* m_staticText341;
