@@ -15,6 +15,7 @@ extern void BicubicSplinePrefilterWrapAware(float* dst, const float* src,
 
 void SeaTempOverlay::Init() {
     glTexture = 0; hasTexture = false; needsRebuild = true; dataReady = false;
+    gridReady = false;
     dataDim[0] = dataDim[1] = 0;
     glDim[0] = glDim[1] = 0;
     lutID = 0; hasLUT = false;
@@ -60,11 +61,26 @@ void SeaTempOverlay::clearCoefficients() {
     ncdfLog("[clearCoeff:sst] cachedBaseGrid=%p cachedCoeff=%p cachedNj=%d cachedNi=%d\n",
         (void*)cachedBaseGrid.get(), (void*)cachedCoeff, cachedNj, cachedNi);
     if (cachedCoeff) { free(cachedCoeff); cachedCoeff = NULL; }
-    // Delete GPU texture — it contains old coefficient data, must be recreated
     if (hasTexture && glTexture) { glDeleteTextures(1, &glTexture); glTexture = 0; hasTexture = false; }
     dataReady = false;
+    gridReady = false;
     needsRebuild = true;
     needsIsoRebuild = true;
+}
+
+void SeaTempOverlay::ensureGridAllocated(int ni, int nj) {
+    if (cachedBaseGrid && cachedNj == nj && cachedNi == ni) return;
+    // Free old grid if dimensions changed
+    if (cachedBaseGrid) {
+        for (int j = 0; j < cachedNj; j++) delete[] cachedBaseGrid[j];
+        cachedBaseGrid.reset();
+    }
+    // Allocate new grid (values uninitialized — will be filled by prepareGrid)
+    auto src = std::make_unique<float*[]>(nj);
+    for (int j = 0; j < nj; j++) src[j] = new float[ni];
+    cachedBaseGrid = std::move(src);
+    cachedNj = nj; cachedNi = ni;
+    ncdfLog("[prealloc:sst] allocated %dx%d\n", ni, nj);
 }
 
 void SeaTempOverlay::prepareGrid(MainDialog *gui) {
@@ -104,13 +120,14 @@ void SeaTempOverlay::prepareGrid(MainDialog *gui) {
         }
     cachedDataMin = (dMin < dMax) ? (float)dMin : 0;
     cachedDataMax = (dMin < dMax) ? (float)dMax : 1;
+    gridReady = true;
     auto t1 = std::chrono::high_resolution_clock::now();
     ncdfLog("[perf] SeaTemp::prepareGrid ni=%d nj=%d %lldms\n", ni, nj,
         (long long)std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count());
 }
 
 void SeaTempOverlay::prepareCoeff(ncdfOverlayFactory *factory) {
-    if (!cachedBaseGrid) return;
+    if (!cachedBaseGrid || !gridReady) return;
     int ni = cachedNi, nj = cachedNj;
     auto t0 = std::chrono::high_resolution_clock::now();
 

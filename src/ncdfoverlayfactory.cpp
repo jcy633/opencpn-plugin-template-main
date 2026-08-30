@@ -222,20 +222,19 @@ void ncdfOverlayFactory::prepareAllGrids()
     ncdfLog("[render] prepareAllGrids: ENTER\n");
     auto t0 = std::chrono::high_resolution_clock::now();
 
-    // Convert myMessage data to float grids for available types.
-    // Only set dataReady for VISIBLE types (checkbox checked).
-    // Invisible types get grids prepared (for future checkbox click) but dataReady=false.
-    if (gui->myMessage.hasCurrent()) {
+    // P1: Only prepare grids for CHECKED (visible) types.
+    // Unchecked types will be prepared on-demand when the user clicks the checkbox.
+    if (plugin && plugin->m_bShowCurrentForce && gui->myMessage.hasCurrent()) {
         m_currentOverlay.prepareGrid(gui);
-        if (plugin && plugin->m_bShowCurrentForce) m_currentOverlay.dataReady = true;
+        m_currentOverlay.dataReady = true;
     }
-    if (gui->myMessage.hasSSTData()) {
+    if (plugin && plugin->m_bShowSeaTemp && gui->myMessage.hasSSTData()) {
         m_seaTempOverlay.prepareGrid(gui);
-        if (plugin && plugin->m_bShowSeaTemp) m_seaTempOverlay.dataReady = true;
+        m_seaTempOverlay.dataReady = true;
     }
-    if (gui->myMessage.hasSalData()) {
+    if (plugin && plugin->m_bShowSalinity && gui->myMessage.hasSalData()) {
         m_salinityOverlay.prepareGrid(gui);
-        if (plugin && plugin->m_bShowSalinity) m_salinityOverlay.dataReady = true;
+        m_salinityOverlay.dataReady = true;
     }
 
     auto t1 = std::chrono::high_resolution_clock::now();

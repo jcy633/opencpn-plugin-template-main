@@ -250,7 +250,11 @@ double ncdfDataMessage::getInterpolatedValueFloat(float* const* grid, int ni, in
 		px += 360.0;
 		if (!inX(px) || !inY(py)) {
 			px -= 2 * 360.0;
-			if (!inX(px) || !inY(py)) return ncdf_NOTDEF;
+			if (!inX(px) || !inY(py)) {
+				FILE *dbg = fopen("C:\\ProgramData\\opencpn\\ncdf_debug.log", "a");
+				if (dbg) { fprintf(dbg, "[interp:float] BOUNDS FAIL: px=%.4f py=%.4f lonMin=%.4f lonMax=%.4f firstLat=%.4f lastLat=%.4f iIncr=%.6f jIncr=%.6f\n", px, py, lonMin, lonMax, firstLat, lastLat, iIncr, jIncr); fclose(dbg); }
+				return ncdf_NOTDEF;
+			}
 		}
 	}
 
@@ -289,7 +293,11 @@ double ncdfDataMessage::getInterpolatedValueFloat(float* const* grid, int ni, in
 	if (isfinite(v01)) nbval++;
 	if (isfinite(v11)) nbval++;
 
-	if (nbval == 0) return ncdf_NOTDEF;
+	if (nbval == 0) {
+		FILE *dbg = fopen("C:\\ProgramData\\opencpn\\ncdf_debug.log", "a");
+		if (dbg) { fprintf(dbg, "[interp:float] ALL NAN: px=%.4f py=%.4f i0=%d j0=%d i1=%d ni=%d nj=%d v00=%.2f v10=%.2f v01=%.2f v11=%.2f\n", px, py, i0, j0, i1, (int)ni, (int)nj, v00, v10, v01, v11); fclose(dbg); }
+		return ncdf_NOTDEF;
+	}
 	if (nbval < 4) {
 		// Nearest neighbor fallback
 		double minDist = 1e10;
@@ -368,9 +376,7 @@ bool ncdfDataMessage::getInterpolatedUVFloat(float* const* uGrid, float* const* 
 
 	if (nbval == 0) return false;
 
-	dx = (3.0 - 2.0 * dx) * dx * dx;
-	dy = (3.0 - 2.0 * dy) * dy * dy;
-
+	// Bilinear interpolation (same as getInterpolatedValueFloat)
 	if (nbval == 4) {
 		uOut = u00 * (1-dx) * (1-dy) + u10 * dx * (1-dy)
 		     + u01 * (1-dx) * dy + u11 * dx * dy;

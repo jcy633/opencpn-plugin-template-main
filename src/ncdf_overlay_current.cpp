@@ -15,6 +15,7 @@ extern void BicubicSplinePrefilterWrapAware(float* dst, const float* src,
 
 void CurrentOverlay::Init() {
     glTexture = 0; hasTexture = false; needsRebuild = true; dataReady = false;
+    gridReady = false;
     dataDim[0] = dataDim[1] = 0;
     glDim[0] = glDim[1] = 0;
     lutID = 0; hasLUT = false;
@@ -60,10 +61,22 @@ void CurrentOverlay::clearCoefficients() {
     ncdfLog("[clearCoeff:cur] cachedU=%p cachedCoeffU=%p\n", (void*)cachedU, (void*)cachedCoeffU);
     if (cachedCoeffU) { free(cachedCoeffU); cachedCoeffU = NULL; }
     if (cachedCoeffV) { free(cachedCoeffV); cachedCoeffV = NULL; }
-    // Delete GPU texture — it contains old coefficient data, must be recreated
     if (hasTexture && glTexture) { glDeleteTextures(1, &glTexture); glTexture = 0; hasTexture = false; }
     dataReady = false;
+    gridReady = false;
     needsRebuild = true;
+}
+
+void CurrentOverlay::ensureGridAllocated(int ni, int nj) {
+    if (cachedU && cachedV && cachedUNj == nj && cachedVNi == ni) return;
+    // Free old grids if dimensions changed
+    if (cachedU) { for (int j = 0; j < cachedUNj; j++) delete[] cachedU[j]; delete[] cachedU; cachedU = NULL; }
+    if (cachedV) { for (int j = 0; j < cachedUNj; j++) delete[] cachedV[j]; delete[] cachedV; cachedV = NULL; }
+    // Allocate new grids (values uninitialized — will be filled by prepareGrid)
+    cachedU = new float*[nj]; cachedV = new float*[nj];
+    for (int j = 0; j < nj; j++) { cachedU[j] = new float[ni]; cachedV[j] = new float[ni]; }
+    cachedUNj = nj; cachedVNi = ni;
+    ncdfLog("[prealloc:cur] allocated %dx%d\n", ni, nj);
 }
 
 void CurrentOverlay::prepareGrid(MainDialog *gui) {
@@ -109,13 +122,14 @@ void CurrentOverlay::prepareGrid(MainDialog *gui) {
         }
     cachedDataMin = (dMin < dMax) ? dMin : 0;
     cachedDataMax = (dMin < dMax) ? dMax : 1;
+    gridReady = true;
     auto t1 = std::chrono::high_resolution_clock::now();
     ncdfLog("[perf] Current::prepareGrid ni=%d nj=%d %lldms\n", ni, nj,
         (long long)std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count());
 }
 
 void CurrentOverlay::prepareCoeff(ncdfOverlayFactory *factory) {
-    if (!cachedU || !cachedV) return;
+    if (!cachedU || !cachedV || !gridReady) return;
     int ni = cachedVNi, nj = cachedUNj;
     auto t0 = std::chrono::high_resolution_clock::now();
 

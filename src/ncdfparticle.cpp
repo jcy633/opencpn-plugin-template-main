@@ -42,7 +42,7 @@ void ncdfOverlayFactory::ClearParticles() {
 
 void ncdfOverlayFactory::RenderParticles(PlugIn_ViewPort *vp)
 {
-    if (!gui || !gui->myMessage.hasCurrent()) return;
+    if (!gui || !m_currentOverlay.cachedU || !m_currentOverlay.cachedV) return;
     int ni = gui->myMessage.lonLength;
     int nj = gui->myMessage.latLength;
     if (ni <= 1 || nj <= 1) return;
@@ -50,6 +50,16 @@ void ncdfOverlayFactory::RenderParticles(PlugIn_ViewPort *vp)
     double tlon = gui->myMessage.firstGridPointLong;
     double blat = gui->myMessage.lastGridPointLat;
     double blon = gui->myMessage.lastGridPointLong;
+
+    // Helper: bilinear UV interpolation from cached float grids
+    auto interpUV = [&](double lon, double lat, double &vx, double &vy) -> bool {
+        return gui->myMessage.getInterpolatedUVFloat(
+            m_currentOverlay.cachedU, m_currentOverlay.cachedV,
+            ni, nj,
+            tlat, blat, tlon, blon,
+            gui->myMessage.iDirectionIncr, gui->myMessage.jDirectionIncr,
+            lon, lat, vx, vy);
+    };
     if (tlat >= blat || tlon >= blon) return;
 
     if (!m_ParticleMap) m_ParticleMap = new ParticleMap();
@@ -104,7 +114,7 @@ void ncdfOverlayFactory::RenderParticles(PlugIn_ViewPort *vp)
         Particle::ParticleNode &n = it.m_History[it.m_HistoryPos];
         float(&p)[2] = n.m_Pos;
         double vx, vy;
-        if (!gui->myMessage.getInterpolatedUV(gui->myMessage, pp[0], pp[1], vx, vy))
+        if (!interpUV(pp[0], pp[1], vx, vy))
             { vx = vy = ncdf_NOTDEF; }
         double vkn = 0, ang;
         if (vx != ncdf_NOTDEF && vy != ncdf_NOTDEF && isfinite(vx) && isfinite(vy)) {
@@ -173,7 +183,7 @@ void ncdfOverlayFactory::RenderParticles(PlugIn_ViewPort *vp)
             GetCanvasLLPix(vp, rp, &rlat, &rlon);
             p[0] = (float)rlon; p[1] = (float)rlat;
             double vx, vy;
-            if (!gui->myMessage.getInterpolatedUV(gui->myMessage, p[0], p[1], vx, vy))
+            if (!interpUV(p[0], p[1], vx, vy))
                 { vx = vy = ncdf_NOTDEF; }
             if (vx != ncdf_NOTDEF && vy != ncdf_NOTDEF && isfinite(vx) && isfinite(vy)) {
                 double mag = sqrt(vx * vx + vy * vy);
@@ -203,7 +213,7 @@ void ncdfOverlayFactory::RenderParticles(PlugIn_ViewPort *vp)
         float fakePos[2] = {p[0], p[1]};
         for (int h = 1; h < history_size && h < MAX_PARTICLE_HISTORY; h++) {
             double fakeVx, fakeVy;
-            if (!gui->myMessage.getInterpolatedUV(gui->myMessage, fakePos[0], fakePos[1], fakeVx, fakeVy))
+            if (!interpUV(fakePos[0], fakePos[1], fakeVx, fakeVy))
                 { fakeVx = fakeVy = ncdf_NOTDEF; }
             if (fakeVx != ncdf_NOTDEF && fakeVy != ncdf_NOTDEF && isfinite(fakeVx) && isfinite(fakeVy)) {
                 double fakeMag = sqrt(fakeVx*fakeVx + fakeVy*fakeVy);

@@ -15,6 +15,7 @@ extern void BicubicSplinePrefilterWrapAware(float* dst, const float* src,
 
 void SalinityOverlay::Init() {
     glTexture = 0; hasTexture = false; needsRebuild = true; dataReady = false;
+    gridReady = false;
     dataDim[0] = dataDim[1] = 0;
     glDim[0] = glDim[1] = 0;
     lutID = 0; hasLUT = false;
@@ -64,8 +65,22 @@ void SalinityOverlay::clearCoefficients() {
     if (hasTexture && glTexture) { glDeleteTextures(1, &glTexture); glTexture = 0; hasTexture = false; }
     // Grid (cachedBaseGrid) preserved for reuse in same-file time step switch
     dataReady = false;
+    gridReady = false;
     needsRebuild = true;
     needsIsoRebuild = true;
+}
+
+void SalinityOverlay::ensureGridAllocated(int ni, int nj) {
+    if (cachedBaseGrid && cachedNj == nj && cachedNi == ni) return;
+    if (cachedBaseGrid) {
+        for (int j = 0; j < cachedNj; j++) delete[] cachedBaseGrid[j];
+        cachedBaseGrid.reset();
+    }
+    auto src = std::make_unique<float*[]>(nj);
+    for (int j = 0; j < nj; j++) src[j] = new float[ni];
+    cachedBaseGrid = std::move(src);
+    cachedNj = nj; cachedNi = ni;
+    ncdfLog("[prealloc:sal] allocated %dx%d\n", ni, nj);
 }
 
 void SalinityOverlay::prepareGrid(MainDialog *gui) {
@@ -104,13 +119,14 @@ void SalinityOverlay::prepareGrid(MainDialog *gui) {
         }
     cachedDataMin = (dMin < dMax) ? (float)dMin : 0;
     cachedDataMax = (dMin < dMax) ? (float)dMax : 1;
+    gridReady = true;
     auto t1 = std::chrono::high_resolution_clock::now();
     ncdfLog("[perf] Salinity::prepareGrid ni=%d nj=%d %lldms\n", ni, nj,
         (long long)std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count());
 }
 
 void SalinityOverlay::prepareCoeff(ncdfOverlayFactory *factory) {
-    if (!cachedBaseGrid) return;
+    if (!cachedBaseGrid || !gridReady) return;
     int ni = cachedNi, nj = cachedNj;
     auto t0 = std::chrono::high_resolution_clock::now();
 

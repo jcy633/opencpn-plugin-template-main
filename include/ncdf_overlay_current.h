@@ -55,6 +55,9 @@ struct CurrentOverlay {
     float cachedPhysMin, cachedPhysMax;
     float cachedPhysMinV, cachedPhysMaxV;  // V component range (vector only)
 
+    // Grid data flag: true after prepareGrid fills the grid with actual data
+    bool gridReady = false;
+
     void Init();
     void Cleanup();
     void clearCache();           // Free CPU caches + derived GPU textures
@@ -62,6 +65,7 @@ struct CurrentOverlay {
     void prepareGrid(MainDialog *gui);   // Convert myMessage data to float grids (no coefficients)
     void prepareCoeff(ncdfOverlayFactory *factory);  // Compute B-spline coefficients from grids
     void releaseCoeffData();     // Free coefficient data after texture upload (keep grid capacity)
+    void ensureGridAllocated(int ni, int nj);  // Pre-allocate grid structures if needed
     ~CurrentOverlay() { Cleanup(); }
     void Invalidate();
     void prepareData(MainDialog *gui, ncdf_pi *plugin, ncdfOverlayFactory *factory);  // Precompute grids + coefficients

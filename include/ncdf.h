@@ -90,10 +90,22 @@ public:
 	struct FileMetadata {
 		bool valid;
 		bool hasCurrent, hasSeaTemp, hasSalinity;
-		size_t timelength;
+		size_t timelength, latlength, lonlength;
+		wxDouble firstGridPointLat, firstGridPointLong;
+		wxDouble lastGridPointLat, lastGridPointLong;
+		wxDouble iDirectionIncr, jDirectionIncr;
+		int cached_u_varid, cached_v_varid, cached_sst_varid, cached_sal_varid;
 		std::vector<wxDateTime> dates;
 		std::vector<bool> timeValid;
-		FileMetadata() : valid(false), hasCurrent(false), hasSeaTemp(false), hasSalinity(false), timelength(0) {}
+		std::vector<double> timeValues;
+		std::shared_ptr<SharedCoords> sharedCoords;
+		FileMetadata() : valid(false), hasCurrent(false), hasSeaTemp(false), hasSalinity(false),
+			timelength(0), latlength(0), lonlength(0),
+			firstGridPointLat(0), firstGridPointLong(0),
+			lastGridPointLat(0), lastGridPointLong(0),
+			iDirectionIncr(0), jDirectionIncr(0),
+			cached_u_varid(-1), cached_v_varid(-1),
+			cached_sst_varid(-1), cached_sal_varid(-1) {}
 	};
 	FileMetadata nc_read_metadata(const wxString &fileName);
 

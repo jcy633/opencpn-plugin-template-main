@@ -13,6 +13,7 @@
  *********************************************************************/
 
 #include "stdio.h"
+#include <chrono>
 #include "wx/wx.h"
 #include "wx/dir.h"
 #include <wx/wfstream.h>
@@ -48,6 +49,32 @@ void ncdfLog(const char* format, ...) {
         fflush(logFile);
         fclose(logFile);
     }
+}
+
+// Memory tracker: log estimated memory usage from vector/overlay sizes
+static void ncdfLogMem(MainDialog *dlg, const char* tag) {
+    if (!dlg) return;
+    ncdf_pi *p = dlg->pPlugIn;
+    ncdfOverlayFactory *f = p ? p->GetncdfOverlayFactory() : NULL;
+    size_t msgMem = dlg->myMessage.ucurr.capacity() * sizeof(double)
+                  + dlg->myMessage.vcurr.capacity() * sizeof(double)
+                  + dlg->myMessage.sst.capacity() * sizeof(double)
+                  + dlg->myMessage.salinity.capacity() * sizeof(double);
+    size_t gridMem = 0;
+    if (f) {
+        auto gridBytes = [](float** g, int nj) -> size_t {
+            if (!g) return 0;
+            size_t bytes = nj * sizeof(float*);
+            for (int j = 0; j < nj; j++) if (g[j]) bytes += sizeof(float) * 4320; // approximate
+            return bytes;
+        };
+        gridMem += gridBytes(f->m_currentOverlay.cachedU, f->m_currentOverlay.cachedUNj);
+        gridMem += gridBytes(f->m_currentOverlay.cachedV, f->m_currentOverlay.cachedUNj);
+        gridMem += gridBytes((float**)f->m_seaTempOverlay.cachedBaseGrid.get(), f->m_seaTempOverlay.cachedNj);
+        gridMem += gridBytes((float**)f->m_salinityOverlay.cachedBaseGrid.get(), f->m_salinityOverlay.cachedNj);
+    }
+    ncdfLog("[mem:%s] myMessage=%.1fMB grids=%.1fMB total=%.1fMB\n",
+        tag, msgMem / (1024.0*1024.0), gridMem / (1024.0*1024.0), (msgMem + gridMem) / (1024.0*1024.0));
 }
 
 static void ncdfLogW(const wchar_t* format, ...) {
@@ -161,13 +188,24 @@ void MainDialog::SetCursorLatLon(double lat, double lon)
 
 void MainDialog::UpdateTrackingControls()
 {
-   this->m_textCtrlCurrentForce->Clear();
-   if (myMessage.hasCurrent()) printCurrentData();
+   ncdfOverlayFactory *pof = pPlugIn ? pPlugIn->GetncdfOverlayFactory() : NULL;
 
-   // SST temperature at cursor position — show when SST data is available
+   // Current speed at cursor position — from float grid
+   this->m_textCtrlCurrentForce->Clear();
+   if (pof && pof->m_currentOverlay.cachedU && pof->m_currentOverlay.cachedV) {
+       printCurrentData();
+   }
+
+   // SST temperature at cursor position — from float grid
    m_textCtrlSeaTemp->Clear();
-   if (myMessage.hasSSTData()) {
-       double temp = myMessage.getInterpolatedValue(myMessage, myMessage.sst.data(), m_cursor_lon, m_cursor_lat, true);
+   if (pof && pof->m_seaTempOverlay.cachedBaseGrid) {
+       double temp = myMessage.getInterpolatedValueFloat(
+           pof->m_seaTempOverlay.cachedBaseGrid.get(),
+           (int)myMessage.lonLength, (int)myMessage.latLength,
+           myMessage.firstGridPointLat, myMessage.lastGridPointLat,
+           myMessage.firstGridPointLong, myMessage.lastGridPointLong,
+           myMessage.iDirectionIncr, myMessage.jDirectionIncr,
+           m_cursor_lon, m_cursor_lat);
        if (temp != ncdf_NOTDEF && !isnan(temp) && isfinite(temp)) {
            wxString t = wxString::Format(_T("%.1f"), temp) + wxString::FromUTF8("\xc2\xb0") + _T("C");
            m_textCtrlSeaTemp->SetValue(t);
@@ -176,10 +214,16 @@ void MainDialog::UpdateTrackingControls()
        }
    }
 
-   // Salinity at cursor position — show when salinity data is available
+   // Salinity at cursor position — from float grid
    m_textCtrlSalinity->Clear();
-   if (myMessage.hasSalData()) {
-       double sal = myMessage.getInterpolatedValue(myMessage, myMessage.salinity.data(), m_cursor_lon, m_cursor_lat, true);
+   if (pof && pof->m_salinityOverlay.cachedBaseGrid) {
+       double sal = myMessage.getInterpolatedValueFloat(
+           pof->m_salinityOverlay.cachedBaseGrid.get(),
+           (int)myMessage.lonLength, (int)myMessage.latLength,
+           myMessage.firstGridPointLat, myMessage.lastGridPointLat,
+           myMessage.firstGridPointLong, myMessage.lastGridPointLong,
+           myMessage.iDirectionIncr, myMessage.jDirectionIncr,
+           m_cursor_lon, m_cursor_lat);
        if (sal != ncdf_NOTDEF && !isnan(sal) && isfinite(sal)) {
            wxString t = wxString::Format(_T("%.1f"), sal) + wxString::FromUTF8("\xe2\x80\xb0");
            m_textCtrlSalinity->SetValue(t);
@@ -192,45 +236,51 @@ void MainDialog::UpdateTrackingControls()
 void MainDialog::printCurrentData()
 {
 	  m_textCtrlCurrentForce->Clear();
-	  if (!myMessage.hasCurrent()) {
+	  ncdfOverlayFactory *pof = pPlugIn ? pPlugIn->GetncdfOverlayFactory() : NULL;
+	  if (!pof || !pof->m_currentOverlay.cachedU || !pof->m_currentOverlay.cachedV) {
 		m_textCtrlCurrentForce->SetValue(_T("--"));
 		return;
 	  }
 	  wxString t;
-      double cDir;
-      double cForce;
+	  double uOut, vOut;
+	  bool ok = myMessage.getInterpolatedUVFloat(
+		  pof->m_currentOverlay.cachedU, pof->m_currentOverlay.cachedV,
+		  (int)myMessage.lonLength, (int)myMessage.latLength,
+		  myMessage.firstGridPointLat, myMessage.lastGridPointLat,
+		  myMessage.firstGridPointLong, myMessage.lastGridPointLong,
+		  myMessage.iDirectionIncr, myMessage.jDirectionIncr,
+		  m_cursor_lon, m_cursor_lat, uOut, vOut);
 
-      cDir = myMessage.getInterpolatedValue(myMessage, myMessage.ucurr.data(), m_cursor_lon, m_cursor_lat, true);
-	  cForce = myMessage.getInterpolatedValue(myMessage, myMessage.vcurr.data(), m_cursor_lon, m_cursor_lat, true);
-
-			if ((cDir != ncdf_NOTDEF) && (cForce != ncdf_NOTDEF) && isfinite(cDir) && isfinite(cForce))
-			{
-				double speed = sqrt(cDir*cDir + cForce*cForce);
-				t.Printf(_T("%.2f m/s"), speed);
-				this->m_textCtrlCurrentForce->SetValue(t);
-			} else {
-				this->m_textCtrlCurrentForce->SetValue(_T("--"));
-			}
+	  if (ok && isfinite(uOut) && isfinite(vOut)) {
+		  double speed = sqrt(uOut*uOut + vOut*vOut);
+		  t.Printf(_T("%.2f m/s"), speed);
+		  m_textCtrlCurrentForce->SetValue(t);
+	  } else {
+		  m_textCtrlCurrentForce->SetValue(_T("--"));
+	  }
 }
 
 CurrentData MainDialog::getCurrentData(double lat, double lon)
 {
 	CurrentData result = {0, 0};
-	if (!myMessage.hasCurrent()) return result;
-	wxString t;
-	double cDir;
-	double cForce;
+	ncdfOverlayFactory *pof = pPlugIn ? pPlugIn->GetncdfOverlayFactory() : NULL;
+	if (!pof || !pof->m_currentOverlay.cachedU || !pof->m_currentOverlay.cachedV) return result;
 
-	cDir = myMessage.getInterpolatedValue(myMessage, myMessage.ucurr.data(), lon, lat, true);
-	cForce = myMessage.getInterpolatedValue(myMessage, myMessage.vcurr.data(), lon, lat, true);
+	double uOut, vOut;
+	bool ok = myMessage.getInterpolatedUVFloat(
+		pof->m_currentOverlay.cachedU, pof->m_currentOverlay.cachedV,
+		(int)myMessage.lonLength, (int)myMessage.latLength,
+		myMessage.firstGridPointLat, myMessage.lastGridPointLat,
+		myMessage.firstGridPointLong, myMessage.lastGridPointLong,
+		myMessage.iDirectionIncr, myMessage.jDirectionIncr,
+		lon, lat, uOut, vOut);
 
-	if ((cDir != ncdf_NOTDEF) && (cForce != ncdf_NOTDEF) && isfinite(cDir) && isfinite(cForce))
-	{
-		result.force = sqrt(cDir*cDir + cForce*cForce);  // m/s
-		result.dir = 90. + (atan2(cForce, -cDir)  * 180. / PI) - 180;
+	if (ok && isfinite(uOut) && isfinite(vOut)) {
+		result.force = sqrt(uOut*uOut + vOut*vOut);  // m/s
+		result.dir = 90. + (atan2(vOut, -uOut) * 180. / PI) - 180;
 		if (result.dir < 0) result.dir = 360 + result.dir;
 	}
-	
+
 	return result;
 }
 
@@ -696,28 +746,97 @@ MainDialog::FileMetadata MainDialog::nc_read_metadata(const wxString &fileName) 
 		delete[] timeUnits;
 	}
 
-	// Check data availability
+	// Check data availability and cache variable IDs
 	{
 		const char* alt_std[] = {"surface_eastward_sea_water_velocity", NULL};
 		const char* long_hints[] = {"Eastward Current Velocity", NULL};
 		const char* var_hints[] = {"u", "uo", "current_u", NULL};
-		int u = find_var_by_cf(ncid, "eastward_sea_water_velocity", alt_std, long_hints, var_hints);
-		meta.hasCurrent = (u != -1);
+		meta.cached_u_varid = find_var_by_cf(ncid, "eastward_sea_water_velocity", alt_std, long_hints, var_hints);
+		meta.hasCurrent = (meta.cached_u_varid != -1);
+	}
+	{
+		const char* alt_std[] = {"surface_northward_sea_water_velocity", NULL};
+		const char* long_hints[] = {"Northward Current Velocity", NULL};
+		const char* var_hints[] = {"v", "vo", "current_v", NULL};
+		meta.cached_v_varid = find_var_by_cf(ncid, "northward_sea_water_velocity", alt_std, long_hints, var_hints);
 	}
 	{
 		const char* alt_std[] = {"sea_surface_temperature", NULL};
 		const char* long_hints[] = {"Sea surface temperature", NULL};
 		const char* var_hints[] = {"thetao", "sst", "temperature", NULL};
-		int s = find_var_by_cf(ncid, "sea_water_temperature", alt_std, long_hints, var_hints);
-		meta.hasSeaTemp = (s != -1);
+		meta.cached_sst_varid = find_var_by_cf(ncid, "sea_water_temperature", alt_std, long_hints, var_hints);
+		meta.hasSeaTemp = (meta.cached_sst_varid != -1);
 	}
 	{
 		const char* alt_std[] = {"sea_surface_salinity", NULL};
 		const char* long_hints[] = {"Sea surface salinity", NULL};
 		const char* var_hints[] = {"so", "salinity", "salt", NULL};
-		int s = find_var_by_cf(ncid, "sea_water_salinity", alt_std, long_hints, var_hints);
-		meta.hasSalinity = (s != -1);
+		meta.cached_sal_varid = find_var_by_cf(ncid, "sea_water_salinity", alt_std, long_hints, var_hints);
+		meta.hasSalinity = (meta.cached_sal_varid != -1);
 	}
+
+	// Read lat/lon coordinates and dimension sizes
+	{
+		int lat_varid, lon_varid;
+		{
+			const char* alt_std[] = {"projection_y_coordinate", NULL};
+			const char* long_hints[] = {"Latitude", NULL};
+			const char* var_hints[] = {"lat", "latitude", NULL};
+			lat_varid = find_var_by_cf(ncid, "latitude", alt_std, long_hints, var_hints);
+		}
+		{
+			const char* alt_std[] = {"projection_x_coordinate", NULL};
+			const char* long_hints[] = {"Longitude", NULL};
+			const char* var_hints[] = {"lon", "longitude", NULL};
+			lon_varid = find_var_by_cf(ncid, "longitude", alt_std, long_hints, var_hints);
+		}
+
+		if (lat_varid != -1 && lon_varid != -1) {
+			int latid = find_dim_by_var(ncid, lat_varid, 0);
+			int lonid = find_dim_by_var(ncid, lon_varid, 0);
+			if (latid != -1) nc_inq_dimlen(ncid, latid, &meta.latlength);
+			if (lonid != -1) nc_inq_dimlen(ncid, lonid, &meta.lonlength);
+
+			if (meta.latlength > 0) {
+				double* lats = (double*)calloc(meta.latlength, sizeof(double));
+				if (lats) {
+					if (nc_get_var_double(ncid, lat_varid, lats) != NC_NOERR) {
+						float* lf = (float*)calloc(meta.latlength, sizeof(float));
+						if (lf) { nc_get_var_float(ncid, lat_varid, lf); for (size_t i = 0; i < meta.latlength; i++) lats[i] = lf[i]; free(lf); }
+					}
+					meta.firstGridPointLat = lats[0];
+					meta.lastGridPointLat = lats[meta.latlength - 1];
+					// Store in SharedCoords for later use
+					meta.sharedCoords = std::make_shared<SharedCoords>();
+					meta.sharedCoords->latValues = lats;
+					meta.sharedCoords->latLength = meta.latlength;
+				}
+			}
+			if (meta.lonlength > 0) {
+				double* lons = (double*)calloc(meta.lonlength, sizeof(double));
+				if (lons) {
+					if (nc_get_var_double(ncid, lon_varid, lons) != NC_NOERR) {
+						float* lf = (float*)calloc(meta.lonlength, sizeof(float));
+						if (lf) { nc_get_var_float(ncid, lon_varid, lf); for (size_t i = 0; i < meta.lonlength; i++) lons[i] = lf[i]; free(lf); }
+					}
+					meta.firstGridPointLong = lons[0];
+					meta.lastGridPointLong = lons[meta.lonlength - 1];
+					if (meta.sharedCoords) {
+						meta.sharedCoords->lonValues = lons;
+						meta.sharedCoords->lonLength = meta.lonlength;
+					}
+				}
+			}
+			meta.iDirectionIncr = (meta.lonlength > 1) ?
+				(meta.lastGridPointLong - meta.firstGridPointLong) / (meta.lonlength - 1) : 0;
+			meta.jDirectionIncr = (meta.latlength > 1) ?
+				(meta.lastGridPointLat - meta.firstGridPointLat) / (meta.latlength - 1) : 0;
+		}
+	}
+
+	// Store time values for later use
+	meta.timeValues.resize(timelength);
+	for (size_t i = 0; i < timelength; i++) meta.timeValues[i] = time_out[i];
 
 	// Build date list
 	meta.timelength = timelength;
@@ -1668,26 +1787,30 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 	bool hasUV = (u_varid != -1 && v_varid != -1);
 	ncdfLog("[ncdf] readTimeStepData: hasUV=%d, u_varid=%d, v_varid=%d\n", (int)hasUV, u_varid, v_varid);
 
-	// Load ALL available data types (not just active one) — precompute for all overlays
-	if (hasUV) {
+	// P2: Only read data types that are currently checked (visible).
+	// Unchecked types will be read on-demand when the user clicks the checkbox.
+	bool needCurrent = pPlugIn && pPlugIn->m_bShowCurrentForce;
+	bool needSST = pPlugIn && pPlugIn->m_bShowSeaTemp;
+	bool needSal = pPlugIn && pPlugIn->m_bShowSalinity;
+
+	if (hasUV && needCurrent) {
 		if (!readUVFromNC(ncid, u_varid, v_varid, dataMessage)) {
 			ncdfLog("[ncdf] readTimeStepData: readUVFromNC failed\n");
 			dataMessage.ucurr.clear();
 			dataMessage.vcurr.clear();
 		}
 	} else {
-		// No UV data in file — clear the pre-filled ncdf_NOTDEF values
 		dataMessage.ucurr.clear();
 		dataMessage.vcurr.clear();
 	}
 
-	if (ncid >= 0 && m_fileHasSeaTemp) {
+	if (ncid >= 0 && m_fileHasSeaTemp && needSST) {
 		if (!readSSTFromNC(ncid, m_cached_sst_varid, dataMessage)) {
 			ncdfLog("[ncdf] readTimeStepData: readSSTFromNC failed\n");
 		}
 	}
 
-	if (ncid >= 0 && m_fileHasSalinity) {
+	if (ncid >= 0 && m_fileHasSalinity && needSal) {
 		if (!readSalinityFromNC(ncid, m_cached_sal_varid, dataMessage)) {
 			ncdfLog("[ncdf] readTimeStepData: readSalinityFromNC failed\n");
 		}
@@ -1746,28 +1869,13 @@ bool MainDialog::switchToFile(const wxString &fileName, const wxString &fn, int 
 		m_openedFileName.Clear();
 	}
 
-	dbg = fopen("C:\\ProgramData\\opencpn\\ncdf_crash_trace.log", "a");
-	if (dbg) { fprintf(dbg, "switchToFile: A-after logW\n"); fflush(dbg); fclose(dbg); }
-
 	myDataVector.clear();
-
-	dbg = fopen("C:\\ProgramData\\opencpn\\ncdf_crash_trace.log", "a");
-	if (dbg) { fprintf(dbg, "switchToFile: B-after clear vector\n"); fflush(dbg); fclose(dbg); }
-
 	m_lastSelectedTimeIndex = -1;
-
-	dbg = fopen("C:\\ProgramData\\opencpn\\ncdf_crash_trace.log", "a");
-	if (dbg) { fprintf(dbg, "switchToFile: C-before myMessage.clear\n"); fflush(dbg); fclose(dbg); }
-
 	myMessage.clear();
-
-	dbg = fopen("C:\\ProgramData\\opencpn\\ncdf_crash_trace.log", "a");
-	if (dbg) { fprintf(dbg, "switchToFile: D-after myMessage.clear, pPlugIn=%p\n", (void*)pPlugIn); fflush(dbg); fclose(dbg); }
 
 	if (pPlugIn) {
 		ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
 		if (pof) {
-			// Cross-file: clear ALL overlay caches and textures (old file's data is invalid)
 			pof->m_currentOverlay.Cleanup();
 			pof->m_seaTempOverlay.Cleanup();
 			pof->m_salinityOverlay.Cleanup();
@@ -1775,15 +1883,94 @@ bool MainDialog::switchToFile(const wxString &fileName, const wxString &fn, int 
 		}
 	}
 
-	dbg = fopen("C:\\ProgramData\\opencpn\\ncdf_crash_trace.log", "a");
-	if (dbg) { fprintf(dbg, "switchToFile: E-after reset\n"); fflush(dbg); fclose(dbg); }
+	auto t0 = std::chrono::high_resolution_clock::now();
 
-	int ret = nc_get(fileName);
-	if (ret != 0) {
-		ncdfLog("[ncdf] switchToFile: nc_get failed for %s\n", (const char*)fn.mb_str());
+	// Use lightweight metadata reader instead of heavy nc_get
+	FileMetadata meta = nc_read_metadata(fileName);
+	if (!meta.valid) {
+		ncdfLog("[ncdf] switchToFile: nc_read_metadata failed for %s\n", (const char*)fn.mb_str());
 		return false;
 	}
 	m_currentFilePath = fileName;
+
+	// Cache variable IDs for readTimeStepData
+	m_fileHasCurrent = meta.hasCurrent;
+	m_fileHasSeaTemp = meta.hasSeaTemp;
+	m_fileHasSalinity = meta.hasSalinity;
+	m_cached_u_varid = meta.cached_u_varid;
+	m_cached_v_varid = meta.cached_v_varid;
+	m_cached_sst_varid = meta.cached_sst_varid;
+	m_cached_sal_varid = meta.cached_sal_varid;
+
+	// Pre-allocate float grid structures (one-time per file, reused across all time steps)
+	if (pPlugIn) {
+		ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
+		if (pof) {
+			int ni = (int)meta.lonlength;
+			int nj = (int)meta.latlength;
+			if (meta.hasCurrent) {
+				pof->m_currentOverlay.ensureGridAllocated(ni, nj);
+			}
+			if (meta.hasSeaTemp) {
+				pof->m_seaTempOverlay.ensureGridAllocated(ni, nj);
+			}
+			if (meta.hasSalinity) {
+				pof->m_salinityOverlay.ensureGridAllocated(ni, nj);
+			}
+			ncdfLog("[switchToFile] pre-allocated grids: ni=%d nj=%d current=%d sst=%d sal=%d\n",
+				ni, nj, (int)meta.hasCurrent, (int)meta.hasSeaTemp, (int)meta.hasSalinity);
+		}
+	}
+
+	// Build lightweight myDataVector entries (metadata only, no heavy data)
+	double* timeValuesArr = (double*)calloc(meta.timelength, sizeof(double));
+	if (meta.sharedCoords && meta.sharedCoords->timeValues) {
+		memcpy(timeValuesArr, meta.sharedCoords->timeValues, meta.timelength * sizeof(double));
+	} else if (!meta.timeValues.empty()) {
+		memcpy(timeValuesArr, meta.timeValues.data(), meta.timelength * sizeof(double));
+	}
+
+	myDataVector.clear();
+	for (size_t i = 0; i < meta.timelength; i++) {
+		ncdfDataMessage entry;
+		entry.timeIndex = (int)i;
+		entry.timeLength = meta.timelength;
+		entry.latLength = meta.latlength;
+		entry.lonLength = meta.lonlength;
+		entry.numberOfPoints = (int)(meta.latlength * meta.lonlength);
+		entry.noPointsParallel = (wxUint32)meta.lonlength;
+		entry.noPointsMeridian = (wxUint32)meta.latlength;
+		entry.firstGridPointLat = meta.firstGridPointLat;
+		entry.firstGridPointLong = meta.firstGridPointLong;
+		entry.lastGridPointLat = meta.lastGridPointLat;
+		entry.lastGridPointLong = meta.lastGridPointLong;
+		entry.iDirectionIncr = meta.iDirectionIncr;
+		entry.jDirectionIncr = meta.jDirectionIncr;
+		entry.fileName = fileName;
+		entry.timeValid = meta.timeValid[i];
+		entry.dataDateTime = meta.dates[i];
+		entry.hasSeaTemp = meta.hasSeaTemp;
+		entry.hasSalinity = meta.hasSalinity;
+		// Share coordinates (one allocation, all entries share)
+		entry.sharedCoords = meta.sharedCoords;
+		entry.latValues = meta.sharedCoords ? meta.sharedCoords->latValues : NULL;
+		entry.lonValues = meta.sharedCoords ? meta.sharedCoords->lonValues : NULL;
+		// Time values: allocate per-entry (needed for CF time parsing)
+		entry.timeValues = (double*)calloc(meta.timelength, sizeof(double));
+		if (entry.timeValues && timeValuesArr) {
+			memcpy(entry.timeValues, timeValuesArr, meta.timelength * sizeof(double));
+		}
+		entry.minutesAfterStart = meta.timeValid[i] ? (int)(meta.timeValues[i] * 3600.0 / 60.0) : (int)(i * 60);
+		myDataVector.push_back(entry);
+	}
+	if (timeValuesArr) free(timeValuesArr);
+
+	ncdfLog("[ncdf] switchToFile: metadata loaded, %zu entries, lat=%zu lon=%zu\n",
+		meta.timelength, meta.latlength, meta.lonlength);
+
+	auto t1 = std::chrono::high_resolution_clock::now();
+	ncdfLog("[perf] switchToFile: nc_read_metadata=%lldms\n",
+		(long long)std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count());
 
 	// Auto-enable rendering for available data types (GRIB pattern)
 	bool showCur = m_fileHasCurrent;
@@ -1900,6 +2087,9 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 			idx, (int)fileSwitched, (const char*)timeText.mb_str(),
 			(int)m_fileHasCurrent, (int)m_fileHasSeaTemp, (int)m_fileHasSalinity);
 
+		ncdfLog("[phase1] checkbox state: showCurr=%d showSST=%d showSal=%d\n",
+			(int)pPlugIn->m_bShowCurrentForce, (int)pPlugIn->m_bShowSeaTemp, (int)pPlugIn->m_bShowSalinity);
+
 		// Cross-file: sync checkbox visibility + flags from persisted settings
 		if (fileSwitched) {
 			this->myMessage.clearData();
@@ -1992,6 +2182,7 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 
 			// Read raw data into myMessage (all available types)
 			ncdfLog("[phase2] reading time step data...\n");
+			auto pt0 = std::chrono::high_resolution_clock::now();
 			if (!readTimeStepData(this->myMessage)) {
 				ncdfLog("[phase2] readTimeStepData FAILED\n");
 				if (pof) pof->m_bReadyToRender = true;
@@ -1999,9 +2190,11 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 				return;
 			}
 			m_dataLoaded = true;
-			ncdfLog("[phase2] data loaded: ucurr.size=%zu vcurr.size=%zu sst.size=%zu sal.size=%zu\n",
-				this->myMessage.ucurr.size(), this->myMessage.vcurr.size(),
-				this->myMessage.sst.size(), this->myMessage.salinity.size());
+			auto pt1 = std::chrono::high_resolution_clock::now();
+			ncdfLog("[phase2] data loaded: ucurr.size=%zu sst.size=%zu (%lldms)\n",
+				this->myMessage.ucurr.size(), this->myMessage.sst.size(),
+				(long long)std::chrono::duration_cast<std::chrono::milliseconds>(pt1 - pt0).count());
+			ncdfLogMem(this, "phase2-data-loaded");
 
 			// Set up overlay factory (bounds, gui, plugin pointers)
 			ncdfLog("[phase2] calling setData\n");
@@ -2017,6 +2210,7 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 			if (pof) pof->prepareAllGrids();
 			m_gridsReady = true;
 			ncdfLog("[phase2] grids prepared, m_gridsReady=true\n");
+			ncdfLogMem(this, "phase2-grids-ready");
 
 			// Release raw double data (grids are float, cursor tracking uses grids)
 			ncdfLog("[phase2] releasing raw double data\n");
@@ -2024,6 +2218,7 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 			this->myMessage.vcurr.clear();
 			this->myMessage.sst.clear();
 			this->myMessage.salinity.clear();
+			ncdfLogMem(this, "phase2-raw-released");
 
 			// If a checkbox is already checked, compute coefficients for it (Phase 3)
 			if (pof) {
@@ -2099,25 +2294,16 @@ void MainDialog::onBmpCurrentForceClick(wxCommandEvent& event)
 				ncdfLog("[phase3:cur] texture exists, reusing\n");
 				pof->m_currentOverlay.dataReady = true;
 				pof->m_currentOverlay.needsRebuild = false;
-			} else if (m_gridsReady && pof->m_currentOverlay.cachedU) {
-				// Grids prepared but no texture — compute coefficients + upload
-				ncdfLog("[phase3:cur] computing current coefficients\n");
-				pof->m_bReadyToRender = false;
-				pof->setData(this, pPlugIn, this->myMessage,
-					this->myMessage.numberOfPoints,
-					this->myMessage.firstGridPointLat, this->myMessage.firstGridPointLong,
-					this->myMessage.lastGridPointLat, this->myMessage.lastGridPointLong);
-				pof->m_currentOverlay.prepareCoeff(pof);
-				pof->m_bReadyToRender = true;
 			} else {
-				ncdfLog("[phase3:cur] fallback — full read + prepare\n");
+				// Read data first, then setData (so myMessage has data for setData)
+				ncdfLog("[phase3:cur] loading data + computing coefficients\n");
 				pof->m_bReadyToRender = false;
 				if (readTimeStepData(this->myMessage)) {
 					pof->setData(this, pPlugIn, this->myMessage,
 						this->myMessage.numberOfPoints,
 						this->myMessage.firstGridPointLat, this->myMessage.firstGridPointLong,
 						this->myMessage.lastGridPointLat, this->myMessage.lastGridPointLong);
-					pof->m_currentOverlay.prepareGrid(this);
+					if (!pof->m_currentOverlay.gridReady) pof->m_currentOverlay.prepareGrid(this);
 					pof->m_currentOverlay.prepareCoeff(pof);
 				}
 				pof->m_bReadyToRender = true;
@@ -2156,24 +2342,15 @@ void MainDialog::onSeaTempClick(wxCommandEvent& event)
 				ncdfLog("[phase3:sst] texture exists, reusing\n");
 				pof->m_seaTempOverlay.dataReady = true;
 				pof->m_seaTempOverlay.needsRebuild = false;
-			} else if (m_gridsReady && pof->m_seaTempOverlay.cachedBaseGrid) {
-				ncdfLog("[phase3:sst] computing SST coefficients\n");
-				pof->m_bReadyToRender = false;
-				pof->setData(this, pPlugIn, this->myMessage,
-					this->myMessage.numberOfPoints,
-					this->myMessage.firstGridPointLat, this->myMessage.firstGridPointLong,
-					this->myMessage.lastGridPointLat, this->myMessage.lastGridPointLong);
-				pof->m_seaTempOverlay.prepareCoeff(pof);
-				pof->m_bReadyToRender = true;
 			} else {
-				ncdfLog("[phase3:sst] fallback — full read + prepare\n");
+				ncdfLog("[phase3:sst] loading data + computing coefficients\n");
 				pof->m_bReadyToRender = false;
 				if (readTimeStepData(this->myMessage)) {
 					pof->setData(this, pPlugIn, this->myMessage,
 						this->myMessage.numberOfPoints,
 						this->myMessage.firstGridPointLat, this->myMessage.firstGridPointLong,
 						this->myMessage.lastGridPointLat, this->myMessage.lastGridPointLong);
-					pof->m_seaTempOverlay.prepareGrid(this);
+					if (!pof->m_seaTempOverlay.gridReady) pof->m_seaTempOverlay.prepareGrid(this);
 					pof->m_seaTempOverlay.prepareCoeff(pof);
 				}
 				pof->m_bReadyToRender = true;
@@ -2222,24 +2399,15 @@ void MainDialog::onSalinityClick(wxCommandEvent& event)
 				ncdfLog("[phase3:sal] texture exists, reusing\n");
 				pof->m_salinityOverlay.dataReady = true;
 				pof->m_salinityOverlay.needsRebuild = false;
-			} else if (m_gridsReady && pof->m_salinityOverlay.cachedBaseGrid) {
-				ncdfLog("[phase3:sal] computing salinity coefficients\n");
-				pof->m_bReadyToRender = false;
-				pof->setData(this, pPlugIn, this->myMessage,
-					this->myMessage.numberOfPoints,
-					this->myMessage.firstGridPointLat, this->myMessage.firstGridPointLong,
-					this->myMessage.lastGridPointLat, this->myMessage.lastGridPointLong);
-				pof->m_salinityOverlay.prepareCoeff(pof);
-				pof->m_bReadyToRender = true;
 			} else {
-				ncdfLog("[phase3:sal] fallback — full read + prepare\n");
+				ncdfLog("[phase3:sal] loading data + computing coefficients\n");
 				pof->m_bReadyToRender = false;
 				if (readTimeStepData(this->myMessage)) {
 					pof->setData(this, pPlugIn, this->myMessage,
 						this->myMessage.numberOfPoints,
 						this->myMessage.firstGridPointLat, this->myMessage.firstGridPointLong,
 						this->myMessage.lastGridPointLat, this->myMessage.lastGridPointLong);
-					pof->m_salinityOverlay.prepareGrid(this);
+					if (!pof->m_salinityOverlay.gridReady) pof->m_salinityOverlay.prepareGrid(this);
 					pof->m_salinityOverlay.prepareCoeff(pof);
 				}
 				pof->m_bReadyToRender = true;
