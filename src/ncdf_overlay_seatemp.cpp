@@ -12,7 +12,6 @@ extern void BicubicSplinePrefilterWrapAware(float* dst, const float* src,
                                              const unsigned char* mask,
                                              int w, int h, bool isGlobal);
 
-bool SeaTempOverlay::s_smoothColors = false;
 
 void SeaTempOverlay::Init() {
     glTexture = 0; hasTexture = false; needsRebuild = true; dataReady = false;
@@ -57,6 +56,100 @@ void SeaTempOverlay::clearCache() {
     // GPU textures preserved: glTexture, lutID, uploadBuf
 }
 
+void SeaTempOverlay::clearCoefficients() {
+    ncdfLog("[clearCoeff:sst] cachedBaseGrid=%p cachedCoeff=%p cachedNj=%d cachedNi=%d\n",
+        (void*)cachedBaseGrid.get(), (void*)cachedCoeff, cachedNj, cachedNi);
+    if (cachedCoeff) { free(cachedCoeff); cachedCoeff = NULL; }
+    // Delete GPU texture — it contains old coefficient data, must be recreated
+    if (hasTexture && glTexture) { glDeleteTextures(1, &glTexture); glTexture = 0; hasTexture = false; }
+    dataReady = false;
+    needsRebuild = true;
+    needsIsoRebuild = true;
+}
+
+void SeaTempOverlay::prepareGrid(MainDialog *gui) {
+    if (!gui || !gui->myMessage.hasSSTData()) return;
+    int ni = gui->myMessage.lonLength;
+    int nj = gui->myMessage.latLength;
+    if (ni < 2 || nj < 2) return;
+
+    auto t0 = std::chrono::high_resolution_clock::now();
+    if (!cachedBaseGrid || cachedNj != nj || cachedNi != ni) {
+        ncdfLog("[prepare:sst] grid MISS — allocating %dx%d\n", ni, nj);
+        if (cachedBaseGrid) { for (int j = 0; j < cachedNj; j++) delete[] cachedBaseGrid[j]; cachedBaseGrid.reset(); }
+        auto src = std::make_unique<float*[]>(nj);
+        for (int j = 0; j < nj; j++) {
+            src[j] = new float[ni];
+            for (int i = 0; i < ni; i++) {
+                double val = gui->myMessage.getSST(i, j);
+                src[j][i] = (val == ncdf_NOTDEF || !isfinite(val)) ? NAN : (float)val;
+            }
+        }
+        cachedBaseGrid = std::move(src);
+        cachedNj = nj; cachedNi = ni;
+    } else {
+        ncdfLog("[prepare:sst] grid HIT — reusing %dx%d\n", ni, nj);
+        for (int j = 0; j < nj; j++)
+            for (int i = 0; i < ni; i++) {
+                double val = gui->myMessage.getSST(i, j);
+                cachedBaseGrid[j][i] = (val == ncdf_NOTDEF || !isfinite(val)) ? NAN : (float)val;
+            }
+    }
+    // Compute data range
+    double dMin = 1e30, dMax = -1e30;
+    for (int j = 0; j < nj; j++)
+        for (int i = 0; i < ni; i++) {
+            float v = cachedBaseGrid[j][i];
+            if (isfinite(v)) { if (v < dMin) dMin = v; if (v > dMax) dMax = v; }
+        }
+    cachedDataMin = (dMin < dMax) ? (float)dMin : 0;
+    cachedDataMax = (dMin < dMax) ? (float)dMax : 1;
+    auto t1 = std::chrono::high_resolution_clock::now();
+    ncdfLog("[perf] SeaTemp::prepareGrid ni=%d nj=%d %lldms\n", ni, nj,
+        (long long)std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count());
+}
+
+void SeaTempOverlay::prepareCoeff(ncdfOverlayFactory *factory) {
+    if (!cachedBaseGrid) return;
+    int ni = cachedNi, nj = cachedNj;
+    auto t0 = std::chrono::high_resolution_clock::now();
+
+    if (!cachedCoeff || cachedCoeffNj != nj || cachedCoeffNi != ni) {
+        ncdfLog("[prepare:sst] coeff MISS — allocating\n");
+        if (cachedCoeff) { free(cachedCoeff); cachedCoeff = NULL; }
+        cachedCoeff = (float*)calloc(ni * nj, sizeof(float));
+    } else {
+        ncdfLog("[prepare:sst] coeff HIT — overwriting\n");
+    }
+    if (cachedCoeff) {
+        // Compute physical value range from grid data
+        float pMin = 1e30f, pMax = -1e30f;
+        for (int j = 0; j < nj; j++)
+            for (int i = 0; i < ni; i++) {
+                float v = cachedBaseGrid[j][i];
+                if (isfinite(v)) { if (v < pMin) pMin = v; if (v > pMax) pMax = v; }
+            }
+        ncdfOverlayFactory::PrefilterScalarCoefficients(cachedCoeff, cachedBaseGrid.get(),
+            ni, nj, false, cachedCoefScalarMin, cachedCoefScalarMax, pMin, pMax);
+        cachedCoeffNj = nj; cachedCoeffNi = ni;
+        cachedPhysScalarMin = pMin; cachedPhysScalarMax = pMax;
+        const float bs = 2.5858f;
+        cachedCoefMin = cachedCoefScalarMin * bs;
+        cachedCoefMax = cachedCoefScalarMax * bs;
+        cachedPhysMin = pMin; cachedPhysMax = pMax;
+    }
+    dataReady = true;
+    needsRebuild = true;
+    auto t1 = std::chrono::high_resolution_clock::now();
+    ncdfLog("[perf] SeaTemp::prepareCoeff ni=%d nj=%d %lldms\n", ni, nj,
+        (long long)std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count());
+}
+
+void SeaTempOverlay::releaseCoeffData() {
+    if (cachedCoeff) { free(cachedCoeff); cachedCoeff = NULL; }
+    ncdfLog("[release:sst] coefficients released, grid preserved\n");
+}
+
 void SeaTempOverlay::Invalidate() {
     ncdfLog("[invalidate:sst] needsRebuild was=%d hasLUT=%d hasTex=%d\n", (int)needsRebuild, (int)hasLUT, (int)hasTexture);
     needsRebuild = true;
@@ -78,9 +171,13 @@ void SeaTempOverlay::prepareData(MainDialog *gui, ncdf_pi *plugin, ncdfOverlayFa
     ncdfLog("[perf] SeaTemp::prepareData ni=%d nj=%d\n", ni, nj);
     auto t0 = std::chrono::high_resolution_clock::now();
 
-    // 1. Build base grid as float (kept for first-frame texture build in RenderScalarColorMap)
-    if (!cachedBaseGrid) {
+    // 1. Build base grid as float (reuse existing allocation for same-file switch)
+    if (!cachedBaseGrid || cachedNj != nj || cachedNi != ni) {
         ncdfLog("[prepare:sst] grid cache MISS — allocating %dx%d\n", ni, nj);
+        if (cachedBaseGrid) {
+            for (int j = 0; j < cachedNj; j++) delete[] cachedBaseGrid[j];
+            cachedBaseGrid.reset();
+        }
         auto src = std::make_unique<float*[]>(nj);
         int landCount = 0, oceanCount = 0;
         for (int j = 0; j < nj; j++) {
@@ -99,6 +196,15 @@ void SeaTempOverlay::prepareData(MainDialog *gui, ncdf_pi *plugin, ncdfOverlayFa
         ncdfLog("[debug] SeaTemp grid: land(NAN)=%d ocean=%d total=%d\n", landCount, oceanCount, landCount+oceanCount);
         cachedBaseGrid = std::move(src);
         cachedNj = nj; cachedNi = ni;
+    } else {
+        // Grid cache HIT — reuse existing allocation, just overwrite values
+        ncdfLog("[prepare:sst] grid cache HIT — reusing %dx%d\n", ni, nj);
+        for (int j = 0; j < nj; j++) {
+            for (int i = 0; i < ni; i++) {
+                double val = gui->myMessage.getSST(i, j);
+                cachedBaseGrid[j][i] = (val == ncdf_NOTDEF || !isfinite(val)) ? NAN : (float)val;
+            }
+        }
     }
 
     // Compute data range from base grid
@@ -204,7 +310,7 @@ wxColour SeaTempOverlay::GetColor(double temp_c) {
         {22.0, 200, 220,  20}, {25.0, 240, 180,  20}, {28.0, 240, 120,  20},
         {30.0, 220,  60,  20}, {32.0, 200,  20,  20},
     };
-    return ncdfOverlayFactory::InterpolateStops(stops, 14, temp_c, s_smoothColors);
+    return ncdfOverlayFactory::InterpolateStops(stops, 14, temp_c, false);
 }
 
 // Helper: fill grid from SST data
@@ -233,9 +339,9 @@ bool SeaTempOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
     bool ok = factory->RenderScalarColorMap(vp, gui, plugin, st,
         SeaTempOverlay::GetColor, -2.0f, 32.0f,
         HasSSTData, FillSSTGrid,
-        false, false, false,
         animatedGrid);
-    s_smoothColors = false;
+    // Release coefficient data after texture upload (texture is on GPU now)
+    releaseCoeffData();
     return ok;
 }
 

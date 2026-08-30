@@ -64,12 +64,8 @@ ncdfOverlayFactory::ncdfOverlayFactory()
       m_space = 0;
       m_ParticleMap = nullptr;
       m_currentInterpMode = 0;
-      m_currentSmoothColors = false;
-      m_currentSCurve = false;
-      m_currentSlopeShading = false;
       m_currentDataMin = 0.0f;
       m_currentDataMax = 1.0f;
-      m_currentSlopeMode = 0;
       m_glDispTexture = 0;
       m_bHasDispTexture = false;
 
@@ -77,13 +73,6 @@ ncdfOverlayFactory::ncdfOverlayFactory()
       m_animateTimer.Bind(wxEVT_TIMER, [this](wxTimerEvent&) {
           GetOCPNCanvasWindow()->Refresh(false);
       });
-      m_cachedVorticity = NULL;
-      m_cachedVortNj = m_cachedVortNi = 0;
-      m_glLICTexture = 0;
-      m_bHasLICTexture = false;
-      m_bNeedsLICRebuild = true;
-      m_glVortTexture = 0;
-      m_bHasVortTexture = false;
 
       // Animation textures (independent from static)
       m_glAnimColorTexture = 0;
@@ -124,20 +113,17 @@ ncdfOverlayFactory::~ncdfOverlayFactory()
     m_bReadyToRender = false;
 	renderSelectionRectangle = false;
     if (m_tParticleTimer.IsRunning()) m_tParticleTimer.Stop();
-    m_currentOverlay.Cleanup();
-    m_seaTempOverlay.Cleanup();
-    m_salinityOverlay.Cleanup();
+    // Only clear B-spline coefficients (data-dependent). Preserve grids for reuse.
+    m_currentOverlay.clearCoefficients();
+    m_seaTempOverlay.clearCoefficients();
+    m_salinityOverlay.clearCoefficients();
     ClearParticles();
-    DeleteLICTexture();
     DeleteDispTexture();
     if (m_animateTimer.IsRunning()) m_animateTimer.Stop();
     // Clean up animation textures
     if (m_bHasAnimColorTexture && m_glAnimColorTexture) { glDeleteTextures(1, &m_glAnimColorTexture); }
     if (m_bHasAnimSeaTempTexture && m_glAnimSeaTempTexture) { glDeleteTextures(1, &m_glAnimSeaTempTexture); }
     if (m_bHasAnimSalinityTexture && m_glAnimSalinityTexture) { glDeleteTextures(1, &m_glAnimSalinityTexture); }
-    if (m_bHasVortTexture && m_glVortTexture) { glDeleteTextures(1, &m_glVortTexture); m_glVortTexture = 0; m_bHasVortTexture = false; }
-    FreeSharpenedGrid(m_cachedVorticity, m_cachedVortNj);
-    m_cachedVorticity = NULL;
     ncdf_shader_cleanup();
     DeleteDispTexture();
 }
@@ -168,12 +154,10 @@ void ncdfOverlayFactory::setData(MainDialog *gui, ncdf_pi *plugin, const ncdfDat
 		(int)g2data.hasCurrent(), (int)g2data.hasSSTData(), (int)g2data.hasSalData(),
 		(int)(plugin && plugin->m_bShowCurrentForce), (int)(plugin && plugin->m_bShowSeaTemp), (int)(plugin && plugin->m_bShowSalinity));
 
-	// GRIB pattern: nuke all cached state (textures, grids, coefficients)
-	// Safe because setData runs on the main thread which owns the GL context
-	m_currentOverlay.Cleanup();   // deletes GL textures + frees all CPU caches
-	m_seaTempOverlay.Cleanup();
-	m_salinityOverlay.Cleanup();
-
+	// Clear B-spline coefficients (data-dependent). Preserve grids for reuse.
+	m_currentOverlay.clearCoefficients();
+	m_seaTempOverlay.clearCoefficients();
+	m_salinityOverlay.clearCoefficients();
 	ClearParticles();
 	m_last_vp_scale = -1;
 	m_last_vp_latMax = -99999.0;
@@ -192,8 +176,7 @@ void ncdfOverlayFactory::setData(MainDialog *gui, ncdf_pi *plugin, const ncdfDat
 	ncdfLog("[setData] bounds: lat[%.2f,%.2f] lon[%.2f,%.2f] ni=%d nj=%d\n",
 		this->tlat, this->blat, this->tlon, this->blon,
 		(int)gui->myMessage.lonLength, (int)gui->myMessage.latLength);
-
-	this->m_bReadyToRender = true;
+	// Don't set m_bReadyToRender here — callers manage it explicitly
 }
 
 void ncdfOverlayFactory::setSelectionRectangle(Selection *rect)
@@ -233,13 +216,40 @@ void ncdfOverlayFactory::prepareAllOverlays()
     ncdfLog("[render] prepareAllOverlays: DONE, CPU data freed\n");
 }
 
+void ncdfOverlayFactory::prepareAllGrids()
+{
+    if (!gui) return;
+    ncdfLog("[render] prepareAllGrids: ENTER\n");
+    auto t0 = std::chrono::high_resolution_clock::now();
+
+    // Convert myMessage data to float grids for available types.
+    // Only set dataReady for VISIBLE types (checkbox checked).
+    // Invisible types get grids prepared (for future checkbox click) but dataReady=false.
+    if (gui->myMessage.hasCurrent()) {
+        m_currentOverlay.prepareGrid(gui);
+        if (plugin && plugin->m_bShowCurrentForce) m_currentOverlay.dataReady = true;
+    }
+    if (gui->myMessage.hasSSTData()) {
+        m_seaTempOverlay.prepareGrid(gui);
+        if (plugin && plugin->m_bShowSeaTemp) m_seaTempOverlay.dataReady = true;
+    }
+    if (gui->myMessage.hasSalData()) {
+        m_salinityOverlay.prepareGrid(gui);
+        if (plugin && plugin->m_bShowSalinity) m_salinityOverlay.dataReady = true;
+    }
+
+    auto t1 = std::chrono::high_resolution_clock::now();
+    ncdfLog("[perf] prepareAllGrids: TOTAL=%lldms\n",
+        (long long)std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count());
+}
+
 void ncdfOverlayFactory::updateTimeStep()
 {
     ncdfLog("[updateTimeStep] ENTER — same-file time step switch\n");
-    // Free CPU-side caches only. GPU textures preserved for glTexSubImage2D reuse.
-    m_currentOverlay.clearCache();
-    m_seaTempOverlay.clearCache();
-    m_salinityOverlay.clearCache();
+    // Only clear B-spline coefficients (data-dependent). Preserve grids for reuse.
+    m_currentOverlay.clearCoefficients();
+    m_seaTempOverlay.clearCoefficients();
+    m_salinityOverlay.clearCoefficients();
     m_last_vp_scale = -1;
     m_last_vp_latMax = -99999.0;
     m_bUpdateParticles = true;
@@ -442,10 +452,6 @@ void ncdfOverlayFactory::RenderCurrentOverlay(PlugIn_ViewPort *vp, double **anim
         glDisable(GL_TEXTURE_2D);
         glBindTexture(GL_TEXTURE_2D, 0);
         m_currentInterpMode = 0;
-        m_currentSmoothColors = false;
-        m_currentSCurve = false;
-        m_currentSlopeShading = false;
-        m_currentSlopeMode = 0;
         m_currentOverlay.RenderColorMap(vp, gui, plugin, this, animGrid, animUGrid, animVGrid);
         m_currentDataMin = m_currentOverlay.cachedDataMin;
         m_currentDataMax = m_currentOverlay.cachedDataMax;
@@ -462,10 +468,6 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp, double **anim
             (int)m_seaTempOverlay.hasTexture, (int)m_seaTempOverlay.needsRebuild,
             (int)m_seaTempOverlay.dataReady, (void*)m_seaTempOverlay.cachedCoeff, (int)(bool)m_seaTempOverlay.cachedBaseGrid);
         m_currentInterpMode = 0;
-        m_currentSmoothColors = false;
-        m_currentSCurve = false;
-        m_currentSlopeShading = false;
-        m_currentSlopeMode = 1;
         m_seaTempOverlay.RenderColorMap(vp, gui, plugin, this, animGrid);
         m_currentDataMin = m_seaTempOverlay.cachedDataMin;
         m_currentDataMax = m_seaTempOverlay.cachedDataMax;
@@ -486,10 +488,6 @@ void ncdfOverlayFactory::RenderSalinityOverlay(PlugIn_ViewPort *vp, double **ani
             (int)m_salinityOverlay.hasTexture, (int)m_salinityOverlay.needsRebuild,
             (int)m_salinityOverlay.dataReady, (void*)m_salinityOverlay.cachedCoeff, (int)(bool)m_salinityOverlay.cachedBaseGrid);
         m_currentInterpMode = 0;
-        m_currentSmoothColors = false;
-        m_currentSCurve = false;
-        m_currentSlopeShading = false;
-        m_currentSlopeMode = 0;
         m_salinityOverlay.RenderColorMap(vp, gui, plugin, this, animGrid);
         m_currentDataMin = m_salinityOverlay.cachedDataMin;
         m_currentDataMax = m_salinityOverlay.cachedDataMax;
@@ -1281,343 +1279,8 @@ void ncdfOverlayFactory::drawTriangle(wxDC *pmdc, wxPen pen, bool south,
 
 
 //===================================================================
-// Adaptive Laplacian sharpening based on gradient magnitude
-//===================================================================
-double** ncdfOverlayFactory::BuildSharpenedGrid(double** grid, int nj, int ni)
-{
-    if (!grid || ni < 3 || nj < 3) return NULL;
-    double** out = new(std::nothrow) double*[nj];
-    if (!out) return NULL;
-    for (int j = 0; j < nj; j++) {
-        out[j] = new(std::nothrow) double[ni];
-        if (!out[j]) { for (int k = 0; k < j; k++) delete[] out[k]; delete[] out; return NULL; }
-    }
-
-    for (int j = 0; j < nj; j++) {
-        for (int i = 0; i < ni; i++) {
-            double v = grid[j][i];
-            if (v == ncdf_NOTDEF || v != v || !isfinite(v)) {
-                out[j][i] = v;
-                continue;
-            }
-            // Boundary: copy original
-            if (j == 0 || j == nj-1 || i == 0 || i == ni-1) {
-                out[j][i] = v;
-                continue;
-            }
-            // Check 4-neighbors for valid data
-            double vn = grid[j-1][i], vs = grid[j+1][i];
-            double vw = grid[j][i-1], ve = grid[j][i+1];
-            if (vn == ncdf_NOTDEF || vs == ncdf_NOTDEF ||
-                vw == ncdf_NOTDEF || ve == ncdf_NOTDEF) {
-                out[j][i] = v;
-                continue;
-            }
-            // Gradient magnitude
-            double gx = ve - vw;
-            double gy = vs - vn;
-            double mag = sqrt(gx * gx + gy * gy);
-            // Laplacian
-            double lap = vn + vs + vw + ve - 4.0 * v;
-            // Adaptive strength: stronger at edges (0.5~2.0)
-            double strength = 0.5 + 1.5 * (1.0 - exp(-mag * 2.0));
-            out[j][i] = v - strength * lap;
-        }
-    }
-    return out;
-}
-
-void ncdfOverlayFactory::FreeSharpenedGrid(double** grid, int nj)
-{
-    if (!grid) return;
-    for (int j = 0; j < nj; j++) delete[] grid[j];
-    delete[] grid;
-}
-
-//===================================================================
-// Vorticity: curl of velocity field (∂v/∂x - ∂u/∂y)
-//===================================================================
-double** ncdfOverlayFactory::BuildVorticityGrid(double** uGrid, double** vGrid, int nj, int ni)
-{
-    if (!uGrid || !vGrid || ni < 3 || nj < 3) return NULL;
-    double** out = new(std::nothrow) double*[nj];
-    if (!out) return NULL;
-    for (int j = 0; j < nj; j++) {
-        out[j] = new(std::nothrow) double[ni];
-        if (!out[j]) { for (int k = 0; k < j; k++) delete[] out[k]; delete[] out; return NULL; }
-    }
-    for (int j = 0; j < nj; j++) {
-        for (int i = 0; i < ni; i++) {
-            if (uGrid[j][i] == ncdf_NOTDEF || vGrid[j][i] == ncdf_NOTDEF ||
-                j == 0 || j == nj-1 || i == 0 || i == ni-1) {
-                out[j][i] = 0;
-                continue;
-            }
-            double dVdx = vGrid[j][i+1] - vGrid[j][i-1];
-            double dUdy = uGrid[j+1][i] - uGrid[j-1][i];
-            out[j][i] = dVdx - dUdy;
-        }
-    }
-    return out;
-}
-
-//===================================================================
-// Guided Anisotropic Diffusion (Perona-Malik, edge-preserving)
-//===================================================================
-double** ncdfOverlayFactory::BuildAnisoDiffusedGrid(double** grid, int nj, int ni)
-{
-    if (!grid || ni < 3 || nj < 3) return NULL;
-
-    // Allocate two buffers and 4 coefficient arrays (one per direction)
-    double** bufA = new(std::nothrow) double*[nj];
-    double** bufB = new(std::nothrow) double*[nj];
-    float* cN = new(std::nothrow) float[nj * ni];
-    float* cS = new(std::nothrow) float[nj * ni];
-    float* cW = new(std::nothrow) float[nj * ni];
-    float* cE = new(std::nothrow) float[nj * ni];
-    if (!bufA || !bufB || !cN || !cS || !cW || !cE) {
-        delete[] bufA; delete[] bufB; delete[] cN; delete[] cS; delete[] cW; delete[] cE;
-        return NULL;
-    }
-    for (int j = 0; j < nj; j++) {
-        bufA[j] = new(std::nothrow) double[ni];
-        bufB[j] = new(std::nothrow) double[ni];
-        if (!bufA[j] || !bufB[j]) {
-            for (int k = 0; k <= j; k++) { delete[] bufA[k]; delete[] bufB[k]; }
-            delete[] bufA; delete[] bufB; delete[] cN; delete[] cS; delete[] cW; delete[] cE;
-            return NULL;
-        }
-    }
-
-    // Copy original data
-    for (int j = 0; j < nj; j++)
-        for (int i = 0; i < ni; i++)
-            bufA[j][i] = grid[j][i];
-
-    // Compute k from data range
-    double dMin = 1e30, dMax = -1e30;
-    for (int j = 0; j < nj; j++)
-        for (int i = 0; i < ni; i++) {
-            double v = grid[j][i];
-            if (v != ncdf_NOTDEF && v == v && isfinite(v)) {
-                if (v < dMin) dMin = v;
-                if (v > dMax) dMax = v;
-            }
-        }
-    double k = (dMax - dMin) * 0.1;
-    if (k < 1e-10) k = 1.0;
-    double invK2 = 1.0 / (k * k);
-    double lambda = 0.2;
-
-    // Pre-compute diffusion coefficients from original data (guided)
-    for (int j = 0; j < nj; j++) {
-        for (int i = 0; i < ni; i++) {
-            int idx = j * ni + i;
-            double v = grid[j][i];
-            if (v == ncdf_NOTDEF || v != v || !isfinite(v) ||
-                j == 0 || j == nj-1 || i == 0 || i == ni-1) {
-                cN[idx] = cS[idx] = cW[idx] = cE[idx] = 0.0f;
-                continue;
-            }
-            double vn = grid[j-1][i], vs = grid[j+1][i];
-            double vw = grid[j][i-1], ve = grid[j][i+1];
-            if (vn == ncdf_NOTDEF || vs == ncdf_NOTDEF ||
-                vw == ncdf_NOTDEF || ve == ncdf_NOTDEF) {
-                cN[idx] = cS[idx] = cW[idx] = cE[idx] = 0.0f;
-                continue;
-            }
-            double dn = vn - v, ds = vs - v, dw = vw - v, de = ve - v;
-            cN[idx] = (float)exp(-dn * dn * invK2);
-            cS[idx] = (float)exp(-ds * ds * invK2);
-            cW[idx] = (float)exp(-dw * dw * invK2);
-            cE[idx] = (float)exp(-de * de * invK2);
-        }
-    }
-
-    // Iterate: coefficients are fixed (guided), only values change
-    const int ITERATIONS = 5;
-    for (int iter = 0; iter < ITERATIONS; iter++) {
-        double** src = (iter % 2 == 0) ? bufA : bufB;
-        double** dst = (iter % 2 == 0) ? bufB : bufA;
-
-        for (int j = 1; j < nj - 1; j++) {
-            for (int i = 1; i < ni - 1; i++) {
-                int idx = j * ni + i;
-                if (cN[idx] == 0.0f && cS[idx] == 0.0f &&
-                    cW[idx] == 0.0f && cE[idx] == 0.0f) {
-                    dst[j][i] = src[j][i];
-                    continue;
-                }
-                double v = src[j][i];
-                dst[j][i] = v + lambda * (
-                    cN[idx] * (src[j-1][i] - v) +
-                    cS[idx] * (src[j+1][i] - v) +
-                    cW[idx] * (src[j][i-1] - v) +
-                    cE[idx] * (src[j][i+1] - v));
-            }
-        }
-        // Copy borders
-        for (int i = 0; i < ni; i++) { dst[0][i] = src[0][i]; dst[nj-1][i] = src[nj-1][i]; }
-        for (int j = 0; j < nj; j++) { dst[j][0] = src[j][0]; dst[j][ni-1] = src[j][ni-1]; }
-    }
-
-    // Result is in the buffer that was last written to
-    double** result = (ITERATIONS % 2 == 0) ? bufA : bufB;
-    double** other  = (ITERATIONS % 2 == 0) ? bufB : bufA;
-    for (int j = 0; j < nj; j++) delete[] other[j];
-    delete[] other;
-    delete[] cN; delete[] cS; delete[] cW; delete[] cE;
-
-    return result;
-}
-
-//===================================================================
 // Line Integral Convolution (LIC) for current vector field
 //===================================================================
-void ncdfOverlayFactory::DeleteLICTexture()
-{
-    if (m_bHasLICTexture && m_glLICTexture) {
-        glDeleteTextures(1, &m_glLICTexture);
-        m_glLICTexture = 0;
-        m_bHasLICTexture = false;
-    }
-}
-
-void ncdfOverlayFactory::BuildLICTexture(int ni, int nj)
-{
-    if (!gui || !gui->myMessage.hasCurrent() || ni < 3 || nj < 3) return;
-
-    // Generate float noise field (padded)
-    const int STEPS = 40;
-    const float STEPSIZE = 0.002f;  // step in normalized texture space
-    int pad = 20;
-    int padW = ni + 2 * pad;
-    int padH = nj + 2 * pad;
-    float* noiseField = new(std::nothrow) float[padH * padW];
-    if (!noiseField) return;
-    srand(42);
-    for (int k = 0; k < padH * padW; k++) noiseField[k] = (float)rand() / RAND_MAX;
-
-    unsigned char* licData = new(std::nothrow) unsigned char[ni * nj * 4];
-    if (!licData) { delete[] noiseField; return; }
-
-    // Access vector field directly from message (no intermediate grid needed)
-
-    // Normalize vector field to [-1, 1] texture space
-    double maxSpeed = 0;
-    for (int j = 0; j < nj; j++)
-        for (int i = 0; i < ni; i++) {
-            double uval = gui->myMessage.getU(i, j);
-            double vval = gui->myMessage.getV(i, j);
-            if (uval == ncdf_NOTDEF || vval == ncdf_NOTDEF) continue;
-            double sp = sqrt(uval*uval + vval*vval);
-            if (maxSpeed < sp) maxSpeed = sp;
-        }
-    if (maxSpeed < 1e-10) maxSpeed = 1.0;
-
-    // Helper: bilinear noise lookup in padded field
-    // coord in normalized [0,1] → padded field index
-    auto sampleNoise = [&](float u, float v) -> float {
-        // Map [0,1] to padded grid coordinates
-        float px = u * (ni - 1) + pad;
-        float py = v * (nj - 1) + pad;
-        int xi = (int)px, yi = (int)py;
-        if (xi < 0) xi = 0; if (xi >= padW - 1) xi = padW - 2;
-        if (yi < 0) yi = 0; if (yi >= padH - 1) yi = padH - 2;
-        float fx = px - xi, fy = py - yi;
-        return (1-fx)*(1-fy)*noiseField[yi*padW + xi]
-             + fx*(1-fy)*noiseField[yi*padW + xi+1]
-             + (1-fx)*fy*noiseField[(yi+1)*padW + xi]
-             + fx*fy*noiseField[(yi+1)*padW + xi+1];
-    };
-
-    // Helper: bilinear vector field lookup
-    auto sampleVector = [&](float u, float v, float& outU, float& outV) -> bool {
-        float px = u * (ni - 1);
-        float py = v * (nj - 1);
-        int xi = (int)px, yi = (int)py;
-        if (xi < 0 || xi >= ni - 1 || yi < 0 || yi >= nj - 1) return false;
-        float fx = px - xi, fy = py - yi;
-        double uu = (1-fx)*(1-fy)*gui->myMessage.getU(xi, yi) + fx*(1-fy)*gui->myMessage.getU(xi+1, yi)
-                   + (1-fx)*fy*gui->myMessage.getU(xi, yi+1) + fx*fy*gui->myMessage.getU(xi+1, yi+1);
-        double vv = (1-fx)*(1-fy)*gui->myMessage.getV(xi, yi) + fx*(1-fy)*gui->myMessage.getV(xi+1, yi)
-                   + (1-fx)*fy*gui->myMessage.getV(xi, yi+1) + fx*fy*gui->myMessage.getV(xi+1, yi+1);
-        if (uu == ncdf_NOTDEF || vv == ncdf_NOTDEF) return false;
-        outU = (float)(uu / maxSpeed);
-        outV = (float)(vv / maxSpeed);
-        return true;
-    };
-
-    for (int j = 0; j < nj; j++) {
-        for (int i = 0; i < ni; i++) {
-            int off = (j * ni + i) * 4;
-
-            // Land: white (no modulation)
-            if (gui->myMessage.getU(i, j) == ncdf_NOTDEF || gui->myMessage.getV(i, j) == ncdf_NOTDEF) {
-                licData[off] = licData[off+1] = licData[off+2] = 255;
-                licData[off+3] = 255;
-                continue;
-            }
-
-            // Start at this pixel's normalized position
-            float u0 = (float)i / (ni - 1);
-            float v0 = (float)j / (nj - 1);
-
-            float runningTotal = 0.0f;
-            int sampleCount = 0;
-
-            // Trace forward
-            float cu = u0, cv = v0;
-            for (int s = 0; s < STEPS; s++) {
-                float vu, vv;
-                if (!sampleVector(cu, cv, vu, vv)) break;
-                cu += vu * STEPSIZE;
-                cv += vv * STEPSIZE;
-                if (cu < 0 || cu > 1 || cv < 0 || cv > 1) break;
-                runningTotal += sampleNoise(cu, cv);
-                sampleCount++;
-            }
-
-            // Trace backward
-            cu = u0; cv = v0;
-            for (int s = 0; s < STEPS; s++) {
-                float vu, vv;
-                if (!sampleVector(cu, cv, vu, vv)) break;
-                cu -= vu * STEPSIZE;
-                cv -= vv * STEPSIZE;
-                if (cu < 0 || cu > 1 || cv < 0 || cv > 1) break;
-                runningTotal += sampleNoise(cu, cv);
-                sampleCount++;
-            }
-
-            // Average (exclude center pixel, like reference implementation)
-            float avgValue = (sampleCount > 0) ? runningTotal / sampleCount : 0.5f;
-
-            // Brightness: 0.3 (dark) to 1.0 (white)
-            float brightness = 0.3f + 0.7f * avgValue;
-            unsigned char bri = (unsigned char)(brightness * 255.0f);
-            licData[off] = licData[off+1] = licData[off+2] = bri;
-            licData[off+3] = 255;
-        }
-    }
-
-    delete[] noiseField;
-
-    DeleteLICTexture();
-    glGenTextures(1, &m_glLICTexture);
-    glBindTexture(GL_TEXTURE_2D, m_glLICTexture);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, ni, nj, 0, GL_RGBA, GL_UNSIGNED_BYTE, licData);
-    m_bHasLICTexture = true;
-    m_bNeedsLICRebuild = false;
-
-    delete[] licData;
-}
-
-
 wxColour ncdfOverlayFactory::GetSeaCurrentGraphicColor(double val_in)
 {
     static const double stops[][4] = {

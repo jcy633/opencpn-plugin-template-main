@@ -70,6 +70,7 @@ public:
 			bool isInitialized() const { return gui != NULL; }
      void reset();
      void prepareAllOverlays();  // Precompute grids + B-spline coefficients for all data types
+     void prepareAllGrids();     // Convert myMessage data to float grids only (no coefficients)
      void updateTimeStep();      // Same-file time step switch: invalidate without destroying grid caches
      void setSelectionRectangle(Selection *rect);
      bool isReadyToRender(){ return m_bReadyToRender; }
@@ -136,7 +137,6 @@ public:
 
      // Per-call shader settings (passed by each overlay type)
      struct RenderSettings {
-         bool smoothColors;
          float dataMin, dataMax;
          float dataMinV, dataMaxV;
          float lutMin, lutMax;
@@ -153,7 +153,7 @@ public:
          float *precompScalarCoeff;
          float precompScalarCoefMin, precompScalarCoefMax;
          float precompScalarPhysMin, precompScalarPhysMax;
-         RenderSettings() : smoothColors(false),
+         RenderSettings() :
              dataMin(0), dataMax(1), dataMinV(0), dataMaxV(1),
              lutMin(0), lutMax(1), physMin(0), physMax(1), physMinV(0), physMaxV(1),
              vectorMode(false), uGrid(NULL), vGrid(NULL),
@@ -187,21 +187,21 @@ public:
                                ColorFunc colorFunc, float lutMin, float lutMax,
                                bool (*hasData)(MainDialog&),
                                void (*fillGrid)(MainDialog&, std::unique_ptr<double*[]>&, int, int),
-                               bool smoothColors, bool sharpen, bool anisoDiffusion,
                                double** animatedGrid = NULL);
 
      // Shared color interpolation with optional smoothstep
      static wxColour InterpolateStops(const double stops[][4], int nStops, double val, bool smooth);
-     static double** BuildSharpenedGrid(double** grid, int nj, int ni);
-     static double** BuildAnisoDiffusedGrid(double** grid, int nj, int ni);
-     static double** BuildVorticityGrid(double** uGrid, double** vGrid, int nj, int ni);
-     static void FreeSharpenedGrid(double** grid, int nj);
      // B-spline prefilter wrapper for overlay use
      static void PrefilterCoefficients(float* coeffU, float* coeffV,
                                         float** uGrid, float** vGrid,
                                         int ni, int nj, bool isGlobal,
                                         float &coefU_min, float &coefU_max,
                                         float &coefV_min, float &coefV_max);
+     // Scalar overload: single-channel B-spline prefilter (for SST, Salinity)
+     static void PrefilterScalarCoefficients(float* coeff, float** grid,
+                                              int ni, int nj, bool isGlobal,
+                                              float &coefMin, float &coefMax,
+                                              float physMin, float physMax);
      static void DrawIsoLines(PlugIn_ViewPort *vp,
                               double **grid, int ni, int nj,
                               bool &needsRebuild,
@@ -216,8 +216,6 @@ public:
                             int dataDim[2], int glDim[2],
                             GLuint &lutID, bool &hasLUT,
                             unsigned char *&uploadBuf, int &uploadBufSize,
-                            double **slopeGrid = NULL,
-                            GLuint slopeTexID = 0,
                             GLuint *physicalTexID = NULL, bool *hasPhysicalTex = NULL);
 
      PlugIn_ViewPort 	*vp;
@@ -273,18 +271,10 @@ public:
 	 void ClearParticles();
 	 void RenderParticles(PlugIn_ViewPort *vp);
 
-	 // Current interpolation mode
+	 // Current rendering state
 	 int  m_currentInterpMode;
-	 bool m_currentSmoothColors;
-	 bool m_currentSCurve;
-	 bool m_currentSlopeShading;
 	 float m_currentDataMin;
 	 float m_currentDataMax;
-	 int m_currentSlopeMode;
-	 GLuint m_glVortTexture;  // normalized vorticity texture for shader slope
-	 bool m_bHasVortTexture;
-	 GLuint m_glSlopeSource;  // texture ID bound to slopeTex uniform
-
 	 // Color legend
 	 ncdfLegend m_legend;
 
@@ -303,17 +293,6 @@ public:
 	 bool m_bHasAnimSalinityTexture;
 	 int m_animSalTexDataDim[2];
 	 int m_animSalTexGLDim[2];
-
-	 // Cached vorticity grid for current slope shading
-	 double** m_cachedVorticity;
-	 int m_cachedVortNj, m_cachedVortNi;
-
-	 // LIC texture cache (current only)
-	 GLuint m_glLICTexture;
-	 bool m_bHasLICTexture;
-	 bool m_bNeedsLICRebuild;
-	 void DeleteLICTexture();
-	 void BuildLICTexture(int ni, int nj);
 };
 
 

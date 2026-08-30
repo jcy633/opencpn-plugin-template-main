@@ -55,21 +55,13 @@ struct CurrentOverlay {
     float cachedPhysMin, cachedPhysMax;
     float cachedPhysMinV, cachedPhysMaxV;  // V component range (vector only)
 
-    // Vorticity grid for slope shading, owns the 2D array
-    std::unique_ptr<double*[]> cachedVorticity;
-    int vortNj, vortNi;
-    GLuint vortTexture;
-    bool hasVortTexture;
-    GLuint slopeSource;
-
-    // LIC texture
-    GLuint licTexture;
-    bool hasLICTexture;
-    bool needsLICRebuild;
-
     void Init();
     void Cleanup();
-    void clearCache();  // Free CPU caches only, preserve GPU textures for glTexSubImage2D reuse
+    void clearCache();           // Free CPU caches + derived GPU textures
+    void clearCoefficients();    // Free B-spline coefficients only, preserve grids (same-file switch)
+    void prepareGrid(MainDialog *gui);   // Convert myMessage data to float grids (no coefficients)
+    void prepareCoeff(ncdfOverlayFactory *factory);  // Compute B-spline coefficients from grids
+    void releaseCoeffData();     // Free coefficient data after texture upload (keep grid capacity)
     ~CurrentOverlay() { Cleanup(); }
     void Invalidate();
     void prepareData(MainDialog *gui, ncdf_pi *plugin, ncdfOverlayFactory *factory);  // Precompute grids + coefficients
@@ -84,7 +76,6 @@ struct CurrentOverlay {
                         double** animVGrid = NULL);
 
     // Color function (static for use as function pointer)
-    static bool s_smoothColors;  // set by RenderColorMap before drawing
     static wxColour GetColor(double val_in);
 };
 

@@ -225,4 +225,175 @@ bool ncdfDataMessage::isYInMap(const ncdfDataMessage& g2message, double y) const
 		return y >= g2message.firstGridPointLat && y <= g2message.lastGridPointLat;
 }
 
+// Float version: bilinear interpolation from 2D float grid (row pointers)
+double ncdfDataMessage::getInterpolatedValueFloat(float* const* grid, int ni, int nj,
+                                                   double firstLat, double lastLat,
+                                                   double firstLon, double lastLon,
+                                                   double iIncr, double jIncr,
+                                                   double px, double py) const
+{
+	if (!grid) return ncdf_NOTDEF;
+
+	// Normalize longitude bounds once
+	double lonMin = firstLon, lonMax = lastLon;
+	if (lonMin > lonMax) { double t = lonMin; lonMin = lonMax; lonMax = t; }
+
+	auto inX = [&](double x) -> bool {
+		return x >= lonMin && x <= lonMax;
+	};
+	auto inY = [&](double y) -> bool {
+		if (jIncr < 0) return y <= firstLat && y >= lastLat;
+		return y >= firstLat && y <= lastLat;
+	};
+
+	if (!inX(px) || !inY(py)) {
+		px += 360.0;
+		if (!inX(px) || !inY(py)) {
+			px -= 2 * 360.0;
+			if (!inX(px) || !inY(py)) return ncdf_NOTDEF;
+		}
+	}
+
+	double dataEnd = lonMax + iIncr;
+	while (px > dataEnd) px -= 360.0;
+	while (px < lonMin) px += 360.0;
+
+	if (fabs(iIncr) < 1e-10 || fabs(jIncr) < 1e-10) return ncdf_NOTDEF;
+
+	double pi = (px - lonMin) / iIncr;
+	double pj = (py - firstLat) / jIncr;
+	int i0 = (int)pi;
+	int j0 = (int)pj;
+	double dx = pi - i0;
+	double dy = pj - j0;
+
+	int i1 = i0 + 1;
+	double lonRange = lonMax - lonMin;
+	if (i1 >= ni) {
+		i1 = (lonRange + fabs(iIncr) >= 360) ? 0 : i0;
+	}
+
+	auto valAt = [&](int ii, int jj) -> float {
+		if (ii < 0 || ii >= ni || jj < 0 || jj >= nj) return NAN;
+		return grid[jj][ii];
+	};
+
+	float v00 = valAt(i0, j0);
+	float v10 = valAt(i1, j0);
+	float v01 = valAt(i0, j0 + 1);
+	float v11 = valAt(i1, j0 + 1);
+
+	int nbval = 0;
+	if (isfinite(v00)) nbval++;
+	if (isfinite(v10)) nbval++;
+	if (isfinite(v01)) nbval++;
+	if (isfinite(v11)) nbval++;
+
+	if (nbval == 0) return ncdf_NOTDEF;
+	if (nbval < 4) {
+		// Nearest neighbor fallback
+		double minDist = 1e10;
+		double bestVal = ncdf_NOTDEF;
+		struct { float v; double ddx; double ddy; } pts[] = {
+			{v00, dx, dy}, {v10, 1-dx, dy}, {v01, dx, 1-dy}, {v11, 1-dx, 1-dy}
+		};
+		for (auto& p : pts) {
+			if (isfinite(p.v)) {
+				double d = p.ddx * p.ddx + p.ddy * p.ddy;
+				if (d < minDist) { minDist = d; bestVal = p.v; }
+			}
+		}
+		return bestVal;
+	}
+
+	return (double)(v00 * (1-dx) * (1-dy) + v10 * dx * (1-dy)
+	              + v01 * (1-dx) * dy + v11 * dx * dy);
+}
+
+// Float version: joint UV interpolation from cached float grids
+bool ncdfDataMessage::getInterpolatedUVFloat(float* const* uGrid, float* const* vGrid,
+                                              int ni, int nj,
+                                              double firstLat, double lastLat,
+                                              double firstLon, double lastLon,
+                                              double iIncr, double jIncr,
+                                              double px, double py,
+                                              double &uOut, double &vOut) const
+{
+	if (!uGrid || !vGrid) return false;
+	if (fabs(iIncr) < 1e-10 || fabs(jIncr) < 1e-10) return false;
+
+	// Normalize longitude bounds
+	double lonMin = firstLon, lonMax = lastLon;
+	if (lonMin > lonMax) { double t = lonMin; lonMin = lonMax; lonMax = t; }
+
+	// Boundary check with 360 wrapping
+	auto inX = [&](double x) -> bool { return x >= lonMin && x <= lonMax; };
+	auto inY = [&](double y) -> bool {
+		if (jIncr < 0) return y <= firstLat && y >= lastLat;
+		return y >= firstLat && y <= lastLat;
+	};
+	if (!inX(px) || !inY(py)) {
+		px += 360.0;
+		if (!inX(px) || !inY(py)) {
+			px -= 2 * 360.0;
+			if (!inX(px) || !inY(py)) return false;
+		}
+	}
+	double dataEnd = lonMax + iIncr;
+	while (px > dataEnd) px -= 360.0;
+	while (px < lonMin) px += 360.0;
+
+	double pi = (px - lonMin) / iIncr;
+	double pj = (py - firstLat) / jIncr;
+	int i0 = (int)pi, j0 = (int)pj;
+	int i1 = i0 + 1, j1 = j0 + 1;
+
+	if (i0 < 0 || j0 < 0 || i0 >= ni || j0 >= nj) return false;
+	double lonRange = lonMax - lonMin;
+	if (i1 >= ni) i1 = (lonRange + fabs(iIncr) >= 360) ? 0 : i0;
+	if (j1 >= nj) j1 = j0;
+
+	double dx = pi - i0, dy = pj - j0;
+	int r0 = j0, r1 = j1;
+	float u00 = uGrid[r0][i0], u10 = uGrid[r0][i1];
+	float u01 = uGrid[r1][i0], u11 = uGrid[r1][i1];
+	float v00 = vGrid[r0][i0], v10 = vGrid[r0][i1];
+	float v01 = vGrid[r1][i0], v11 = vGrid[r1][i1];
+
+	int nbval = 0;
+	if (isfinite(u00) && isfinite(v00)) nbval++;
+	if (isfinite(u10) && isfinite(v10)) nbval++;
+	if (isfinite(u01) && isfinite(v01)) nbval++;
+	if (isfinite(u11) && isfinite(v11)) nbval++;
+
+	if (nbval == 0) return false;
+
+	dx = (3.0 - 2.0 * dx) * dx * dx;
+	dy = (3.0 - 2.0 * dy) * dy * dy;
+
+	if (nbval == 4) {
+		uOut = u00 * (1-dx) * (1-dy) + u10 * dx * (1-dy)
+		     + u01 * (1-dx) * dy + u11 * dx * dy;
+		vOut = v00 * (1-dx) * (1-dy) + v10 * dx * (1-dy)
+		     + v01 * (1-dx) * dy + v11 * dx * dy;
+		return true;
+	}
+
+	// Partial: nearest valid corner
+	struct { float u, v; double d; } pts[] = {
+		{u00, v00, dx*dx + dy*dy},
+		{u10, v10, (1-dx)*(1-dx) + dy*dy},
+		{u01, v01, dx*dx + (1-dy)*(1-dy)},
+		{u11, v11, (1-dx)*(1-dx) + (1-dy)*(1-dy)}
+	};
+	double minD = 1e10;
+	bool found = false;
+	for (auto& p : pts) {
+		if (isfinite(p.u) && isfinite(p.v) && p.d < minD) {
+			minD = p.d; uOut = p.u; vOut = p.v; found = true;
+		}
+	}
+	return found;
+}
+
 

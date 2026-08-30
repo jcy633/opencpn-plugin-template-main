@@ -12,7 +12,6 @@ extern void BicubicSplinePrefilterWrapAware(float* dst, const float* src,
                                              const unsigned char* mask,
                                              int w, int h, bool isGlobal);
 
-bool SalinityOverlay::s_smoothColors = false;
 
 void SalinityOverlay::Init() {
     glTexture = 0; hasTexture = false; needsRebuild = true; dataReady = false;
@@ -57,6 +56,99 @@ void SalinityOverlay::clearCache() {
     // GPU textures preserved: glTexture, lutID, uploadBuf
 }
 
+void SalinityOverlay::clearCoefficients() {
+    ncdfLog("[clearCoeff:sal] cachedBaseGrid=%p cachedCoeff=%p cachedNj=%d cachedNi=%d\n",
+        (void*)cachedBaseGrid.get(), (void*)cachedCoeff, cachedNj, cachedNi);
+    if (cachedCoeff) { free(cachedCoeff); cachedCoeff = NULL; }
+    // Delete GPU texture — it contains old coefficient data, must be recreated
+    if (hasTexture && glTexture) { glDeleteTextures(1, &glTexture); glTexture = 0; hasTexture = false; }
+    // Grid (cachedBaseGrid) preserved for reuse in same-file time step switch
+    dataReady = false;
+    needsRebuild = true;
+    needsIsoRebuild = true;
+}
+
+void SalinityOverlay::prepareGrid(MainDialog *gui) {
+    if (!gui || !gui->myMessage.hasSalData()) return;
+    int ni = gui->myMessage.lonLength;
+    int nj = gui->myMessage.latLength;
+    if (ni < 2 || nj < 2) return;
+
+    auto t0 = std::chrono::high_resolution_clock::now();
+    if (!cachedBaseGrid || cachedNj != nj || cachedNi != ni) {
+        ncdfLog("[prepare:sal] grid MISS — allocating %dx%d\n", ni, nj);
+        if (cachedBaseGrid) { for (int j = 0; j < cachedNj; j++) delete[] cachedBaseGrid[j]; cachedBaseGrid.reset(); }
+        auto src = std::make_unique<float*[]>(nj);
+        for (int j = 0; j < nj; j++) {
+            src[j] = new float[ni];
+            for (int i = 0; i < ni; i++) {
+                double val = gui->myMessage.getSal(i, j);
+                src[j][i] = (val == ncdf_NOTDEF || !isfinite(val)) ? NAN : (float)val;
+            }
+        }
+        cachedBaseGrid = std::move(src);
+        cachedNj = nj; cachedNi = ni;
+    } else {
+        ncdfLog("[prepare:sal] grid HIT — reusing %dx%d\n", ni, nj);
+        for (int j = 0; j < nj; j++)
+            for (int i = 0; i < ni; i++) {
+                double val = gui->myMessage.getSal(i, j);
+                cachedBaseGrid[j][i] = (val == ncdf_NOTDEF || !isfinite(val)) ? NAN : (float)val;
+            }
+    }
+    double dMin = 1e30, dMax = -1e30;
+    for (int j = 0; j < nj; j++)
+        for (int i = 0; i < ni; i++) {
+            float v = cachedBaseGrid[j][i];
+            if (isfinite(v)) { if (v < dMin) dMin = v; if (v > dMax) dMax = v; }
+        }
+    cachedDataMin = (dMin < dMax) ? (float)dMin : 0;
+    cachedDataMax = (dMin < dMax) ? (float)dMax : 1;
+    auto t1 = std::chrono::high_resolution_clock::now();
+    ncdfLog("[perf] Salinity::prepareGrid ni=%d nj=%d %lldms\n", ni, nj,
+        (long long)std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count());
+}
+
+void SalinityOverlay::prepareCoeff(ncdfOverlayFactory *factory) {
+    if (!cachedBaseGrid) return;
+    int ni = cachedNi, nj = cachedNj;
+    auto t0 = std::chrono::high_resolution_clock::now();
+
+    if (!cachedCoeff || cachedCoeffNj != nj || cachedCoeffNi != ni) {
+        ncdfLog("[prepare:sal] coeff MISS — allocating\n");
+        if (cachedCoeff) { free(cachedCoeff); cachedCoeff = NULL; }
+        cachedCoeff = (float*)calloc(ni * nj, sizeof(float));
+    } else {
+        ncdfLog("[prepare:sal] coeff HIT — overwriting\n");
+    }
+    if (cachedCoeff) {
+        float pMin = 1e30f, pMax = -1e30f;
+        for (int j = 0; j < nj; j++)
+            for (int i = 0; i < ni; i++) {
+                float v = cachedBaseGrid[j][i];
+                if (isfinite(v)) { if (v < pMin) pMin = v; if (v > pMax) pMax = v; }
+            }
+        ncdfOverlayFactory::PrefilterScalarCoefficients(cachedCoeff, cachedBaseGrid.get(),
+            ni, nj, false, cachedCoefScalarMin, cachedCoefScalarMax, pMin, pMax);
+        cachedCoeffNj = nj; cachedCoeffNi = ni;
+        cachedPhysScalarMin = pMin; cachedPhysScalarMax = pMax;
+        const float bs = 2.5858f;
+        cachedCoefMin = cachedCoefScalarMin * bs;
+        cachedCoefMax = cachedCoefScalarMax * bs;
+        cachedPhysMin = pMin; cachedPhysMax = pMax;
+    }
+    dataReady = true;
+    needsRebuild = true;
+    auto t1 = std::chrono::high_resolution_clock::now();
+    ncdfLog("[perf] Salinity::prepareCoeff ni=%d nj=%d %lldms\n", ni, nj,
+        (long long)std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count());
+}
+
+void SalinityOverlay::releaseCoeffData() {
+    if (cachedCoeff) { free(cachedCoeff); cachedCoeff = NULL; }
+    ncdfLog("[release:sal] coefficients released, grid preserved\n");
+}
+
 void SalinityOverlay::Invalidate() {
     ncdfLog("[invalidate:sal] needsRebuild was=%d hasLUT=%d hasTex=%d\n", (int)needsRebuild, (int)hasLUT, (int)hasTexture);
     needsRebuild = true;
@@ -78,9 +170,13 @@ void SalinityOverlay::prepareData(MainDialog *gui, ncdf_pi *plugin, ncdfOverlayF
     ncdfLog("[perf] Salinity::prepareData ni=%d nj=%d\n", ni, nj);
     auto t0 = std::chrono::high_resolution_clock::now();
 
-    // 1. Build base grid as float (kept for first-frame texture build in RenderScalarColorMap)
-    if (!cachedBaseGrid) {
+    // 1. Build base grid as float (reuse existing allocation for same-file switch)
+    if (!cachedBaseGrid || cachedNj != nj || cachedNi != ni) {
         ncdfLog("[prepare:sal] grid cache MISS — allocating %dx%d\n", ni, nj);
+        if (cachedBaseGrid) {
+            for (int j = 0; j < cachedNj; j++) delete[] cachedBaseGrid[j];
+            cachedBaseGrid.reset();
+        }
         auto src = std::make_unique<float*[]>(nj);
         for (int j = 0; j < nj; j++) {
             src[j] = new float[ni];
@@ -91,6 +187,15 @@ void SalinityOverlay::prepareData(MainDialog *gui, ncdf_pi *plugin, ncdfOverlayF
         }
         cachedBaseGrid = std::move(src);
         cachedNj = nj; cachedNi = ni;
+    } else {
+        // Grid cache HIT — reuse existing allocation, just overwrite values
+        ncdfLog("[prepare:sal] grid cache HIT — reusing %dx%d\n", ni, nj);
+        for (int j = 0; j < nj; j++) {
+            for (int i = 0; i < ni; i++) {
+                double val = gui->myMessage.getSal(i, j);
+                cachedBaseGrid[j][i] = (val == ncdf_NOTDEF || !isfinite(val)) ? NAN : (float)val;
+            }
+        }
     }
 
     // Compute data range from base grid
@@ -184,7 +289,7 @@ wxColour SalinityOverlay::GetColor(double sal_psu) {
         {36.0, 120, 230,  20}, {36.5, 200, 220,  20}, {37.0, 240, 180,  20},
         {37.5, 240, 120,  20}, {38.0, 220,  60,  20}, {39.0, 200,  20,  20},
     };
-    return ncdfOverlayFactory::InterpolateStops(stops, 15, sal_psu, s_smoothColors);
+    return ncdfOverlayFactory::InterpolateStops(stops, 15, sal_psu, false);
 }
 
 // Helper: fill grid from salinity data
@@ -213,9 +318,9 @@ bool SalinityOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_
     bool ok = factory->RenderScalarColorMap(vp, gui, plugin, st,
         SalinityOverlay::GetColor, 30.0f, 39.0f,
         HasSalData, FillSalGrid,
-        false, false, false,
         animatedGrid);
-    s_smoothColors = false;
+    // Release coefficient data after texture upload (texture is on GPU now)
+    releaseCoeffData();
     return ok;
 }
 

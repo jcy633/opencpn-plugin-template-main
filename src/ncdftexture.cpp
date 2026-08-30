@@ -196,6 +196,33 @@ void ncdfOverlayFactory::PrefilterCoefficients(
     free(rawU); free(rawV); free(validMask);
 }
 
+// Scalar overload: single-channel B-spline prefilter (for SST, Salinity)
+void ncdfOverlayFactory::PrefilterScalarCoefficients(
+    float* coeff, float** grid,
+    int ni, int nj, bool isGlobal,
+    float &coefMin, float &coefMax,
+    float physMin, float physMax)
+{
+    float* raw = (float*)calloc(nj * ni, sizeof(float));
+    unsigned char* validMask = (unsigned char*)calloc(nj * ni, 1);
+    if (!raw || !validMask) { if (raw) free(raw); if (validMask) free(validMask); return; }
+    for (int j = 0; j < nj; j++)
+        for (int i = 0; i < ni; i++) {
+            float v = grid[j][i];
+            if (!isfinite(v)) { raw[j*ni+i] = 0; validMask[j*ni+i] = 0; }
+            else { raw[j*ni+i] = v; validMask[j*ni+i] = 1; }
+        }
+    BicubicSplinePrefilterWrapAware(coeff, raw, validMask, ni, nj, isGlobal);
+    coefMin = 1e30f; coefMax = -1e30f;
+    for (int k = 0; k < nj * ni; k++) {
+        if (!validMask[k]) continue;
+        if (coeff[k] < coefMin) coefMin = coeff[k];
+        if (coeff[k] > coefMax) coefMax = coeff[k];
+    }
+    if (coefMax <= coefMin) { coefMin = 0; coefMax = 1; }
+    free(raw); free(validMask);
+}
+
 //===================================================================
 // Shared scalar overlay rendering (SeaTemp / Salinity)
 //===================================================================
@@ -205,7 +232,6 @@ bool ncdfOverlayFactory::RenderScalarColorMap(
     ColorFunc colorFunc, float lutMin, float lutMax,
     bool (*hasData)(MainDialog&),
     void (*fillGrid)(MainDialog&, std::unique_ptr<double*[]>&, int, int),
-    bool smoothColors, bool sharpen, bool anisoDiffusion,
     double** animatedGrid)
 {
     if (!gui) return false;
@@ -218,7 +244,6 @@ bool ncdfOverlayFactory::RenderScalarColorMap(
         ncdfLog("[render:scalar] REUSE: hasTex=%d needsRebuild=%d coefMin=%f coefMax=%f\n",
             (int)*st.p_hasTexture, (int)*st.p_needsRebuild, *st.p_cachedCoefMin, *st.p_cachedCoefMax);
         RenderSettings settings;
-        settings.smoothColors = smoothColors;
         settings.vectorMode = false;
         settings.uGrid = NULL;
         settings.vGrid = NULL;
@@ -244,7 +269,6 @@ bool ncdfOverlayFactory::RenderScalarColorMap(
     if (*st.p_cachedCoeff && !*st.p_hasTexture && !animatedGrid) {
         ncdfLog("[render:scalar] RECREATE tex from cached coeff: cachedCoeff=%p\n", (void*)*st.p_cachedCoeff);
         RenderSettings settings;
-        settings.smoothColors = smoothColors;
         settings.vectorMode = false;
         settings.uGrid = NULL; settings.vGrid = NULL;
         settings.precompCoeffU = NULL; settings.precompCoeffV = NULL;
@@ -299,7 +323,6 @@ bool ncdfOverlayFactory::RenderScalarColorMap(
     }
 
     RenderSettings settings;
-    settings.smoothColors = smoothColors;
     settings.vectorMode = false;
     settings.uGrid = NULL; settings.vGrid = NULL;
     settings.precompCoeffU = NULL; settings.precompCoeffV = NULL;
@@ -963,8 +986,6 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
                                            int dataDim[2], int glDim[2],
                                            GLuint &lutID, bool &hasLUT,
                                            unsigned char *&uploadBuf, int &uploadBufSize,
-                                           double **slopeGrid,
-                                           GLuint slopeTexID,
                                            GLuint *physicalTexID, bool *hasPhysicalTex)
 {
     ncdfLog("[render] RenderGridOverlay: ENTERED, gui=%p vp=%p grid=%p\n", (void*)gui, (void*)vp, (void*)grid);

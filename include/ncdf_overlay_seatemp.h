@@ -57,7 +57,11 @@ struct SeaTempOverlay {
 
     void Init();
     void Cleanup();
-    void clearCache();  // Free CPU caches only, preserve GPU textures for glTexSubImage2D reuse
+    void clearCache();           // Free CPU caches + derived GPU textures
+    void clearCoefficients();    // Free B-spline coefficients only, preserve grids (same-file switch)
+    void prepareGrid(MainDialog *gui);   // Convert myMessage data to float grids (no coefficients)
+    void prepareCoeff(ncdfOverlayFactory *factory);  // Compute B-spline coefficients from grids
+    void releaseCoeffData();     // Free coefficient data after texture upload (keep grid capacity)
     ~SeaTempOverlay() { Cleanup(); }
     void Invalidate();
     void prepareData(MainDialog *gui, ncdf_pi *plugin, ncdfOverlayFactory *factory);
@@ -67,7 +71,6 @@ struct SeaTempOverlay {
                         double** animatedGrid = NULL);
     void RenderIsoLines(PlugIn_ViewPort *vp, MainDialog *gui);
 
-    static bool s_smoothColors;
     static wxColour GetColor(double temp_c);
 };
 

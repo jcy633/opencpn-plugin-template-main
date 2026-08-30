@@ -166,9 +166,24 @@ public:
 	double getInterpolatedValue(const ncdfDataMessage& msg, const double* data,
 	                            double px, double py, bool numericalInterpolation) const;
 
+	// Float version: bilinear interpolation from 2D float grid (row pointers)
+	double getInterpolatedValueFloat(float* const* grid, int ni, int nj,
+	                                 double firstLat, double lastLat,
+	                                 double firstLon, double lastLon,
+	                                 double iIncr, double jIncr,
+	                                 double px, double py) const;
+
 	// Joint UV interpolation — one boundary check, one index calc, Hermite smoothing
 	bool getInterpolatedUV(const ncdfDataMessage& msg, double px, double py,
 	                       double &uOut, double &vOut) const;
+
+	// Float version: joint UV interpolation from cached float grids
+	bool getInterpolatedUVFloat(float* const* uGrid, float* const* vGrid, int ni, int nj,
+	                            double firstLat, double lastLat,
+	                            double firstLon, double lastLon,
+	                            double iIncr, double jIncr,
+	                            double px, double py,
+	                            double &uOut, double &vOut) const;
 
 	bool isPointInMap(const ncdfDataMessage& g2message, double x, double y) const;
 	bool isXInMap(const ncdfDataMessage& g2message, double x) const;

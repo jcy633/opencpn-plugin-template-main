@@ -102,6 +102,12 @@ MainDialog::~MainDialog()
 {
 	ncdfLog("[ncdf] ~MainDialog: started\n");
 
+	// Close persistent NetCDF file handle
+	if (m_openedNcid >= 0) {
+		nc_close(m_openedNcid);
+		m_openedNcid = -1;
+	}
+
 	// Disconnect prev/next buttons
 
 
@@ -635,6 +641,126 @@ static CFTimeInfo ParseCFTimeUnits(const char* unitsStr) {
     }
     
     return info;
+}
+
+// Lightweight metadata reader for tree building — no data allocation, no myDataVector modification.
+// Returns date labels and data type availability for each timestep.
+MainDialog::FileMetadata MainDialog::nc_read_metadata(const wxString &fileName) {
+	FileMetadata meta;
+	const wxCharBuffer mbBuf = fileName.mb_str();
+	const char* filename = mbBuf.data();
+
+	int ncid;
+	int retval = nc_open(filename, NC_NOWRITE, &ncid);
+	if (retval != NC_NOERR)
+		retval = nc_open(filename, NC_NOWRITE | NC_NETCDF4, &ncid);
+	if (retval != NC_NOERR) return meta;
+
+	// Discover time variable
+	int time_varid;
+	{
+		const char* alt_std[] = {NULL};
+		const char* long_hints[] = {"Time", "time coordinate", NULL};
+		const char* var_hints[] = {"time", "t", "Time", NULL};
+		time_varid = find_var_by_cf(ncid, "time", alt_std, long_hints, var_hints);
+	}
+	if (time_varid == -1) { nc_close(ncid); return meta; }
+
+	int timeid = find_dim_by_var(ncid, time_varid, 0);
+	if (timeid == -1) { nc_close(ncid); return meta; }
+
+	size_t timelength = 0;
+	if (nc_inq_dimlen(ncid, timeid, &timelength) != NC_NOERR || timelength == 0) {
+		nc_close(ncid);
+		return meta;
+	}
+
+	// Read time values
+	double* time_out = (double*)calloc(timelength, sizeof(double));
+	if (!time_out) { nc_close(ncid); return meta; }
+
+	if (nc_get_var_double(ncid, time_varid, time_out) != NC_NOERR) {
+		float* tf = (float*)calloc(timelength, sizeof(float));
+		if (tf) {
+			if (nc_get_var_float(ncid, time_varid, tf) == NC_NOERR)
+				for (size_t i = 0; i < timelength; i++) time_out[i] = tf[i];
+			free(tf);
+		}
+	}
+
+	// Parse CF time units
+	CFTimeInfo timeInfo;
+	char* timeUnits = read_var_att_text(ncid, time_varid, "units");
+	if (timeUnits) {
+		timeInfo = ParseCFTimeUnits(timeUnits);
+		delete[] timeUnits;
+	}
+
+	// Check data availability
+	{
+		const char* alt_std[] = {"surface_eastward_sea_water_velocity", NULL};
+		const char* long_hints[] = {"Eastward Current Velocity", NULL};
+		const char* var_hints[] = {"u", "uo", "current_u", NULL};
+		int u = find_var_by_cf(ncid, "eastward_sea_water_velocity", alt_std, long_hints, var_hints);
+		meta.hasCurrent = (u != -1);
+	}
+	{
+		const char* alt_std[] = {"sea_surface_temperature", NULL};
+		const char* long_hints[] = {"Sea surface temperature", NULL};
+		const char* var_hints[] = {"thetao", "sst", "temperature", NULL};
+		int s = find_var_by_cf(ncid, "sea_water_temperature", alt_std, long_hints, var_hints);
+		meta.hasSeaTemp = (s != -1);
+	}
+	{
+		const char* alt_std[] = {"sea_surface_salinity", NULL};
+		const char* long_hints[] = {"Sea surface salinity", NULL};
+		const char* var_hints[] = {"so", "salinity", "salt", NULL};
+		int s = find_var_by_cf(ncid, "sea_water_salinity", alt_std, long_hints, var_hints);
+		meta.hasSalinity = (s != -1);
+	}
+
+	// Build date list
+	meta.timelength = timelength;
+	meta.dates.resize(timelength);
+	meta.timeValid.resize(timelength);
+	for (size_t i = 0; i < timelength; i++) {
+		if (timeInfo.valid) {
+			wxTimeSpan span = wxTimeSpan::Seconds((long long)(time_out[i] * timeInfo.secondsPerUnit));
+			meta.dates[i] = timeInfo.baseDateTime;
+			meta.dates[i].Add(span);
+			meta.timeValid[i] = true;
+		} else {
+			// Fallback: try to guess time format (same logic as nc_get)
+			bool guessed = false;
+			if (time_out[i] >= 1e9 && time_out[i] <= 2e9) {
+				// Looks like Unix timestamp
+				CFTimeInfo unixInfo = ParseCFTimeUnits("seconds since 1970-01-01");
+				if (unixInfo.valid) {
+					wxTimeSpan span = wxTimeSpan::Seconds((long long)(time_out[i] * unixInfo.secondsPerUnit));
+					meta.dates[i] = unixInfo.baseDateTime;
+					meta.dates[i].Add(span);
+					guessed = true;
+				}
+			}
+			if (!guessed && time_out[i] >= 0 && time_out[i] <= 700000) {
+				// Looks like CMEMS hours since 1950-01-01
+				CFTimeInfo cmemsInfo = ParseCFTimeUnits("hours since 1950-01-01");
+				if (cmemsInfo.valid) {
+					wxTimeSpan span = wxTimeSpan::Seconds((long long)(time_out[i] * cmemsInfo.secondsPerUnit));
+					meta.dates[i] = cmemsInfo.baseDateTime;
+					meta.dates[i].Add(span);
+					guessed = true;
+				}
+			}
+			meta.timeValid[i] = guessed;
+			if (!guessed) meta.dates[i] = wxDateTime();
+		}
+	}
+
+	meta.valid = true;
+	free(time_out);
+	nc_close(ncid);
+	return meta;
 }
 
 int MainDialog::nc_get(wxString filestr){
@@ -1466,31 +1592,58 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 	}
 
 	// Reuse vector capacity: assign() overwrites values in-place when capacity is sufficient.
-	// First call allocates, subsequent calls reuse the same buffer (zero allocation).
+	// If new file is larger, proactively free old buffers to avoid 32-bit heap fragmentation.
 	size_t nbr_uv = dataMessage.latLength * dataMessage.lonLength;
 	ncdfLog("[ncdf] readTimeStepData: nbr_uv=%zu, ucurr.cap=%zu\n", nbr_uv, dataMessage.ucurr.capacity());
-	dataMessage.ucurr.assign(nbr_uv, ncdf_NOTDEF);
-	dataMessage.vcurr.assign(nbr_uv, ncdf_NOTDEF);
+	if (nbr_uv > dataMessage.ucurr.capacity()) {
+		ncdfLog("[ncdf] readTimeStepData: capacity insufficient (%zu < %zu), freeing old buffers\n",
+			dataMessage.ucurr.capacity(), nbr_uv);
+		dataMessage.ucurr.clear(); dataMessage.ucurr.shrink_to_fit();
+		dataMessage.vcurr.clear(); dataMessage.vcurr.shrink_to_fit();
+		dataMessage.sst.clear(); dataMessage.sst.shrink_to_fit();
+		dataMessage.salinity.clear(); dataMessage.salinity.shrink_to_fit();
+	}
+	try {
+		dataMessage.ucurr.assign(nbr_uv, ncdf_NOTDEF);
+		dataMessage.vcurr.assign(nbr_uv, ncdf_NOTDEF);
+	} catch (const std::bad_alloc&) {
+		ncdfLog("[ncdf] readTimeStepData: OOM assigning ucurr/vcurr (%zu elements)\n", nbr_uv);
+		return false;
+	}
 	dataMessage.sst.clear();
 	dataMessage.salinity.clear();
 
 	int ncid;
 	int retval;
 
+	// Reuse persistent ncid for same-file time step switches (avoids repeated nc_open/nc_close)
 	wxString filenameStr = dataMessage.fileName;
-	const wxCharBuffer mbBuf = filenameStr.mb_str();
-	size_t mbLen = strlen(mbBuf);
-	char* filename = new char[mbLen + 1];
-	strcpy(filename, mbBuf);
+	if (m_openedNcid >= 0 && m_openedFileName == filenameStr) {
+		ncid = m_openedNcid;
+		ncdfLog("[ncdf] readTimeStepData: reusing cached ncid=%d\n", ncid);
+	} else {
+		// Close old file if open
+		if (m_openedNcid >= 0) {
+			nc_close(m_openedNcid);
+			m_openedNcid = -1;
+		}
+		const wxCharBuffer mbBuf = filenameStr.mb_str();
+		size_t mbLen = strlen(mbBuf);
+		char* filename = new char[mbLen + 1];
+		strcpy(filename, mbBuf);
 
-	retval = nc_open(filename, NC_NOWRITE, &ncid);
-	if (retval != NC_NOERR) {
-		retval = nc_open(filename, NC_NOWRITE | NC_NETCDF4, &ncid);
-	}
-	if (retval != NC_NOERR) {
-		ncdfLog("[ncdf] readTimeStepData: nc_open failed, retval=%d\n", retval);
+		retval = nc_open(filename, NC_NOWRITE, &ncid);
+		if (retval != NC_NOERR) {
+			retval = nc_open(filename, NC_NOWRITE | NC_NETCDF4, &ncid);
+		}
 		delete[] filename;
-		return false;
+		if (retval != NC_NOERR) {
+			ncdfLog("[ncdf] readTimeStepData: nc_open failed, retval=%d\n", retval);
+			return false;
+		}
+		m_openedNcid = ncid;
+		m_openedFileName = filenameStr;
+		ncdfLog("[ncdf] readTimeStepData: opened file, ncid=%d\n", ncid);
 	}
 
 	// Discover variable IDs (with cached fallback)
@@ -1542,9 +1695,7 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 
 	ncdfLog("[ncdf] readTimeStepData: completed successfully\n");
 
-	nc_close(ncid);
-	delete[] filename;
-
+	// Don't close ncid — it stays open for same-file time step switches
 	return true;
 }
 
@@ -1588,6 +1739,13 @@ bool MainDialog::switchToFile(const wxString &fileName, const wxString &fn, int 
 
 	ncdfLogW(L"[ncdf] switchToFile: switching to file %ls\n", (const wchar_t*)fn.c_str());
 
+	// Close persistent ncid from previous file
+	if (m_openedNcid >= 0) {
+		nc_close(m_openedNcid);
+		m_openedNcid = -1;
+		m_openedFileName.Clear();
+	}
+
 	dbg = fopen("C:\\ProgramData\\opencpn\\ncdf_crash_trace.log", "a");
 	if (dbg) { fprintf(dbg, "switchToFile: A-after logW\n"); fflush(dbg); fclose(dbg); }
 
@@ -1609,11 +1767,11 @@ bool MainDialog::switchToFile(const wxString &fileName, const wxString &fn, int 
 	if (pPlugIn) {
 		ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
 		if (pof) {
-			dbg = fopen("C:\\ProgramData\\opencpn\\ncdf_crash_trace.log", "a");
-			if (dbg) { fprintf(dbg, "switchToFile: D3-calling reset\n"); fflush(dbg); fclose(dbg); }
+			// Cross-file: clear ALL overlay caches and textures (old file's data is invalid)
+			pof->m_currentOverlay.Cleanup();
+			pof->m_seaTempOverlay.Cleanup();
+			pof->m_salinityOverlay.Cleanup();
 			pof->m_bReadyToRender = false;
-			dbg = fopen("C:\\ProgramData\\opencpn\\ncdf_crash_trace.log", "a");
-			if (dbg) { fprintf(dbg, "switchToFile: D4-readyToRender=false\n"); fflush(dbg); fclose(dbg); }
 		}
 	}
 
@@ -1725,10 +1883,12 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 		}
 
 		ncdfDataMessage& dataRef = myDataVector[idx];
-		ncdfLog("[ncdf] onTreeSelectionChanged: idx=%d fileSwitched=%d ucurr.size=%zu\n",
-			idx, (int)fileSwitched, dataRef.ucurr.size());
+		ncdfLog("[ncdf] onTreeSelectionChanged: idx=%d fileSwitched=%d\n", idx, (int)fileSwitched);
 		m_lastSelectedTimeIndex = idx;
+		m_dataLoaded = false;
+		m_gridsReady = false;
 
+		// === Phase 1: Immediate (< 5ms) — update UI, show checkboxes ===
 		wxString timeText;
 		if (dataRef.timeValid) {
 			timeText = dataRef.dataDateTime.Format(_T("%Y-%m-%d %H:00"));
@@ -1736,13 +1896,12 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 			timeText = wxString::Format(_("time%d"), idx + 1);
 		}
 		m_staticTextDateTime->SetLabel(timeText);
+		ncdfLog("[phase1] idx=%d fileSwitched=%d timeText='%s' m_fileHasCurrent=%d m_fileHasSST=%d m_fileHasSal=%d\n",
+			idx, (int)fileSwitched, (const char*)timeText.mb_str(),
+			(int)m_fileHasCurrent, (int)m_fileHasSeaTemp, (int)m_fileHasSalinity);
 
-		ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
-		if (pof) pof->m_bReadyToRender = false;
-
+		// Cross-file: sync checkbox visibility + flags from persisted settings
 		if (fileSwitched) {
-			// Cross-file: clear old data, sync checkboxes from persisted settings.
-			// Disable types not available in the new file. No auto-check.
 			this->myMessage.clearData();
 			if (!m_fileHasCurrent) {
 				m_checkBoxBmpCurrentForce->SetValue(false);
@@ -1750,7 +1909,6 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 				pPlugIn->m_bShowCurrentDir = false;
 				pPlugIn->m_bShowParticles = false;
 			} else {
-				// Restore from persisted setting
 				m_checkBoxBmpCurrentForce->SetValue(pPlugIn->m_bShowCurrentForce);
 			}
 			if (!m_fileHasSeaTemp) {
@@ -1768,8 +1926,35 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 			}
 		}
 
-		// Both cross-file and same-file: read directly into myMessage (lightweight path)
-		// Cross-file: readncdfFile was removed — too expensive (Cleanup + full rebuild in 32-bit)
+		// Show/hide checkboxes based on file-level data availability
+		m_checkBoxBmpCurrentForce->Show(m_fileHasCurrent);
+		m_staticText40->Show(m_fileHasCurrent);
+		m_textCtrlCurrentForce->Show(m_fileHasCurrent);
+		m_checkBoxSeaTemp->Show(m_fileHasSeaTemp);
+		m_staticTextSeaTemp->Show(m_fileHasSeaTemp);
+		m_textCtrlSeaTemp->Show(m_fileHasSeaTemp);
+		m_checkBoxSalinity->Show(m_fileHasSalinity);
+		m_staticTextSalinity->Show(m_fileHasSalinity);
+		m_textCtrlSalinity->Show(m_fileHasSalinity);
+		Layout();
+		// Disable unavailable types
+		if (!m_fileHasCurrent) {
+			pPlugIn->m_bShowCurrentDir = false;
+			pPlugIn->m_bShowCurrentForce = false;
+			pPlugIn->m_bShowParticles = false;
+			m_checkBoxBmpCurrentForce->SetValue(false);
+		}
+		if (!m_fileHasSeaTemp) {
+			pPlugIn->m_bShowSeaTemp = false;
+			pPlugIn->m_bShowSeaTempIso = false;
+			m_checkBoxSeaTemp->SetValue(false);
+		}
+		if (!m_fileHasSalinity) {
+			pPlugIn->m_bShowSalinity = false;
+			m_checkBoxSalinity->SetValue(false);
+		}
+
+		// Copy metadata to myMessage (no data yet)
 		this->myMessage.noPointsParallel = dataRef.noPointsParallel;
 		this->myMessage.noPointsMeridian = dataRef.noPointsMeridian;
 		this->myMessage.firstGridPointLat = dataRef.firstGridPointLat;
@@ -1792,68 +1977,86 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 		this->myMessage.dataDateTime = dataRef.dataDateTime;
 		this->myMessage.fileName = dataRef.fileName;
 
-		ncdfLog("[ncdf] onTreeSelectionChanged: reading timeStep idx=%d\n", idx);
-		if (readTimeStepData(this->myMessage)) {
-			ncdfLog("[ncdf] onTreeSelectionChanged: read OK, ucurr.size=%zu sst.size=%zu\n",
-				this->myMessage.ucurr.size(), this->myMessage.sst.size());
-			if (pof) {
-				// Set gui/plugin pointers if not yet initialized (first load only)
-				if (!pof->isInitialized()) {
-					pof->setData(this, pPlugIn, this->myMessage,
-						this->myMessage.numberOfPoints,
-						this->myMessage.firstGridPointLat, this->myMessage.firstGridPointLong,
-						this->myMessage.lastGridPointLat, this->myMessage.lastGridPointLong);
-				}
-				pof->m_bReadyToRender = false;  // block render during data switch
-				pof->updateTimeStep();
-				pof->prepareAllOverlays();
-				pof->m_bReadyToRender = true;
+		ncdfLog("[ncdf] onTreeSelectionChanged: Phase 1 complete, checkboxes shown\n");
+
+		// Prevent checkbox events from firing during Phase 2
+		m_isLoading = true;
+
+		// === Phase 2: Deferred — read data + prepare grids ===
+		// Use CallAfter to let the UI refresh first (show checkboxes)
+		CallAfter([this, idx, fileSwitched]() {
+			ncdfLog("[ncdf] Phase 2: starting deferred data load for idx=%d\n", idx);
+
+			ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
+			if (pof) pof->m_bReadyToRender = false;
+
+			// Read raw data into myMessage (all available types)
+			ncdfLog("[phase2] reading time step data...\n");
+			if (!readTimeStepData(this->myMessage)) {
+				ncdfLog("[phase2] readTimeStepData FAILED\n");
+				if (pof) pof->m_bReadyToRender = true;
+				m_isLoading = false;
+				return;
 			}
-			pof->renderSelectionRectangle = false;
-		} else {
-			ncdfLog("[ncdf] onTreeSelectionChanged: readTimeStepData failed\n");
-			if (pof) pof->m_bReadyToRender = true;
-		}
+			m_dataLoaded = true;
+			ncdfLog("[phase2] data loaded: ucurr.size=%zu vcurr.size=%zu sst.size=%zu sal.size=%zu\n",
+				this->myMessage.ucurr.size(), this->myMessage.vcurr.size(),
+				this->myMessage.sst.size(), this->myMessage.salinity.size());
 
-		// Show/hide checkboxes based on file-level data availability
-		bool showCurrent = m_fileHasCurrent;
-		bool showSST = m_fileHasSeaTemp;
-		bool showSalinity = m_fileHasSalinity;
-		m_checkBoxBmpCurrentForce->Show(showCurrent);
-		m_staticText40->Show(showCurrent);
-		m_textCtrlCurrentForce->Show(showCurrent);
-		m_checkBoxSeaTemp->Show(showSST);
-		m_staticTextSeaTemp->Show(showSST);
-		m_textCtrlSeaTemp->Show(showSST);
-		m_checkBoxSalinity->Show(showSalinity);
-		m_staticTextSalinity->Show(showSalinity);
-		m_textCtrlSalinity->Show(showSalinity);
-		Layout();
-		// Sync checkbox state from persisted settings. Disable unavailable types.
-		if (!showCurrent) {
-			m_checkBoxBmpCurrentForce->SetValue(false);
-			pPlugIn->m_bShowCurrentDir = false;
-			pPlugIn->m_bShowCurrentForce = false;
-			pPlugIn->m_bShowParticles = false;
-		}
-		if (!showSST) {
-			m_checkBoxSeaTemp->SetValue(false);
-			pPlugIn->m_bShowSeaTemp = false;
-			pPlugIn->m_bShowSeaTempIso = false;
-		}
-		if (!showSalinity) {
-			m_checkBoxSalinity->SetValue(false);
-			pPlugIn->m_bShowSalinity = false;
-		}
+			// Set up overlay factory (bounds, gui, plugin pointers)
+			ncdfLog("[phase2] calling setData\n");
+			if (pof) {
+				pof->setData(this, pPlugIn, this->myMessage,
+					this->myMessage.numberOfPoints,
+					this->myMessage.firstGridPointLat, this->myMessage.firstGridPointLong,
+					this->myMessage.lastGridPointLat, this->myMessage.lastGridPointLong);
+			}
 
-		RequestRefresh(m_parent);
-		ncdfLog("[ncdf] onTreeSelectionChanged: completed\n");
+			// Convert raw data to float grids for ALL available types
+			ncdfLog("[phase2] calling prepareAllGrids\n");
+			if (pof) pof->prepareAllGrids();
+			m_gridsReady = true;
+			ncdfLog("[phase2] grids prepared, m_gridsReady=true\n");
+
+			// Release raw double data (grids are float, cursor tracking uses grids)
+			ncdfLog("[phase2] releasing raw double data\n");
+			this->myMessage.ucurr.clear();
+			this->myMessage.vcurr.clear();
+			this->myMessage.sst.clear();
+			this->myMessage.salinity.clear();
+
+			// If a checkbox is already checked, compute coefficients for it (Phase 3)
+			if (pof) {
+				bool anyChecked = false;
+				if (pPlugIn->m_bShowCurrentForce && pof->m_currentOverlay.cachedU) {
+					ncdfLog("[phase2→3] auto-computing current coefficients\n");
+					pof->m_currentOverlay.prepareCoeff(pof);
+					anyChecked = true;
+				}
+				if (pPlugIn->m_bShowSeaTemp && pof->m_seaTempOverlay.cachedBaseGrid) {
+					ncdfLog("[ncdf] Phase 2→3: auto-computing SST coefficients\n");
+					pof->m_seaTempOverlay.prepareCoeff(pof);
+					anyChecked = true;
+				}
+				if (pPlugIn->m_bShowSalinity && pof->m_salinityOverlay.cachedBaseGrid) {
+					ncdfLog("[ncdf] Phase 2→3: auto-computing salinity coefficients\n");
+					pof->m_salinityOverlay.prepareCoeff(pof);
+					anyChecked = true;
+				}
+				if (anyChecked) {
+					pof->m_bReadyToRender = true;
+					RequestRefresh(m_parent);
+				}
+			}
+
+			m_isLoading = false;
+			ncdfLog("[ncdf] Phase 2: complete\n");
+		});
+
 	} else {
 		ncdfLog("[ncdf] onTreeSelectionChanged: GetItemData returned NULL\n");
+		m_isLoading = false;
 	}
-
-	ncdfLog("[ncdf] onTreeSelectionChanged: completed\n");
-	m_isLoading = false;
 }
 
 void MainDialog::onTreeItemRightClick(wxTreeEvent& event)
@@ -1885,22 +2088,40 @@ void MainDialog::onBmpCurrentForceClick(wxCommandEvent& event)
 		pPlugIn->m_bShowSalinity = false;
 	}
 	s_guard = false;
-	// Lightweight overlay switch: read data into myMessage, then prepare.
-	if (checked && m_lastSelectedTimeIndex >= 0 && m_lastSelectedTimeIndex < (int)myDataVector.size()) {
+	// Phase 3: Compute B-spline coefficients for the checked type
+	ncdfLog("[phase3:cur] checked=%d m_gridsReady=%d cachedU=%p m_lastSelectedTimeIndex=%d\n",
+		(int)checked, (int)m_gridsReady, (void*)(pPlugIn->GetncdfOverlayFactory() ? pPlugIn->GetncdfOverlayFactory()->m_currentOverlay.cachedU : NULL), m_lastSelectedTimeIndex);
+	if (checked && m_lastSelectedTimeIndex >= 0) {
 		ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
 		if (pof) {
-			pof->m_bReadyToRender = false;
-			if (readTimeStepData(this->myMessage)) {
-				if (!pof->isInitialized()) {
+			if (pof->m_currentOverlay.hasTexture) {
+				// Texture on GPU — just display it (shader reads from GPU, not CPU coefficients)
+				ncdfLog("[phase3:cur] texture exists, reusing\n");
+				pof->m_currentOverlay.dataReady = true;
+				pof->m_currentOverlay.needsRebuild = false;
+			} else if (m_gridsReady && pof->m_currentOverlay.cachedU) {
+				// Grids prepared but no texture — compute coefficients + upload
+				ncdfLog("[phase3:cur] computing current coefficients\n");
+				pof->m_bReadyToRender = false;
+				pof->setData(this, pPlugIn, this->myMessage,
+					this->myMessage.numberOfPoints,
+					this->myMessage.firstGridPointLat, this->myMessage.firstGridPointLong,
+					this->myMessage.lastGridPointLat, this->myMessage.lastGridPointLong);
+				pof->m_currentOverlay.prepareCoeff(pof);
+				pof->m_bReadyToRender = true;
+			} else {
+				ncdfLog("[phase3:cur] fallback — full read + prepare\n");
+				pof->m_bReadyToRender = false;
+				if (readTimeStepData(this->myMessage)) {
 					pof->setData(this, pPlugIn, this->myMessage,
 						this->myMessage.numberOfPoints,
 						this->myMessage.firstGridPointLat, this->myMessage.firstGridPointLong,
 						this->myMessage.lastGridPointLat, this->myMessage.lastGridPointLong);
+					pof->m_currentOverlay.prepareGrid(this);
+					pof->m_currentOverlay.prepareCoeff(pof);
 				}
-				pof->updateTimeStep();
-				pof->prepareAllOverlays();
+				pof->m_bReadyToRender = true;
 			}
-			pof->m_bReadyToRender = true;
 		}
 	}
 	RequestRefresh(m_parent);
@@ -1927,22 +2148,36 @@ void MainDialog::onSeaTempClick(wxCommandEvent& event)
 		pPlugIn->m_bShowSalinity = false;
 	}
 	s_guard = false;
-	// Lightweight overlay switch
-	if (checked && m_lastSelectedTimeIndex >= 0 && m_lastSelectedTimeIndex < (int)myDataVector.size()) {
+	// Phase 3: Compute B-spline coefficients for SST
+	if (checked && m_lastSelectedTimeIndex >= 0) {
 		ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
 		if (pof) {
-			pof->m_bReadyToRender = false;
-			if (readTimeStepData(this->myMessage)) {
-				if (!pof->isInitialized()) {
+			if (pof->m_seaTempOverlay.hasTexture) {
+				ncdfLog("[phase3:sst] texture exists, reusing\n");
+				pof->m_seaTempOverlay.dataReady = true;
+				pof->m_seaTempOverlay.needsRebuild = false;
+			} else if (m_gridsReady && pof->m_seaTempOverlay.cachedBaseGrid) {
+				ncdfLog("[phase3:sst] computing SST coefficients\n");
+				pof->m_bReadyToRender = false;
+				pof->setData(this, pPlugIn, this->myMessage,
+					this->myMessage.numberOfPoints,
+					this->myMessage.firstGridPointLat, this->myMessage.firstGridPointLong,
+					this->myMessage.lastGridPointLat, this->myMessage.lastGridPointLong);
+				pof->m_seaTempOverlay.prepareCoeff(pof);
+				pof->m_bReadyToRender = true;
+			} else {
+				ncdfLog("[phase3:sst] fallback — full read + prepare\n");
+				pof->m_bReadyToRender = false;
+				if (readTimeStepData(this->myMessage)) {
 					pof->setData(this, pPlugIn, this->myMessage,
 						this->myMessage.numberOfPoints,
 						this->myMessage.firstGridPointLat, this->myMessage.firstGridPointLong,
 						this->myMessage.lastGridPointLat, this->myMessage.lastGridPointLong);
+					pof->m_seaTempOverlay.prepareGrid(this);
+					pof->m_seaTempOverlay.prepareCoeff(pof);
 				}
-				pof->updateTimeStep();
-				pof->prepareAllOverlays();
+				pof->m_bReadyToRender = true;
 			}
-			pof->m_bReadyToRender = true;
 		}
 	}
 	RequestRefresh(m_parent);
@@ -1979,22 +2214,36 @@ void MainDialog::onSalinityClick(wxCommandEvent& event)
 		pPlugIn->m_bShowSeaTemp = false;
 	}
 	s_guard = false;
-	// Lightweight overlay switch
-	if (checked && m_lastSelectedTimeIndex >= 0 && m_lastSelectedTimeIndex < (int)myDataVector.size()) {
+	// Phase 3: Compute B-spline coefficients for Salinity
+	if (checked && m_lastSelectedTimeIndex >= 0) {
 		ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
 		if (pof) {
-			pof->m_bReadyToRender = false;
-			if (readTimeStepData(this->myMessage)) {
-				if (!pof->isInitialized()) {
+			if (pof->m_salinityOverlay.hasTexture) {
+				ncdfLog("[phase3:sal] texture exists, reusing\n");
+				pof->m_salinityOverlay.dataReady = true;
+				pof->m_salinityOverlay.needsRebuild = false;
+			} else if (m_gridsReady && pof->m_salinityOverlay.cachedBaseGrid) {
+				ncdfLog("[phase3:sal] computing salinity coefficients\n");
+				pof->m_bReadyToRender = false;
+				pof->setData(this, pPlugIn, this->myMessage,
+					this->myMessage.numberOfPoints,
+					this->myMessage.firstGridPointLat, this->myMessage.firstGridPointLong,
+					this->myMessage.lastGridPointLat, this->myMessage.lastGridPointLong);
+				pof->m_salinityOverlay.prepareCoeff(pof);
+				pof->m_bReadyToRender = true;
+			} else {
+				ncdfLog("[phase3:sal] fallback — full read + prepare\n");
+				pof->m_bReadyToRender = false;
+				if (readTimeStepData(this->myMessage)) {
 					pof->setData(this, pPlugIn, this->myMessage,
 						this->myMessage.numberOfPoints,
 						this->myMessage.firstGridPointLat, this->myMessage.firstGridPointLong,
 						this->myMessage.lastGridPointLat, this->myMessage.lastGridPointLong);
+					pof->m_salinityOverlay.prepareGrid(this);
+					pof->m_salinityOverlay.prepareCoeff(pof);
 				}
-				pof->updateTimeStep();
-				pof->prepareAllOverlays();
+				pof->m_bReadyToRender = true;
 			}
-			pof->m_bReadyToRender = true;
 		}
 	}
 	RequestRefresh(m_parent);
@@ -2024,11 +2273,6 @@ void MainDialog::fillDirTree(wxString path, bool start, wxTreeItemId id)
 	{
 		ncdfLog("[ncdf] fillDirTree: directory opened successfully\n");
 
-		// Save global state before addChildren loop modifies it
-		std::vector<ncdfDataMessage> savedVector = myDataVector;
-		wxString savedPath = m_currentFilePath;
-		int savedTimeIndex = m_lastSelectedTimeIndex;
-
 		wxString s;
 		if (dir.GetFirst(&s, wxEmptyString, wxDIR_FILES)) {
 			do {
@@ -2045,13 +2289,6 @@ void MainDialog::fillDirTree(wxString path, bool start, wxTreeItemId id)
 				}
 			} while (dir.GetNext(&s));
 		}
-
-		// Restore global state after tree building
-		myDataVector = savedVector;
-		m_currentFilePath = savedPath;
-		m_lastSelectedTimeIndex = savedTimeIndex;
-		ncdfLog("[ncdf] fillDirTree: restored global state, myDataVector size=%d\n",
-			(int)myDataVector.size());
 	}
 
 	// Release tree update guard and thaw display
@@ -2065,68 +2302,32 @@ void MainDialog::addChildren(wxTreeItemId id, wxString fn)
 {
     ncdfLogW(L"[ncdf] addChildren: started, fn=%ls\n", (const wchar_t*)fn.c_str());
 
-	wxDateTime dt;
-	wxString fileName;
-
-	fileName = this->m_textCtrlDir->GetValue()+_("\\")+fn;
-	
+	wxString fileName = this->m_textCtrlDir->GetValue()+_("\\")+fn;
 	ncdfLogW(L"[ncdf] addChildren: fileName=%ls\n", (const wchar_t*)fileName.c_str());
 
-	/* Save existing data in case nc_get fails */
-	std::vector<ncdfDataMessage> savedVector = myDataVector;
-	int savedIndex = m_lastSelectedTimeIndex;
-
-	myDataVector.clear();
-	m_lastSelectedTimeIndex = -1;
-	m_currentFilePath = fileName;
-
-	ncdfLog("[ncdf] addChildren: calling nc_get\n");
-	int ret = nc_get(fileName);
-
-	if (ret != 0) {
-		/* Restore previous data on failure */
-		myDataVector = savedVector;
-		m_lastSelectedTimeIndex = savedIndex;
-		ncdfLog("[ncdf] addChildren: nc_get failed with return code=%d, restored existing data (size=%d)\n",
-			ret, (int)myDataVector.size());
+	// Lightweight metadata read — no myDataVector allocation, no nc_get overhead
+	FileMetadata meta = nc_read_metadata(fileName);
+	if (!meta.valid) {
+		ncdfLog("[ncdf] addChildren: nc_read_metadata failed for %s\n", (const char*)fileName.mb_str());
 		return;
 	}
-	ncdfLog("[ncdf] addChildren: nc_get returned, myDataVector size=%d\n", (int)myDataVector.size());
+	ncdfLog("[ncdf] addChildren: metadata OK, timelength=%zu hasCurrent=%d hasSST=%d hasSal=%d\n",
+		meta.timelength, (int)meta.hasCurrent, (int)meta.hasSeaTemp, (int)meta.hasSalinity);
 
-	int timeIndex = 0;
-	for (vector<ncdfDataMessage>::iterator it = myDataVector.begin(); it != myDataVector.end(); it++){
-
-		dt = (*it).dataDateTime;
-
+	for (size_t i = 0; i < meta.timelength; i++) {
 		wxTreeItemId itemId = this->m_treeCtrl->AppendItem(id, _T(""));
 		wxString timeText;
-		
-		if ((*it).timeValid) {
-			timeText = dt.Format(_T("%Y-%m-%d %H:00"));
+		if (meta.timeValid[i]) {
+			timeText = meta.dates[i].Format(_T("%Y-%m-%d %H:00"));
 		} else {
-			timeText = wxString::Format(_("time%d"), timeIndex + 1);
+			timeText = wxString::Format(_("time%d"), (int)i + 1);
 		}
-		
-		/* depth - commented out */
-		/*wxString itemText;
-		if ((*it).depthValues && (*it).depthLength > 0) {
-			wxString depthText = wxString::Format(_("%.1f m"), (*it).depthValues[(*it).depthIndex]);
-			itemText = wxString::Format(_("%s (%s)"), timeText.c_str(), depthText.c_str());
-		} else {
-			itemText = timeText;
-		}*/
-		wxString itemText = timeText;
-		
-		this->m_treeCtrl->SetItemText(itemId, itemText);
-		
-		MyTreeItemData* treeItemData = new MyTreeItemData(timeIndex);
+		this->m_treeCtrl->SetItemText(itemId, timeText);
+		MyTreeItemData* treeItemData = new MyTreeItemData((int)i);
 		this->m_treeCtrl->SetItemData(itemId, treeItemData);
-
-		timeIndex++;
 	}
 
-	ncdfLog("[ncdf] addChildren: completed\n");
-
+	ncdfLog("[ncdf] addChildren: completed, %zu tree items created\n", meta.timelength);
 }
 
 void MainDialog::OnContextMenu(double m_lat, double m_lon){

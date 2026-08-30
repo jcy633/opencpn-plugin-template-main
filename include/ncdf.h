@@ -86,6 +86,17 @@ public:
 	double *my_vcurr = 0;
 	int treeMinutes[96];
 
+	// Lightweight file metadata (for tree building, no data allocation)
+	struct FileMetadata {
+		bool valid;
+		bool hasCurrent, hasSeaTemp, hasSalinity;
+		size_t timelength;
+		std::vector<wxDateTime> dates;
+		std::vector<bool> timeValid;
+		FileMetadata() : valid(false), hasCurrent(false), hasSeaTemp(false), hasSalinity(false), timelength(0) {}
+	};
+	FileMetadata nc_read_metadata(const wxString &fileName);
+
 	bool m_fileHasCurrent = false;   // File contains u/v ocean current data
 	bool m_fileHasSeaTemp = false;   // File contains SST data
 	bool m_fileHasSalinity = false;  // File contains salinity data
@@ -93,6 +104,10 @@ public:
 	int m_cached_v_varid = -1;       // Cached NetCDF variable ID for v-current
 	int m_cached_sst_varid = -1;     // Cached NetCDF variable ID for SST
 	int m_cached_sal_varid = -1;     // Cached NetCDF variable ID for salinity
+
+	// Persistent NetCDF file handle (reused across same-file time step switches)
+	int m_openedNcid = -1;
+	wxString m_openedFileName;
 
 	// Pre-allocated data buffers (file-level, reused across time steps to avoid 32-bit heap fragmentation)
 	std::vector<double> m_fileUBuffer;
@@ -119,6 +134,8 @@ public:
 	bool readTimeStepData(ncdfDataMessage& dataMessage);
 	bool m_isTreeUpdating;
 	bool m_isLoading{false};  // Guard against re-entrant time step loads
+	bool m_dataLoaded{false};  // True when myMessage has data for current time step
+	bool m_gridsReady{false};  // True when float grids are prepared (Phase 2 complete)
 	wxString m_currentFilePath;  // Track which file is currently loaded
 
 
