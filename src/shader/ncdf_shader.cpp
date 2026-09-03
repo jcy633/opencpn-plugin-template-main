@@ -168,6 +168,7 @@ static const char* s_frag =
     "uniform float physMax;\n"
     "uniform float physMinV;\n"
     "uniform float physMaxV;\n"
+    "uniform int animateMode;\n"
     "varying vec2 vUV;\n"
     "\n"
     "float bspline(float t) {\n"
@@ -291,7 +292,13 @@ static const char* s_frag =
     "        result = (lutRange > 0.0001) ? clamp((speed - lutMin) / lutRange, 0.0, 1.0) : 0.0;\n"
     "    } else {\n"
     "        float physical;\n"
-    "        if(usedBSpline) {\n"
+    "        if(animateMode == 1) {\n"
+    "            // Animation: read B channel (advected physical value normalized to coeff range)\n"
+    "            vec4 centerSample = texture2D(dataTex, vUV);\n"
+    "            if(centerSample.a < 0.001) { gl_FragColor = vec4(0.0); return; }\n"
+    "            if(centerSample.a < 0.01) { gl_FragColor = vec4(0.667,0.686,0.314,1.0); return; }\n"
+    "            physical = dataMin + centerSample.b * coefRange;\n"
+    "        } else if(usedBSpline) {\n"
     "            physical = dataMin + (rSum/wSum) * coefRange;\n"
     "        } else {\n"
     "            physical = physMin + (rSum/wSum) * physRange;\n"
@@ -414,6 +421,7 @@ bool ncdf_shader_init() {
     s_uniforms.physMax = fpGetUniformLocation(s_program, "physMax");
     s_uniforms.physMinV = fpGetUniformLocation(s_program, "physMinV");
     s_uniforms.physMaxV = fpGetUniformLocation(s_program, "physMaxV");
+    s_uniforms.animateMode = fpGetUniformLocation(s_program, "animateMode");
 
     s_initialized = true;
     wxLogMessage(_T("[shader] init OK program=%u"), s_program);

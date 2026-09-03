@@ -9,6 +9,7 @@
 bool ncdf_animate_shader_init();
 void ncdf_animate_shader_cleanup();
 bool ncdf_animate_shader_initialized();
+bool ncdf_animate_shader_supported();
 
 unsigned int ncdf_animate_get_update_program();
 unsigned int ncdf_animate_get_advect_program();
@@ -19,6 +20,10 @@ struct AnimUniforms {
     int texSize, scalarSize;
     int frame, period;
     int uColorLUT;
+    int dataMin, dataMax;
+    int lutMin, lutMax;
+    int maxDisp;
+    int forceIdentity;
 };
 AnimUniforms ncdf_animate_get_update_uniforms();
 AnimUniforms ncdf_animate_get_advect_uniforms();
@@ -27,9 +32,10 @@ AnimUniforms ncdf_animate_get_display_uniforms();
 unsigned int ncdf_animate_create_fbo();
 void ncdf_animate_delete_fbo(unsigned int fbo);
 void ncdf_animate_bind_fbo(unsigned int fbo, unsigned int colorTex);
+void ncdf_animate_bind_fbo_only(unsigned int fbo);  // bind without attaching texture
 void ncdf_animate_unbind_fbo();
-unsigned int ncdf_animate_create_float_texture(int w, int h);
 unsigned int ncdf_animate_create_rgba_texture(int w, int h);
+unsigned int ncdf_animate_create_encoded_texture(int w, int h);  // GL_NEAREST for dual-channel encoded data
 
 void ncdf_animate_use_program(unsigned int prog);
 void ncdf_animate_uniform_1i(int loc, int val);

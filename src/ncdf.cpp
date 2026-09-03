@@ -1789,9 +1789,22 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 
 	// P2: Only read data types that are currently checked (visible).
 	// Unchecked types will be read on-demand when the user clicks the checkbox.
-	bool needCurrent = pPlugIn && pPlugIn->m_bShowCurrentForce;
+	// Animation also needs U/V data for displacement computation.
+	bool anyAnimate = pPlugIn && (pPlugIn->m_settingsCurrent.animate ||
+	                              pPlugIn->m_settingsSeaTemp.animate ||
+	                              pPlugIn->m_settingsSalinity.animate);
+	bool needCurrent = pPlugIn && (pPlugIn->m_bShowCurrentForce || anyAnimate);
 	bool needSST = pPlugIn && pPlugIn->m_bShowSeaTemp;
 	bool needSal = pPlugIn && pPlugIn->m_bShowSalinity;
+	ncdfLog("[ncdf] readTimeStepData: needCurrent=%d needSST=%d needSal=%d anyAnimate=%d "
+	        "showCurr=%d showSST=%d showSal=%d animateCur=%d animateSST=%d animateSal=%d\n",
+	        (int)needCurrent, (int)needSST, (int)needSal, (int)anyAnimate,
+	        (int)(pPlugIn && pPlugIn->m_bShowCurrentForce),
+	        (int)(pPlugIn && pPlugIn->m_bShowSeaTemp),
+	        (int)(pPlugIn && pPlugIn->m_bShowSalinity),
+	        (int)(pPlugIn && pPlugIn->m_settingsCurrent.animate),
+	        (int)(pPlugIn && pPlugIn->m_settingsSeaTemp.animate),
+	        (int)(pPlugIn && pPlugIn->m_settingsSalinity.animate));
 
 	if (hasUV && needCurrent) {
 		if (!readUVFromNC(ncid, u_varid, v_varid, dataMessage)) {
@@ -2548,8 +2561,28 @@ void MainDialog::onAnimateClick(wxCommandEvent& event)
 	if (pof) {
 		if (checked) {
 			pof->m_animate.Init(pPlugIn, this);
-			pof->m_animate.ComputeDisplacementMap();
-			pof->m_animateTimer.Start(100);
+			// Ensure coefficient texture and grids exist for animation
+			if (!pof->m_currentOverlay.hasTexture && m_gridsReady) {
+				if (readTimeStepData(this->myMessage)) {
+					pof->setData(this, pPlugIn, this->myMessage,
+						this->myMessage.numberOfPoints,
+						this->myMessage.firstGridPointLat, this->myMessage.firstGridPointLong,
+						this->myMessage.lastGridPointLat, this->myMessage.lastGridPointLong);
+					pof->m_currentOverlay.prepareGrid(this);
+					pof->m_currentOverlay.prepareCoeff(pof);
+				}
+			}
+			// Compute displacement map and initialize coordinate fields from float grids
+			if (pof->m_currentOverlay.cachedU && pof->m_currentOverlay.cachedV) {
+				int ni = pof->m_currentOverlay.cachedVNi;
+				int nj = pof->m_currentOverlay.cachedUNj;
+				if (pof->m_animate.ComputeDisplacementMap(
+						pof->m_currentOverlay.cachedU,
+						pof->m_currentOverlay.cachedV, ni, nj)) {
+					pof->m_animate.InitCoordFields(ni, nj);
+				}
+			}
+			pof->m_animateTimer.Start(250);
 		} else if (!pPlugIn->m_settingsSeaTemp.animate && !pPlugIn->m_settingsSalinity.animate) {
 			pof->m_animateTimer.Stop();
 			pof->m_animate.Cleanup();
@@ -2572,8 +2605,29 @@ void MainDialog::onAnimateSSTClick(wxCommandEvent& event)
 	if (pof) {
 		if (checked) {
 			pof->m_animate.Init(pPlugIn, this);
-			pof->m_animate.ComputeDisplacementMap();
-			pof->m_animateTimer.Start(100);
+			// Load U/V data first (needed for displacement computation)
+			if (readTimeStepData(this->myMessage)) {
+				pof->setData(this, pPlugIn, this->myMessage,
+					this->myMessage.numberOfPoints,
+					this->myMessage.firstGridPointLat, this->myMessage.firstGridPointLong,
+					this->myMessage.lastGridPointLat, this->myMessage.lastGridPointLong);
+				pof->prepareAllGrids();
+				pof->m_seaTempOverlay.prepareCoeff(pof);
+			}
+			// Compute displacement from prepared U/V grids
+			if (pof->m_currentOverlay.cachedU && pof->m_currentOverlay.cachedV) {
+				int ni = pof->m_currentOverlay.cachedVNi;
+				int nj = pof->m_currentOverlay.cachedUNj;
+				if (pof->m_animate.ComputeDisplacementMap(
+						pof->m_currentOverlay.cachedU,
+						pof->m_currentOverlay.cachedV, ni, nj)) {
+					pof->m_animate.InitCoordFields(ni, nj);
+					pof->m_animate.SetExternalSourceGrids(
+						pof->m_currentOverlay.cachedU,
+						pof->m_currentOverlay.cachedV, ni, nj);
+				}
+			}
+			pof->m_animateTimer.Start(250);
 		} else if (!pPlugIn->m_settingsCurrent.animate && !pPlugIn->m_settingsSalinity.animate) {
 			pof->m_animateTimer.Stop();
 			pof->m_animate.Cleanup();
@@ -2596,8 +2650,31 @@ void MainDialog::onAnimateSalClick(wxCommandEvent& event)
 	if (pof) {
 		if (checked) {
 			pof->m_animate.Init(pPlugIn, this);
-			pof->m_animate.ComputeDisplacementMap();
-			pof->m_animateTimer.Start(100);
+			// Load U/V data first (needed for displacement computation)
+			if (readTimeStepData(this->myMessage)) {
+				pof->setData(this, pPlugIn, this->myMessage,
+					this->myMessage.numberOfPoints,
+					this->myMessage.firstGridPointLat, this->myMessage.firstGridPointLong,
+					this->myMessage.lastGridPointLat, this->myMessage.lastGridPointLong);
+				// Prepare ALL grids (including current overlay's U/V for displacement)
+				pof->prepareAllGrids();
+				pof->m_salinityOverlay.prepareCoeff(pof);
+			}
+			// Compute displacement from prepared U/V grids
+			if (pof->m_currentOverlay.cachedU && pof->m_currentOverlay.cachedV) {
+				int ni = pof->m_currentOverlay.cachedVNi;
+				int nj = pof->m_currentOverlay.cachedUNj;
+				if (pof->m_animate.ComputeDisplacementMap(
+						pof->m_currentOverlay.cachedU,
+						pof->m_currentOverlay.cachedV, ni, nj)) {
+					pof->m_animate.InitCoordFields(ni, nj);
+					pof->m_animate.UploadCoordFields();  // sync CPU → GPU
+					pof->m_animate.SetExternalSourceGrids(
+						pof->m_currentOverlay.cachedU,
+						pof->m_currentOverlay.cachedV, ni, nj);
+				}
+			}
+			pof->m_animateTimer.Start(250);
 		} else if (!pPlugIn->m_settingsCurrent.animate && !pPlugIn->m_settingsSeaTemp.animate) {
 			pof->m_animateTimer.Stop();
 			pof->m_animate.Cleanup();

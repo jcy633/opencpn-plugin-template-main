@@ -357,8 +357,12 @@ bool SeaTempOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
         SeaTempOverlay::GetColor, -2.0f, 32.0f,
         HasSSTData, FillSSTGrid,
         animatedGrid);
-    // Release coefficient data after texture upload (texture is on GPU now)
-    releaseCoeffData();
+    // Release coefficient data after texture upload (skip during animation)
+    bool animActive = plugin->m_settingsSeaTemp.animate ||
+                      plugin->m_settingsCurrent.animate ||
+                      plugin->m_settingsSalinity.animate;
+    if (!animActive)
+        releaseCoeffData();
     return ok;
 }
 

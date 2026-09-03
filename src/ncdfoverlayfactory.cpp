@@ -31,6 +31,7 @@
 #include "ncdf_pi.h"
 #include "IsoLine2.h"
 #include "shader/ncdf_shader.h"
+#include "shader/ncdf_animate_shader.h"
 #include <chrono>
 #include <thread>
 #include <wx/colour.h>
@@ -223,8 +224,11 @@ void ncdfOverlayFactory::prepareAllGrids()
     auto t0 = std::chrono::high_resolution_clock::now();
 
     // P1: Only prepare grids for CHECKED (visible) types.
-    // Unchecked types will be prepared on-demand when the user clicks the checkbox.
-    if (plugin && plugin->m_bShowCurrentForce && gui->myMessage.hasCurrent()) {
+    // Also prepare current overlay's U/V grids when animation is active (needed for displacement).
+    bool anyAnimate = plugin && (plugin->m_settingsCurrent.animate ||
+                                 plugin->m_settingsSeaTemp.animate ||
+                                 plugin->m_settingsSalinity.animate);
+    if (plugin && (plugin->m_bShowCurrentForce || anyAnimate) && gui->myMessage.hasCurrent()) {
         m_currentOverlay.prepareGrid(gui);
         m_currentOverlay.dataReady = true;
     }
@@ -327,7 +331,7 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
                      (int)ncdf_shader_initialized());
     }
 
-    // Animation: get advected grids if any type's animation is active
+    // Animation: CPU path — advect grids, then feed to existing color map shader
     double** animGrid = NULL;
     double** animUGrid = NULL;
     double** animVGrid = NULL;
@@ -335,12 +339,43 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
                          (plugin->m_settingsSeaTemp.animate && plugin->m_bShowSeaTemp) ||
                          (plugin->m_settingsSalinity.animate && plugin->m_bShowSalinity);
     if (animateActive && m_animate.IsInitialized()) {
+        ncdfLog("[anim] animateActive=1, HasDisplacement=%d IsInit=%d\n",
+                (int)m_animate.HasDisplacement(), (int)m_animate.IsInitialized());
         if (!m_animate.HasDisplacement()) {
-            m_animate.ComputeDisplacementMap();
+            float* const* uGrid = m_currentOverlay.cachedU;
+            float* const* vGrid = m_currentOverlay.cachedV;
+            int ni = m_currentOverlay.cachedVNi;
+            int nj = m_currentOverlay.cachedUNj;
+            if (uGrid && vGrid && ni > 2 && nj > 2) {
+                ncdfLog("[anim] computing displacement from float grids %dx%d\n", ni, nj);
+                m_animate.ComputeDisplacementMap(uGrid, vGrid, ni, nj);
+                // Store external grids for BuildSourceFields (in case myMessage has no current data)
+                m_animate.SetExternalSourceGrids(uGrid, vGrid, ni, nj);
+            } else {
+                ncdfLog("[anim] SKIP displacement: uGrid=%p vGrid=%p ni=%d nj=%d\n",
+                        (void*)uGrid, (void*)vGrid, ni, nj);
+            }
         }
         animGrid = m_animate.GetAdvectedGrid();
         animUGrid = m_animate.GetAdvectedUGrid();
         animVGrid = m_animate.GetAdvectedVGrid();
+        // DEBUG: check if advected U/V changes between frames
+        if (animUGrid && animVGrid) {
+            int ci = m_currentOverlay.cachedVNi / 2;
+            int cj = m_currentOverlay.cachedUNj / 2;
+            float au = (float)animUGrid[cj][ci], av = (float)animVGrid[cj][ci];
+            static float s_prevU = -999, s_prevV = -999;
+            if (fabs(au - s_prevU) > 0.0001f || fabs(av - s_prevV) > 0.0001f || m_animate.GetFrame() <= 2) {
+                ncdfLog("[anim-UV] frame=%d center U=(%.4f->%.4f) V=(%.4f->%.4f) spd=%.4f\n",
+                    m_animate.GetFrame(), s_prevU, au, s_prevV, av, sqrtf(au*au+av*av));
+                s_prevU = au; s_prevV = av;
+            }
+        }
+        ncdfLog("[anim] grids: animGrid=%p animUGrid=%p animVGrid=%p\n",
+                (void*)animGrid, (void*)animUGrid, (void*)animVGrid);
+    } else {
+        ncdfLog("[anim] inactive: animateActive=%d IsInit=%d\n",
+                (int)animateActive, (int)m_animate.IsInitialized());
     }
 
     static int s_frameDbg = 0;
@@ -382,6 +417,8 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
         (int)m_currentOverlay.dataReady, (int)m_currentOverlay.hasTexture,
         (int)m_seaTempOverlay.dataReady, (int)m_seaTempOverlay.hasTexture,
         (int)m_salinityOverlay.dataReady, (int)m_salinityOverlay.hasTexture);
+
+    // Render overlays (animation grids are passed to color map shader)
     RenderCurrentOverlay(vp, animGrid, animUGrid, animVGrid);
 
     if(plugin->m_bShowCurrentDir) {
@@ -438,11 +475,26 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
     glBindTexture(GL_TEXTURE_2D, 0);
     glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
 
+    // Advance animation frame AFTER GetAdvectedGrid has completed
+    // (coord field updates and U/V blending both use m_frame).
+    // GetAdvectedScalarGrid() in overlay renderers uses the same m_frame.
+    if (animateActive && m_animate.IsInitialized()) {
+        m_animate.AdvanceFrame();
+    }
+
     return true;
 }
 
 void ncdfOverlayFactory::RenderCurrentOverlay(PlugIn_ViewPort *vp, double **animGrid, double **animUGrid, double **animVGrid)
 {
+    // Auto-recover if coefficients were released or cleared
+    if (plugin->m_bShowCurrentForce &&
+        m_currentOverlay.cachedU && m_currentOverlay.cachedV &&
+        (!m_currentOverlay.dataReady || !m_currentOverlay.cachedCoeffU)) {
+        ncdfLog("[render:current] AUTO-RECOVER: dataReady=%d cachedCoeffU=%p\n",
+                (int)m_currentOverlay.dataReady, (void*)m_currentOverlay.cachedCoeffU);
+        m_currentOverlay.prepareCoeff(this);
+    }
     if(plugin->m_bShowCurrentForce && m_currentOverlay.dataReady && !m_pdc) {
 #ifdef ocpnUSE_GL
         ncdfLog("[render:current] ENTER hasTex=%d needsRebuild=%d dataReady=%d cachedU=%p cachedCoeffU=%p\n",
@@ -461,13 +513,28 @@ void ncdfOverlayFactory::RenderCurrentOverlay(PlugIn_ViewPort *vp, double **anim
 
 void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp, double **animGrid)
 {
+    // Auto-recover if coefficients were released or cleared
+    if (plugin->m_bShowSeaTemp && gui && m_seaTempOverlay.cachedBaseGrid &&
+        (!m_seaTempOverlay.dataReady || !m_seaTempOverlay.cachedCoeff)) {
+        ncdfLog("[render:sst] AUTO-RECOVER: dataReady=%d cachedCoeff=%p\n",
+                (int)m_seaTempOverlay.dataReady, (void*)m_seaTempOverlay.cachedCoeff);
+        m_seaTempOverlay.prepareCoeff(this);
+    }
     if (plugin->m_bShowSeaTemp && gui && m_seaTempOverlay.dataReady && !m_pdc) {
 #ifdef ocpnUSE_GL
-        ncdfLog("[render:sst] ENTER hasTex=%d needsRebuild=%d dataReady=%d cachedCoeff=%p cachedBaseGrid=%d\n",
-            (int)m_seaTempOverlay.hasTexture, (int)m_seaTempOverlay.needsRebuild,
-            (int)m_seaTempOverlay.dataReady, (void*)m_seaTempOverlay.cachedCoeff, (int)(bool)m_seaTempOverlay.cachedBaseGrid);
+        // For scalar animation: advect the source scalar field at flow coordinates
+        double** scalarAnimGrid = animGrid;
+        if (animGrid && m_seaTempOverlay.cachedBaseGrid && m_animate.IsInitialized()) {
+            float* const* baseGrid = m_seaTempOverlay.cachedBaseGrid.get();
+            int ni = m_seaTempOverlay.cachedNi;
+            int nj = m_seaTempOverlay.cachedNj;
+            if (baseGrid && ni > 2 && nj > 2) {
+                double** advScalar = m_animate.GetAdvectedScalarGrid(baseGrid, ni, nj);
+                if (advScalar) scalarAnimGrid = advScalar;
+            }
+        }
         m_currentInterpMode = 0;
-        m_seaTempOverlay.RenderColorMap(vp, gui, plugin, this, animGrid);
+        m_seaTempOverlay.RenderColorMap(vp, gui, plugin, this, scalarAnimGrid);
         m_currentDataMin = m_seaTempOverlay.cachedDataMin;
         m_currentDataMax = m_seaTempOverlay.cachedDataMax;
         ncdfLog("[render] RenderSeaTempOverlay: EXIT\n");
@@ -479,13 +546,47 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp, double **anim
     }
 }
 
+void ncdfOverlayFactory::DrawAnimOverlay(PlugIn_ViewPort *vp, MainDialog *gui,
+                                          GLuint texID, int texW, int texH) {
+    // Implementation in ncdftexture.cpp (needs access to static tile structs)
+    extern void DrawAnimOverlayImpl(ncdfOverlayFactory* factory, PlugIn_ViewPort *vp,
+                                     MainDialog *gui, GLuint texID, int texW, int texH,
+                                     double tlon, double tlat, double blon, double blat);
+    DrawAnimOverlayImpl(this, vp, gui, texID, texW, texH, tlon, tlat, blon, blat);
+}
+
 void ncdfOverlayFactory::RenderSalinityOverlay(PlugIn_ViewPort *vp, double **animGrid)
 {
+    // Auto-recover if coefficients were released or cleared
+    if (plugin->m_bShowSalinity && gui && m_salinityOverlay.cachedBaseGrid &&
+        (!m_salinityOverlay.dataReady || !m_salinityOverlay.cachedCoeff)) {
+        ncdfLog("[render:sal] AUTO-RECOVER: dataReady=%d cachedCoeff=%p\n",
+                (int)m_salinityOverlay.dataReady, (void*)m_salinityOverlay.cachedCoeff);
+        m_salinityOverlay.prepareCoeff(this);
+    }
     if (plugin->m_bShowSalinity && gui && m_salinityOverlay.dataReady && !m_pdc) {
 #ifdef ocpnUSE_GL
-        ncdfLog("[render:sal] ENTER hasTex=%d needsRebuild=%d dataReady=%d cachedCoeff=%p cachedBaseGrid=%d\n",
-            (int)m_salinityOverlay.hasTexture, (int)m_salinityOverlay.needsRebuild,
-            (int)m_salinityOverlay.dataReady, (void*)m_salinityOverlay.cachedCoeff, (int)(bool)m_salinityOverlay.cachedBaseGrid);
+        // Same rendering path as static color map: CPU sampling → RenderColorMap → ncdf shader
+        double** scalarAnimGrid = animGrid;
+        if (animGrid && m_salinityOverlay.cachedBaseGrid && m_animate.IsInitialized()) {
+            float* const* baseGrid = m_salinityOverlay.cachedBaseGrid.get();
+            int ni = m_salinityOverlay.cachedNi;
+            int nj = m_salinityOverlay.cachedNj;
+            if (baseGrid && ni > 2 && nj > 2) {
+                double** advScalar = m_animate.GetAdvectedScalarGrid(baseGrid, ni, nj);
+                if (advScalar) {
+                    // advScalar contains raw B-spline coefficients (same domain as static coeffBuf)
+                    // FillScalarCoeffTex will normalize them using coefMin/coefRange
+                    scalarAnimGrid = advScalar;
+                }
+            }
+        }
+        m_currentInterpMode = 0;
+        m_salinityOverlay.RenderColorMap(vp, gui, plugin, this, scalarAnimGrid);
+        m_currentDataMin = m_salinityOverlay.cachedDataMin;
+        m_currentDataMax = m_salinityOverlay.cachedDataMax;
+#else
+        // Non-GL fallback
         m_currentInterpMode = 0;
         m_salinityOverlay.RenderColorMap(vp, gui, plugin, this, animGrid);
         m_currentDataMin = m_salinityOverlay.cachedDataMin;

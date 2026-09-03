@@ -322,6 +322,13 @@ static bool HasSalData(MainDialog &gui) { return gui.myMessage.hasSalData(); }
 bool SalinityOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_pi *plugin,
                                       ncdfOverlayFactory *factory,
                                       double** animatedGrid) {
+    extern void ncdfLog(const char* format, ...);
+    ncdfLog("[SAL-ANIM] RenderColorMap: animatedGrid=%p hasTexture=%d needsRebuild=%d "
+            "cachedCoeff=%p cachedCoefMin=%.3f cachedCoefMax=%.3f "
+            "cachedPhysScalarMin=%.3f cachedPhysScalarMax=%.3f\n",
+            (void*)animatedGrid, (int)hasTexture, (int)needsRebuild,
+            (void*)cachedCoeff, cachedCoefMin, cachedCoefMax,
+            cachedPhysScalarMin, cachedPhysScalarMax);
     ncdfOverlayFactory::ScalarOverlayState st = {
         &glTexture, &hasTexture, &needsRebuild,
         dataDim, glDim, &lutID, &hasLUT, &uploadBuf, &uploadBufSize,
@@ -335,8 +342,13 @@ bool SalinityOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_
         SalinityOverlay::GetColor, 30.0f, 39.0f,
         HasSalData, FillSalGrid,
         animatedGrid);
-    // Release coefficient data after texture upload (texture is on GPU now)
-    releaseCoeffData();
+    // Release coefficient data after texture upload (skip during animation —
+    // animation may produce NULL animatedGrid on early frames while still needing coefficients)
+    bool animActive = plugin->m_settingsSalinity.animate ||
+                      plugin->m_settingsCurrent.animate ||
+                      plugin->m_settingsSeaTemp.animate;
+    if (!animActive)
+        releaseCoeffData();
     return ok;
 }
 

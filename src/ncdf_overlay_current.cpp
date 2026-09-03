@@ -31,6 +31,10 @@ void CurrentOverlay::Init() {
     cachedPhysMin = 0; cachedPhysMax = 1;
     cachedDataMinV = 0; cachedDataMaxV = 1;
     cachedPhysMinV = 0; cachedPhysMaxV = 1;
+    m_animUF = NULL; m_animVF = NULL; m_animNi = 0; m_animNj = 0;
+    m_animCoeffU = NULL; m_animCoeffV = NULL;
+    m_animCoefU_min = m_animCoefU_max = m_animCoefV_min = m_animCoefV_max = 0;
+    m_animCoeffReady = false;
 }
 
 void CurrentOverlay::Cleanup() {
@@ -42,6 +46,10 @@ void CurrentOverlay::Cleanup() {
     if (cachedV) { for (int j = 0; j < cachedUNj; j++) delete[] cachedV[j]; delete[] cachedV; cachedV = NULL; }
     if (cachedCoeffU) { free(cachedCoeffU); cachedCoeffU = NULL; }
     if (cachedCoeffV) { free(cachedCoeffV); cachedCoeffV = NULL; }
+    freeAnimBuffers();
+    if (m_animCoeffU) { free(m_animCoeffU); m_animCoeffU = NULL; }
+    if (m_animCoeffV) { free(m_animCoeffV); m_animCoeffV = NULL; }
+    m_animCoeffReady = false;
     Init();
 }
 
@@ -167,6 +175,64 @@ void CurrentOverlay::releaseCoeffData() {
     if (cachedCoeffU) { free(cachedCoeffU); cachedCoeffU = NULL; }
     if (cachedCoeffV) { free(cachedCoeffV); cachedCoeffV = NULL; }
     ncdfLog("[release:cur] coefficients released, grids preserved\n");
+}
+
+void CurrentOverlay::ensureAnimBuffers(int ni, int nj) {
+    if (m_animUF && m_animVF && m_animNi == ni && m_animNj == nj) return;
+    freeAnimBuffers();
+    m_animUF = new float*[nj];
+    m_animVF = new float*[nj];
+    for (int j = 0; j < nj; j++) {
+        m_animUF[j] = new float[ni];
+        m_animVF[j] = new float[ni];
+    }
+    m_animNi = ni; m_animNj = nj;
+    ncdfLog("[anim:cur] pre-allocated float buffers %dx%d\n", ni, nj);
+}
+
+void CurrentOverlay::freeAnimBuffers() {
+    if (m_animUF) {
+        for (int j = 0; j < m_animNj; j++) delete[] m_animUF[j];
+        delete[] m_animUF; m_animUF = NULL;
+    }
+    if (m_animVF) {
+        for (int j = 0; j < m_animNj; j++) delete[] m_animVF[j];
+        delete[] m_animVF; m_animVF = NULL;
+    }
+    m_animNi = m_animNj = 0;
+}
+
+void CurrentOverlay::computeAnimCoefficients(ncdfOverlayFactory *factory) {
+    if (m_animCoeffReady) return;
+    if (!cachedU || !cachedV) return;
+    int ni = cachedVNi, nj = cachedUNj;
+    if (ni < 2 || nj < 2) return;
+
+    // Free old animation coefficients
+    if (m_animCoeffU) { free(m_animCoeffU); m_animCoeffU = NULL; }
+    if (m_animCoeffV) { free(m_animCoeffV); m_animCoeffV = NULL; }
+
+    // Allocate flat coefficient arrays (same layout as cachedCoeffU/V)
+    m_animCoeffU = (float*)calloc(nj * ni, sizeof(float));
+    m_animCoeffV = (float*)calloc(nj * ni, sizeof(float));
+    if (!m_animCoeffU || !m_animCoeffV) {
+        ncdfLog("[anim:cur] ERROR: failed to allocate coefficient arrays\n");
+        return;
+    }
+
+    // Determine if data is global (wraps 360°)
+    double lonMin = factory->tlon, lonMax = factory->blon;
+    double gridSpacingLon = (lonMax - lonMin) / (ni - 1);
+    bool isGlobal = (lonMax - lonMin + gridSpacingLon >= 360);
+
+    // Prefilter B-spline coefficients from source U/V grids
+    factory->PrefilterCoefficients(
+        m_animCoeffU, m_animCoeffV, cachedU, cachedV,
+        ni, nj, isGlobal,
+        m_animCoefU_min, m_animCoefU_max, m_animCoefV_min, m_animCoefV_max);
+    m_animCoeffReady = true;
+    ncdfLog("[anim:cur] computed source B-spline coefficients %dx%d, coefU=[%.4f, %.4f]\n",
+        ni, nj, m_animCoefU_min, m_animCoefU_max);
 }
 
 void CurrentOverlay::Invalidate() {
@@ -306,64 +372,91 @@ bool CurrentOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
         return true;
     }
 
-    // If animated grid provided, use it directly (animation replaces static color map)
+    // ===== ANIMATION PATH =====
+    // Patent-compliant: B-spline coefficients from source U/V computed once, reused every frame.
+    // ncdfAnimate internally does SampleSplineCoeff at advected positions.
+    // Coefficient texture = source data (static, built once).
+    // Physical texture = advected U/V (rebuilt each frame for coastline fallback).
     if (animatedGrid) {
         cachedNj = nj; cachedNi = ni;
-        // Compute data range from animated grid (speed)
-        double dMin = 1e30, dMax = -1e30;
-        for (int jj = 0; jj < nj; jj++)
-            for (int ii = 0; ii < ni; ii++) {
-                double v = animatedGrid[jj][ii];
-                if (v != ncdf_NOTDEF && v == v && isfinite(v)) {
-                    if (v < dMin) dMin = v; if (v > dMax) dMax = v;
-                }
+
+        // Convert advected U/V to pre-allocated float buffers for physical texture
+        ensureAnimBuffers(ni, nj);
+        for (int j = 0; j < nj; j++)
+            for (int i = 0; i < ni; i++) {
+                m_animUF[j][i] = (float)animUGrid[j][i];
+                m_animVF[j][i] = (float)animVGrid[j][i];
             }
-        cachedDataMin = (dMin < dMax) ? (float)dMin : 0;
-        cachedDataMax = (dMin < dMax) ? (float)dMax : 1;
-        needsRebuild = true;  // force texture rebuild every animation frame
-    } else {
-        // Static mode: no speed grid needed — U/V grids and coefficients are cached
-        if (!cachedU || !cachedV || !cachedCoeffU || !cachedCoeffV) return false;
+
+        // First frame: compute source B-spline coefficients
+        if (!m_animCoeffReady) {
+            computeAnimCoefficients(factory);
+            if (!m_animCoeffReady) return false;
+        }
+
+        ncdfOverlayFactory::RenderSettings settings;
+        settings.vectorMode = true;
+        settings.uGrid = m_animUF;
+        settings.vGrid = m_animVF;
+        settings.precompCoeffU = m_animCoeffU;
+        settings.precompCoeffV = m_animCoeffV;
+        settings.precompCoefU_min = m_animCoefU_min;
+        settings.precompCoefU_max = m_animCoefU_max;
+        settings.precompCoefV_min = m_animCoefV_min;
+        settings.precompCoefV_max = m_animCoefV_max;
+        settings.lutMin = 0.0f;
+        settings.lutMax = 1.5f;
+
+        needsRebuild = true;
+        hasPhysicalTex = false;
+
+        factory->RenderGridOverlay(vp, (float**)(size_t)1,
+            CurrentOverlay::GetColor, settings,
+            glTexture, hasTexture, needsRebuild,
+            dataDim, glDim, lutID, hasLUT, uploadBuf, uploadBufSize,
+            &physicalTexID, &hasPhysicalTex);
+
+        if (hasTexture) {
+            cachedCoefMin = settings.dataMin;
+            cachedCoefMax = settings.dataMax;
+            cachedDataMinV = settings.dataMinV;
+            cachedDataMaxV = settings.dataMaxV;
+            cachedPhysMin = settings.physMin;
+            cachedPhysMax = settings.physMax;
+            cachedPhysMinV = settings.physMinV;
+            cachedPhysMaxV = settings.physMaxV;
+        }
+        return true;
     }
 
-    // Build shader settings
+    // ===== STATIC PATH =====
+    if (!cachedU || !cachedV || !cachedCoeffU || !cachedCoeffV) return false;
+
+    // Build shader settings for static rendering
     ncdfLog("[render:current] REBUILD path: cachedU=%p cachedCoeffU=%p hasTex=%d needsRebuild=%d\n",
         (void*)cachedU, (void*)cachedCoeffU, (int)hasTexture, (int)needsRebuild);
     ncdfOverlayFactory::RenderSettings settings;
 
-    // Vector mode: pass u/v grids for shader-side speed computation
-    if (animUGrid && animVGrid) {
-        // Animation mode: convert advected double** grids to float**
-        settings.vectorMode = true;
-        // Allocate temporary float grids for animation
-        float** animUF = new float*[nj]; float** animVF = new float*[nj];
-        for (int j = 0; j < nj; j++) {
-            animUF[j] = new float[ni]; animVF[j] = new float[ni];
-            for (int i = 0; i < ni; i++) {
-                animUF[j][i] = (float)animUGrid[j][i];
-                animVF[j][i] = (float)animVGrid[j][i];
-            }
-        }
-        settings.uGrid = animUF;
-        settings.vGrid = animVF;
-    } else if (!animatedGrid && cachedU && cachedV) {
-        // Static mode: use cached u/v grids (only rebuild when data changes)
-        settings.vectorMode = true;
-        settings.uGrid = cachedU;
-        settings.vGrid = cachedV;
-        settings.precompCoeffU = cachedCoeffU;
-        settings.precompCoeffV = cachedCoeffV;
-        settings.precompCoefU_min = cachedCoefU_min;
-        settings.precompCoefU_max = cachedCoefU_max;
-        settings.precompCoefV_min = cachedCoefV_min;
-        settings.precompCoefV_max = cachedCoefV_max;
-    } else {
-        settings.vectorMode = false;
-        settings.uGrid = NULL;
-        settings.vGrid = NULL;
-        settings.precompCoeffU = NULL;
-        settings.precompCoeffV = NULL;
-    }
+    // Static mode: use cached coefficient and physical ranges
+    settings.dataMin = cachedCoefMin;
+    settings.dataMax = cachedCoefMax;
+    settings.dataMinV = cachedDataMinV;
+    settings.dataMaxV = cachedDataMaxV;
+    settings.physMin = cachedPhysMin;
+    settings.physMax = cachedPhysMax;
+    settings.physMinV = cachedPhysMinV;
+    settings.physMaxV = cachedPhysMaxV;
+
+    // Static mode: use cached u/v grids and precomputed coefficients
+    settings.vectorMode = true;
+    settings.uGrid = cachedU;
+    settings.vGrid = cachedV;
+    settings.precompCoeffU = cachedCoeffU;
+    settings.precompCoeffV = cachedCoeffV;
+    settings.precompCoefU_min = cachedCoefU_min;
+    settings.precompCoefU_max = cachedCoefU_max;
+    settings.precompCoefV_min = cachedCoefV_min;
+    settings.precompCoefV_max = cachedCoefV_max;
 
     // Compute speed range for shader normalization (only when data changes)
     if (settings.vectorMode && settings.uGrid && settings.vGrid && (needsRebuild || !hasTexture)) {
@@ -412,13 +505,9 @@ bool CurrentOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
         dataDim, glDim, lutID, hasLUT, uploadBuf, uploadBufSize,
         &physicalTexID, &hasPhysicalTex);
 
-    // Free temporary animation float grids
-    if (animUGrid && animVGrid && settings.uGrid != cachedU) {
-        for (int j = 0; j < nj; j++) { delete[] settings.uGrid[j]; delete[] settings.vGrid[j]; }
-        delete[] settings.uGrid; delete[] settings.vGrid;
-    }
-
-    // Texture is now on GPU — release CPU-side coefficient data
+    // Texture is now on GPU — cache ranges, but skip coefficient release during animation
+    // (animation reuses the same texture path each frame; releasing coefficients would
+    // force a full pipeline rebuild every frame)
     if (hasTexture) {
         cachedCoefMin = settings.dataMin;
         cachedCoefMax = settings.dataMax;
@@ -428,8 +517,11 @@ bool CurrentOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_p
         cachedPhysMax = settings.physMax;
         cachedPhysMinV = settings.physMinV;
         cachedPhysMaxV = settings.physMaxV;
-        // Release B-spline coefficient data (texture is on GPU, no longer needed)
-        releaseCoeffData();
+        if (!animatedGrid && !plugin->m_settingsCurrent.animate &&
+            !plugin->m_settingsSeaTemp.animate && !plugin->m_settingsSalinity.animate) {
+            // Static mode only: release B-spline coefficient data (texture is on GPU, no longer needed)
+            releaseCoeffData();
+        }
     }
 
     return true;

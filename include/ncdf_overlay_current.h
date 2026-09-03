@@ -58,6 +58,15 @@ struct CurrentOverlay {
     // Grid data flag: true after prepareGrid fills the grid with actual data
     bool gridReady = false;
 
+    // Pre-allocated float buffers for animation (avoid per-frame double→float conversion)
+    float **m_animUF, **m_animVF;
+    int m_animNi, m_animNj;
+
+    // Cached B-spline coefficients from SOURCE data for animation (computed once, reused every frame)
+    float *m_animCoeffU, *m_animCoeffV;
+    float m_animCoefU_min, m_animCoefU_max, m_animCoefV_min, m_animCoefV_max;
+    bool m_animCoeffReady;
+
     void Init();
     void Cleanup();
     void clearCache();           // Free CPU caches + derived GPU textures
@@ -66,6 +75,9 @@ struct CurrentOverlay {
     void prepareCoeff(ncdfOverlayFactory *factory);  // Compute B-spline coefficients from grids
     void releaseCoeffData();     // Free coefficient data after texture upload (keep grid capacity)
     void ensureGridAllocated(int ni, int nj);  // Pre-allocate grid structures if needed
+    void ensureAnimBuffers(int ni, int nj);    // Pre-allocate float** buffers for animation
+    void freeAnimBuffers();                     // Free animation float buffers
+    void computeAnimCoefficients(ncdfOverlayFactory *factory);  // Compute B-spline coeffs from source data (once)
     ~CurrentOverlay() { Cleanup(); }
     void Invalidate();
     void prepareData(MainDialog *gui, ncdf_pi *plugin, ncdfOverlayFactory *factory);  // Precompute grids + coefficients

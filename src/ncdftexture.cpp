@@ -7,6 +7,7 @@
 #include "ncdf_pi.h"
 #include "ncdfdata.h"
 #include "shader/ncdf_shader.h"
+#include "shader/ncdf_animate_shader.h"
 #include <thread>
 
 extern void ncdfLog(const char* format, ...);
@@ -239,8 +240,18 @@ bool ncdfOverlayFactory::RenderScalarColorMap(
     int nj = gui->myMessage.latLength;
     if (ni < 2 || nj < 2) return false;
 
+    ncdfLog("[SCALAR-ANIM] entry: ni=%d nj=%d animatedGrid=%p hasTex=%d needsRebuild=%d "
+            "cachedCoeff=%p coefMin=%.3f coefMax=%.3f\n",
+            ni, nj, (void*)animatedGrid, (int)*st.p_hasTexture, (int)*st.p_needsRebuild,
+            (void*)*st.p_cachedCoeff, *st.p_cachedCoefMin, *st.p_cachedCoefMax);
+
+    // When animation provides new data, force rebuild to use advected scalar values
+    if (animatedGrid && *st.p_hasTexture) {
+        *st.p_needsRebuild = true;
+    }
+
     // Texture reuse: GPU texture already exists, just draw it (view pan / refresh)
-    if (*st.p_hasTexture && !*st.p_needsRebuild && !animatedGrid) {
+    if (*st.p_hasTexture && !*st.p_needsRebuild) {
         ncdfLog("[render:scalar] REUSE: hasTex=%d needsRebuild=%d coefMin=%f coefMax=%f\n",
             (int)*st.p_hasTexture, (int)*st.p_needsRebuild, *st.p_cachedCoefMin, *st.p_cachedCoefMax);
         RenderSettings settings;
@@ -266,8 +277,9 @@ bool ncdfOverlayFactory::RenderScalarColorMap(
     }
 
     // Texture missing but coefficients exist — recreate texture without recomputing
-    if (*st.p_cachedCoeff && !*st.p_hasTexture && !animatedGrid) {
-        ncdfLog("[render:scalar] RECREATE tex from cached coeff: cachedCoeff=%p\n", (void*)*st.p_cachedCoeff);
+    if (*st.p_cachedCoeff && !*st.p_hasTexture) {
+        ncdfLog("[SCALAR-ANIM] RECREATE path: cachedCoeff=%p coefMin=%.3f coefMax=%.3f\n",
+                (void*)*st.p_cachedCoeff, *st.p_cachedCoefMin, *st.p_cachedCoefMax);
         RenderSettings settings;
         settings.vectorMode = false;
         settings.uGrid = NULL; settings.vGrid = NULL;
@@ -301,11 +313,15 @@ bool ncdfOverlayFactory::RenderScalarColorMap(
 
     // First frame: need coefficients and texture
     if (!*st.p_cachedCoeff) {
-        ncdfLog("[render:scalar] NO COEFF: cachedCoeff=NULL, cannot render\n");
+        ncdfLog("[SCALAR-ANIM] NO COEFF path: cachedCoeff=NULL, cannot render! "
+                "animatedGrid=%p hasData=%d\n",
+                (void*)animatedGrid, (int)(gui->myMessage.hasSSTData() || gui->myMessage.hasSalData()));
         return false;
     }
-    ncdfLog("[render:scalar] FULL REBUILD: cachedCoeff=%p hasTex=%d needsRebuild=%d\n",
-        (void*)*st.p_cachedCoeff, (int)*st.p_hasTexture, (int)*st.p_needsRebuild);
+    ncdfLog("[SCALAR-ANIM] FULL REBUILD path: cachedCoeff=%p hasTex=%d needsRebuild=%d "
+            "animatedGrid=%p\n",
+            (void*)*st.p_cachedCoeff, (int)*st.p_hasTexture, (int)*st.p_needsRebuild,
+            (void*)animatedGrid);
 
     // Convert animation grid (double**) to float** if needed
     float** animFloatGrid = NULL;
@@ -324,23 +340,26 @@ bool ncdfOverlayFactory::RenderScalarColorMap(
 
     RenderSettings settings;
     settings.vectorMode = false;
+    settings.animateMode = (animatedGrid != NULL);
     settings.uGrid = NULL; settings.vGrid = NULL;
     settings.precompCoeffU = NULL; settings.precompCoeffV = NULL;
+    // Static coefficient texture from source data (B-spline path = static ocean)
+    // Physical texture rebuilt from advected scalar each frame (bilinear path = animated coast)
     settings.precompScalarCoeff = *st.p_cachedCoeff;
     settings.precompScalarCoefMin = *st.p_cachedCoefScalarMin;
     settings.precompScalarCoefMax = *st.p_cachedCoefScalarMax;
     settings.precompScalarPhysMin = *st.p_cachedPhysScalarMin;
     settings.precompScalarPhysMax = *st.p_cachedPhysScalarMax;
-    // Use coefficient range for B-spline denormalization, physical range for fallback
     settings.dataMin = *st.p_cachedCoefMin;
     settings.dataMax = *st.p_cachedCoefMax;
-    settings.physMin = *st.p_cachedPhysScalarMin;  // Physical value range (from prepareData)
+    settings.physMin = *st.p_cachedPhysScalarMin;
     settings.physMax = *st.p_cachedPhysScalarMax;
     settings.dataMinV = 0.0f; settings.dataMaxV = 1.0f;
     settings.physMinV = 0.0f; settings.physMaxV = 1.0f;
     settings.lutMin = lutMin; settings.lutMax = lutMax;
 
-    float** gridPtr = animatedGrid ? (float**)animatedGrid :
+    // Use properly converted float grid for animation, cached grid for static
+    float** gridPtr = animFloatGrid ? animFloatGrid :
         (*st.p_cachedBaseGrid ? st.p_cachedBaseGrid->get() : NULL);
     ncdfLog("[debug] RenderScalarColorMap: p_cachedBaseGrid=%p gridPtr=%p hasCoeff=%d\n",
         (void*)st.p_cachedBaseGrid, (void*)gridPtr, (int)(*st.p_cachedCoeff != NULL));
@@ -348,6 +367,10 @@ bool ncdfOverlayFactory::RenderScalarColorMap(
         *st.p_glTexture, *st.p_hasTexture, *st.p_needsRebuild,
         st.p_dataDim, st.p_glDim, *st.p_lutID, *st.p_hasLUT,
         *st.p_uploadBuf, *st.p_uploadBufSize);
+    ncdfLog("[SCALAR-ANIM] FULL REBUILD done: hasTex=%d needsRebuild=%d "
+            "dataMin=%.3f dataMax=%.3f physMin=%.3f physMax=%.3f\n",
+            (int)*st.p_hasTexture, (int)*st.p_needsRebuild,
+            settings.dataMin, settings.dataMax, settings.physMin, settings.physMax);
 
     // Free temporary animation float grid
     if (animFloatGrid) {
@@ -364,6 +387,7 @@ bool ncdfOverlayFactory::RenderScalarColorMap(
         *st.p_cachedPhysMin = settings.physMin;
         *st.p_cachedPhysMax = settings.physMax;
     }
+    *st.p_needsRebuild = false;  // allow REUSE path on subsequent frames
     return true;
 }
 
@@ -484,6 +508,7 @@ static void FillVectorCoeffTex(TexBuildContext &ctx,
             }
         if (dMax <= dMin) { dMin = 0; dMax = 1; }
         settings.dataMin = (float)dMin; settings.dataMax = (float)dMax;
+        settings.dataMinV = 0.0f; settings.dataMaxV = 1.0f;
 
         float* rawU = (float*)calloc(nj * ni, sizeof(float));
         float* rawV = (float*)calloc(nj * ni, sizeof(float));
@@ -523,11 +548,19 @@ static void FillVectorCoeffTex(TexBuildContext &ctx,
         if (validMask) free(validMask);
     }
 
-    const float bsplineScale = 2.5858f;
-    settings.dataMin = coefMinU * bsplineScale;
-    settings.dataMax = coefMaxU * bsplineScale;
-    settings.dataMinV = coefMinV * bsplineScale;
-    settings.dataMaxV = coefMaxV * bsplineScale;
+    // Precomputed path: use coefficient range * bsplineScale for denormalization
+    // Animation path (precompCoeffU==NULL): keep speed range from dMin/dMax
+    if (settings.precompCoeffU) {
+        const float bsplineScale = 2.5858f;
+        settings.dataMin = coefMinU * bsplineScale;
+        settings.dataMax = coefMaxU * bsplineScale;
+        settings.dataMinV = coefMinV * bsplineScale;
+        settings.dataMaxV = coefMaxV * bsplineScale;
+    }
+    // DEBUG: log data range for animation color path verification
+    ncdfLog("[COLOR-DBG] dataMin=%.6f dataMax=%.6f precomp=%d coefMinU=%.6f coefMaxU=%.6f\n",
+        settings.dataMin, settings.dataMax, (int)(settings.precompCoeffU != NULL),
+        coefMinU, coefMaxU);
 }
 
 //===================================================================
@@ -553,6 +586,8 @@ static void FillScalarCoeffTex(TexBuildContext &ctx,
     int tw = ctx.tw, th = ctx.th, borderH = ctx.borderH;
     unsigned char *texData = ctx.texData;
     bool hasGrid = (grid && (uintptr_t)grid > 0x100);
+    // Detect animated grid: grid pointer differs from static coefficient buffer
+    bool hasAnimGrid = hasGrid && coeffBuf && ((uintptr_t)grid != (uintptr_t)coeffBuf);
     int landTexCount = 0, oceanTexCount = 0;
     for (int j = 0; j < nj; j++) {
         int texRow = (ctx.gui->myMessage.jDirectionIncr >= 0) ? j : (nj - 1 - j);
@@ -563,14 +598,15 @@ static void FillScalarCoeffTex(TexBuildContext &ctx,
             int k = j * ni + i;
             float val = hasGrid ? grid[j][i] : 0.0f;
             if (hasGrid && !isfinite(val)) {
-                // Land: a=1 (≈0.004 in shader, 0.001<ca<0.01 → green)
-                // Border: a=0 (set by ApplyTextureBorders → transparent)
                 texData[off] = 0; texData[off+1] = 0; texData[off+2] = 0; texData[off+3] = 1;
                 landTexCount++;
             } else {
                 texData[off]   = (unsigned char)(fminf(fmaxf((coeffBuf[k] - coefMin) / coefRange, 0.0f), 1.0f) * 255.0f + 0.5f);
                 texData[off+1] = (unsigned char)(fminf(fmaxf((val - physMin) / physRange, 0.0f), 1.0f) * 255.0f + 0.5f);
-                texData[off+2] = 0; texData[off+3] = 255;
+                // B channel: animated physical value (normalized to coeff range by caller)
+                texData[off+2] = hasAnimGrid ?
+                    (unsigned char)(fminf(fmaxf((val - coefMin) / coefRange, 0.0f), 1.0f) * 255.0f + 0.5f) : 0;
+                texData[off+3] = 255;
                 oceanTexCount++;
             }
         }
@@ -578,6 +614,16 @@ static void FillScalarCoeffTex(TexBuildContext &ctx,
 
     ncdfLog("[debug] FillScalarCoeffTex: land(alpha=0)=%d ocean=%d hasGrid=%d\n",
         landTexCount, oceanTexCount, (int)hasGrid);
+
+    // DEBUG: log R channel byte at center and data range
+    if (hasGrid && nj > 2 && ni > 2) {
+        int ci = ni/2, cj = nj/2;
+        int texRow = (ctx.gui->myMessage.jDirectionIncr >= 0) ? cj : (nj - 1 - cj);
+        int off = 4 * ((texRow + 1) * ctx.tw + ci + ctx.borderH);
+        ncdfLog("[TEX-STEP] center(%d,%d) R=%d G=%d B=%d A=%d coefMin=%.3f coefMax=%.3f hasAnim=%d\n",
+            ci, cj, texData[off], texData[off+1], texData[off+2], texData[off+3],
+            coefMin, coefMax, (int)hasAnimGrid);
+    }
 
     const float bsplineScale = 2.5858f;
     settings.dataMin = coefMin * bsplineScale;
@@ -937,6 +983,7 @@ static void DrawShaderPath(PlugIn_ViewPort *vp,
     NcdfShaderUniforms u = ncdf_shader_get_uniforms();
     if (u.texSize >= 0) ncdf_shader_uniform_2f(u.texSize, (float)tw, (float)th);
     if (u.vectorMode >= 0) ncdf_shader_uniform_1i(u.vectorMode, settings.vectorMode ? 1 : 0);
+    if (u.animateMode >= 0) ncdf_shader_uniform_1i(u.animateMode, settings.animateMode ? 1 : 0);
     if (u.dataMin >= 0) ncdf_shader_uniform_1f(u.dataMin, settings.dataMin);
     if (u.dataMax >= 0) ncdf_shader_uniform_1f(u.dataMax, settings.dataMax);
     if (u.dataMinV >= 0) ncdf_shader_uniform_1f(u.dataMinV, settings.dataMinV);
@@ -1069,6 +1116,43 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
         }
 #endif
     }
+}
+
+// Draw animation FBO texture to map using fixed-function pipeline
+void DrawAnimOverlayImpl(ncdfOverlayFactory* factory, PlugIn_ViewPort *vp,
+                          MainDialog *gui, GLuint texID, int texW, int texH,
+                          double tlon, double tlat, double blon, double blat) {
+    if (!gui || !vp || !texID) return;
+
+    // Fixed-function: disable shader, bind FBO texture
+    ncdf_animate_use_program(0);
+    glPushAttrib(GL_ENABLE_BIT | GL_TEXTURE_BIT);
+    glEnable(GL_TEXTURE_2D);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+    glBindTexture(GL_TEXTURE_2D, texID);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, 0x812F);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, 0x812F);
+
+    // Compute screen bounds from geographic coordinates
+    wxPoint pTL, pBR;
+    GetCanvasPixLL(vp, &pTL, tlat, tlon);
+    GetCanvasPixLL(vp, &pBR, blat, blon);
+    float x0 = (float)std::min(pTL.x, pBR.x);
+    float y0 = (float)std::min(pTL.y, pBR.y);
+    float x1 = (float)std::max(pTL.x, pBR.x);
+    float y1 = (float)std::max(pTL.y, pBR.y);
+
+    // Draw textured quad at correct screen position
+    glBegin(GL_QUADS);
+    glTexCoord2f(0, 0); glVertex2f(x0, y0);
+    glTexCoord2f(1, 0); glVertex2f(x1, y0);
+    glTexCoord2f(1, 1); glVertex2f(x1, y1);
+    glTexCoord2f(0, 1); glVertex2f(x0, y1);
+    glEnd();
+
+    glPopAttrib();
 }
 
 // Generic isoline renderer: CPU Marching Squares + glBegin/glEnd

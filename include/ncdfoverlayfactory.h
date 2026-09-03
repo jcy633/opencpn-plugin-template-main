@@ -143,6 +143,7 @@ public:
          float physMin, physMax;
          float physMinV, physMaxV;
          bool vectorMode;
+         bool animateMode;
          float** uGrid;
          float** vGrid;
          // Pre-computed B-spline coefficients (skip prefilter if provided)
@@ -156,7 +157,7 @@ public:
          RenderSettings() :
              dataMin(0), dataMax(1), dataMinV(0), dataMaxV(1),
              lutMin(0), lutMax(1), physMin(0), physMax(1), physMinV(0), physMaxV(1),
-             vectorMode(false), uGrid(NULL), vGrid(NULL),
+             vectorMode(false), animateMode(false), uGrid(NULL), vGrid(NULL),
              precompCoeffU(NULL), precompCoeffV(NULL),
              precompCoefU_min(0), precompCoefU_max(1),
              precompCoefV_min(0), precompCoefV_max(1),
@@ -293,6 +294,13 @@ public:
 	 bool m_bHasAnimSalinityTexture;
 	 int m_animSalTexDataDim[2];
 	 int m_animSalTexGLDim[2];
+
+	 // Animation blit buffer (for glDrawPixels)
+	 unsigned char *m_animBlitBuf = nullptr;
+	 int m_animBlitBufSize = 0;
+
+	 // Draw a pre-built texture to the map using tile-based geographic projection
+	 void DrawAnimOverlay(PlugIn_ViewPort *vp, MainDialog *gui, GLuint texID, int texW, int texH);
 };
 
 
