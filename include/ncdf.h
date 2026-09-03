@@ -86,6 +86,29 @@ public:
 	double *my_vcurr = 0;
 	int treeMinutes[96];
 
+	// Lightweight file metadata (for tree building, no data allocation)
+	struct FileMetadata {
+		bool valid;
+		bool hasCurrent, hasSeaTemp, hasSalinity;
+		size_t timelength, latlength, lonlength;
+		wxDouble firstGridPointLat, firstGridPointLong;
+		wxDouble lastGridPointLat, lastGridPointLong;
+		wxDouble iDirectionIncr, jDirectionIncr;
+		int cached_u_varid, cached_v_varid, cached_sst_varid, cached_sal_varid;
+		std::vector<wxDateTime> dates;
+		std::vector<bool> timeValid;
+		std::vector<double> timeValues;
+		std::shared_ptr<SharedCoords> sharedCoords;
+		FileMetadata() : valid(false), hasCurrent(false), hasSeaTemp(false), hasSalinity(false),
+			timelength(0), latlength(0), lonlength(0),
+			firstGridPointLat(0), firstGridPointLong(0),
+			lastGridPointLat(0), lastGridPointLong(0),
+			iDirectionIncr(0), jDirectionIncr(0),
+			cached_u_varid(-1), cached_v_varid(-1),
+			cached_sst_varid(-1), cached_sal_varid(-1) {}
+	};
+	FileMetadata nc_read_metadata(const wxString &fileName);
+
 	bool m_fileHasCurrent = false;   // File contains u/v ocean current data
 	bool m_fileHasSeaTemp = false;   // File contains SST data
 	bool m_fileHasSalinity = false;  // File contains salinity data
@@ -93,6 +116,17 @@ public:
 	int m_cached_v_varid = -1;       // Cached NetCDF variable ID for v-current
 	int m_cached_sst_varid = -1;     // Cached NetCDF variable ID for SST
 	int m_cached_sal_varid = -1;     // Cached NetCDF variable ID for salinity
+
+	// Persistent NetCDF file handle (reused across same-file time step switches)
+	int m_openedNcid = -1;
+	wxString m_openedFileName;
+
+	// Pre-allocated data buffers (file-level, reused across time steps to avoid 32-bit heap fragmentation)
+	std::vector<double> m_fileUBuffer;
+	std::vector<double> m_fileVBuffer;
+	std::vector<double> m_fileSSTBuffer;
+	std::vector<double> m_fileSalBuffer;
+	bool m_fileBufferReady;
 
 	ncdfDataMessage myncdfData, myData, myMessage;
 	vector<ncdfDataMessage> myDataVector;
@@ -111,11 +145,16 @@ public:
 	
 	bool readTimeStepData(ncdfDataMessage& dataMessage);
 	bool m_isTreeUpdating;
+	bool m_isLoading{false};  // Guard against re-entrant time step loads
+	bool m_dataLoaded{false};  // True when myMessage has data for current time step
+	bool m_gridsReady{false};  // True when float grids are prepared (Phase 2 complete)
 	wxString m_currentFilePath;  // Track which file is currently loaded
+
 
 private:
 	void UpdateTrackingControls();
 	void printCurrentData();
+	bool switchToFile(const wxString &fileName, const wxString &fn, int &idx);
 
 
 
@@ -130,10 +169,7 @@ protected:
 	virtual void onCloseDialog( wxCloseEvent& event );
 	virtual void OnExitClick( wxCommandEvent& event );
 	virtual void onFileButtonClick(wxCommandEvent& event);
-	virtual void onTimeChange(wxCommandEvent& event);
-	void OnTimeline(wxScrollEvent& event);
-	virtual void onPrev(wxCommandEvent& event);
-	virtual void onNext(wxCommandEvent& event);
+
 
 
 	wxDateTime GetDateFromHours(int hours_in);
@@ -146,29 +182,10 @@ protected:
 	virtual void onParticlesClick( wxCommandEvent& event );
 	virtual void onSeaTempClick( wxCommandEvent& event );
 	virtual void onSalinityClick( wxCommandEvent& event );
-	virtual void onInterpCurrChange( wxCommandEvent& event );
-	virtual void onSmoothCurrClick( wxCommandEvent& event );
-	virtual void onSharpenCurrClick( wxCommandEvent& event );
-	virtual void onAnisoDiffCurrClick( wxCommandEvent& event );
-	virtual void onSCurveCurrClick( wxCommandEvent& event );
-	virtual void onSlopeCurrClick( wxCommandEvent& event );
-	virtual void onLICCurrClick( wxCommandEvent& event );
 	virtual void onAnimateClick( wxCommandEvent& event );
 	virtual void onAnimateSSTClick( wxCommandEvent& event );
 	virtual void onAnimateSalClick( wxCommandEvent& event );
-	virtual void onInterpSSTChange( wxCommandEvent& event );
-	virtual void onSmoothSSTClick( wxCommandEvent& event );
-	virtual void onSharpenSSTClick( wxCommandEvent& event );
-	virtual void onAnisoDiffSSTClick( wxCommandEvent& event );
-	virtual void onSCurveSSTClick( wxCommandEvent& event );
-	virtual void onSlopeSSTClick( wxCommandEvent& event );
 	virtual void onIsoSSTClick( wxCommandEvent& event );
-	virtual void onInterpSalChange( wxCommandEvent& event );
-	virtual void onSmoothSalClick( wxCommandEvent& event );
-	virtual void onSharpenSalClick( wxCommandEvent& event );
-	virtual void onAnisoDiffSalClick( wxCommandEvent& event );
-	virtual void onSCurveSalClick( wxCommandEvent& event );
-	virtual void onSlopeSalClick( wxCommandEvent& event );
 	virtual void onIsoSalClick( wxCommandEvent& event );
 	void fillDirTree(wxString dir, bool start, wxTreeItemId id);
 	void addChildren(wxTreeItemId id, wxString s);

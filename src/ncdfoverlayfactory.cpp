@@ -31,8 +31,13 @@
 #include "ncdf_pi.h"
 #include "IsoLine2.h"
 #include "shader/ncdf_shader.h"
+#include "shader/ncdf_animate_shader.h"
+#include <chrono>
+#include <thread>
 #include <wx/colour.h>
 #include <wx/dynarray.h>
+
+extern void ncdfLog(const char* format, ...);
 
 #ifdef __WXMSW__
 #define snprintf _snprintf
@@ -59,14 +64,9 @@ ncdfOverlayFactory::ncdfOverlayFactory()
 	  m_bReadyToRender = false;
       m_space = 0;
       m_ParticleMap = nullptr;
-      m_useShader = false;
       m_currentInterpMode = 0;
-      m_currentSmoothColors = false;
-      m_currentSCurve = false;
-      m_currentSlopeShading = false;
       m_currentDataMin = 0.0f;
       m_currentDataMax = 1.0f;
-      m_currentSlopeMode = 0;
       m_glDispTexture = 0;
       m_bHasDispTexture = false;
 
@@ -74,13 +74,6 @@ ncdfOverlayFactory::ncdfOverlayFactory()
       m_animateTimer.Bind(wxEVT_TIMER, [this](wxTimerEvent&) {
           GetOCPNCanvasWindow()->Refresh(false);
       });
-      m_cachedVorticity = NULL;
-      m_cachedVortNj = m_cachedVortNi = 0;
-      m_glLICTexture = 0;
-      m_bHasLICTexture = false;
-      m_bNeedsLICRebuild = true;
-      m_glVortTexture = 0;
-      m_bHasVortTexture = false;
 
       // Animation textures (independent from static)
       m_glAnimColorTexture = 0;
@@ -121,20 +114,17 @@ ncdfOverlayFactory::~ncdfOverlayFactory()
     m_bReadyToRender = false;
 	renderSelectionRectangle = false;
     if (m_tParticleTimer.IsRunning()) m_tParticleTimer.Stop();
-    m_currentOverlay.Cleanup();
-    m_seaTempOverlay.Cleanup();
-    m_salinityOverlay.Cleanup();
+    // Only clear B-spline coefficients (data-dependent). Preserve grids for reuse.
+    m_currentOverlay.clearCoefficients();
+    m_seaTempOverlay.clearCoefficients();
+    m_salinityOverlay.clearCoefficients();
     ClearParticles();
-    DeleteLICTexture();
     DeleteDispTexture();
     if (m_animateTimer.IsRunning()) m_animateTimer.Stop();
     // Clean up animation textures
     if (m_bHasAnimColorTexture && m_glAnimColorTexture) { glDeleteTextures(1, &m_glAnimColorTexture); }
     if (m_bHasAnimSeaTempTexture && m_glAnimSeaTempTexture) { glDeleteTextures(1, &m_glAnimSeaTempTexture); }
     if (m_bHasAnimSalinityTexture && m_glAnimSalinityTexture) { glDeleteTextures(1, &m_glAnimSalinityTexture); }
-    if (m_bHasVortTexture && m_glVortTexture) { glDeleteTextures(1, &m_glVortTexture); m_glVortTexture = 0; m_bHasVortTexture = false; }
-    FreeSharpenedGrid(m_cachedVorticity, m_cachedVortNj);
-    m_cachedVorticity = NULL;
     ncdf_shader_cleanup();
     DeleteDispTexture();
 }
@@ -150,41 +140,44 @@ void ncdfOverlayFactory::DeleteDispTexture()
 
 void ncdfOverlayFactory::SetBicubicMode(bool enable)
 {
-    // Force texture rebuild to switch between GL_NEAREST and GL_LINEAR
-    m_currentOverlay.Invalidate();
-    m_seaTempOverlay.Invalidate();
-    m_salinityOverlay.Invalidate();
+    // Only invalidate the currently visible overlay (avoid expensive rebuilds)
+    if (plugin && plugin->m_bShowCurrentForce)
+        m_currentOverlay.Invalidate();
+    else if (plugin && plugin->m_bShowSeaTemp)
+        m_seaTempOverlay.Invalidate();
+    else if (plugin && plugin->m_bShowSalinity)
+        m_salinityOverlay.Invalidate();
 }
 
 void ncdfOverlayFactory::setData(MainDialog *gui, ncdf_pi *plugin, const ncdfDataMessage& g2data, int numberOfPoints, wxDouble tlat, wxDouble tlon, wxDouble blat, wxDouble blon)
 {
-	// Mark textures for rebuild (GL deletion deferred to render)
-	m_currentOverlay.Invalidate();
-	m_seaTempOverlay.Invalidate();
-	m_salinityOverlay.Invalidate();
+	ncdfLog("[setData] ENTER: hasCurr=%d hasSST=%d hasSal=%d | showCurr=%d showSST=%d showSal=%d\n",
+		(int)g2data.hasCurrent(), (int)g2data.hasSSTData(), (int)g2data.hasSalData(),
+		(int)(plugin && plugin->m_bShowCurrentForce), (int)(plugin && plugin->m_bShowSeaTemp), (int)(plugin && plugin->m_bShowSalinity));
+
+	// Clear B-spline coefficients (data-dependent). Preserve grids for reuse.
+	m_currentOverlay.clearCoefficients();
+	m_seaTempOverlay.clearCoefficients();
+	m_salinityOverlay.clearCoefficients();
 	ClearParticles();
 	m_last_vp_scale = -1;
 	m_last_vp_latMax = -99999.0;
 	m_bUpdateParticles = true;
 	m_particleBurstCount = 30;
 
-	// Don't deep copy data — use gui->myMessage directly (avoids 140MB copy for global data)
 	this->numberOfPoints = numberOfPoints;
-    this->gui = gui;
-    this->plugin = plugin;
+	this->gui = gui;
+	this->plugin = plugin;
 
-    // Use the bounds passed from readncdfFile (from the actual data)
-    // Sort to ensure correct ordering: north > south, west < east
-    this->tlat = wxMax(tlat, blat);
-    this->blat = wxMin(tlat, blat);
-    this->tlon = wxMin(tlon, blon);
-    this->blon = wxMax(tlon, blon);
+	this->tlat = wxMax(tlat, blat);
+	this->blat = wxMin(tlat, blat);
+	this->tlon = wxMin(tlon, blon);
+	this->blon = wxMax(tlon, blon);
 
-	wxLogMessage(_T("[setData] bounds: lat[%.2f,%.2f] lon[%.2f,%.2f] ni=%d nj=%d"),
-        this->tlat, this->blat, this->tlon, this->blon,
-        (int)gui->myMessage.lonLength, (int)gui->myMessage.latLength);
-
-    this->m_bReadyToRender = true;
+	ncdfLog("[setData] bounds: lat[%.2f,%.2f] lon[%.2f,%.2f] ni=%d nj=%d\n",
+		this->tlat, this->blat, this->tlon, this->blon,
+		(int)gui->myMessage.lonLength, (int)gui->myMessage.latLength);
+	// Don't set m_bReadyToRender here — callers manage it explicitly
 }
 
 void ncdfOverlayFactory::setSelectionRectangle(Selection *rect)
@@ -192,10 +185,93 @@ void ncdfOverlayFactory::setSelectionRectangle(Selection *rect)
     this->rect = rect;
 }
 
+void ncdfOverlayFactory::prepareAllOverlays()
+{
+    if (!gui) return;
+    ncdfLog("[render] prepareAllOverlays: ENTER, hasCurrent=%d hasSST=%d hasSal=%d\n",
+        (int)gui->myMessage.hasCurrent(), (int)gui->myMessage.hasSSTData(), (int)gui->myMessage.hasSalData());
+
+    auto t0 = std::chrono::high_resolution_clock::now();
+
+    // setData() already Cleanup()'d all caches — no need to clear here
+    // Only prepare overlays that are currently visible (GRIB pattern)
+    bool hasCurr = gui->myMessage.hasCurrent() && plugin && plugin->m_bShowCurrentForce;
+    bool hasSST  = gui->myMessage.hasSSTData()  && plugin && plugin->m_bShowSeaTemp;
+    bool hasSal  = gui->myMessage.hasSalData()  && plugin && plugin->m_bShowSalinity;
+    ncdfLog("[prepare] hasCurr=%d hasSST=%d hasSal=%d (visible only)\n",
+        (int)hasCurr, (int)hasSST, (int)hasSal);
+
+    if (hasCurr) { ncdfLog("[prepare] current START\n"); m_currentOverlay.prepareData(gui, plugin, this); ncdfLog("[prepare] current DONE needsRebuild=%d\n", (int)m_currentOverlay.needsRebuild); }
+    if (hasSST)  { ncdfLog("[prepare] sst START\n"); m_seaTempOverlay.prepareData(gui, plugin, this); ncdfLog("[prepare] sst DONE needsRebuild=%d\n", (int)m_seaTempOverlay.needsRebuild); }
+    if (hasSal)  { ncdfLog("[prepare] sal START\n"); m_salinityOverlay.prepareData(gui, plugin, this); ncdfLog("[prepare] sal DONE needsRebuild=%d\n", (int)m_salinityOverlay.needsRebuild); }
+
+    // Free CPU-side raw data — all computations are now cached in overlay structs
+    // Texture upload will happen lazily on first RenderColorMap (needs GL context)
+    // NOTE: Do NOT clear myMessage vectors here — DoRenderncdfOverlay checks
+    // myMessage.hasSSTData()/hasCurrent()/hasSalData() as render gate.
+    // Vectors will be cleared when the next time step loads via myMessage.clearData().
+
+    auto t1 = std::chrono::high_resolution_clock::now();
+    auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+    ncdfLog("[perf] prepareAllOverlays: TOTAL=%lldms (sequential)\n", (long long)totalMs);
+    ncdfLog("[render] prepareAllOverlays: DONE, CPU data freed\n");
+}
+
+void ncdfOverlayFactory::prepareAllGrids()
+{
+    if (!gui) return;
+    ncdfLog("[render] prepareAllGrids: ENTER\n");
+    auto t0 = std::chrono::high_resolution_clock::now();
+
+    // P1: Only prepare grids for CHECKED (visible) types.
+    // Also prepare current overlay's U/V grids when animation is active (needed for displacement).
+    bool anyAnimate = plugin && (plugin->m_settingsCurrent.animate ||
+                                 plugin->m_settingsSeaTemp.animate ||
+                                 plugin->m_settingsSalinity.animate);
+    if (plugin && (plugin->m_bShowCurrentForce || anyAnimate) && gui->myMessage.hasCurrent()) {
+        m_currentOverlay.prepareGrid(gui);
+        m_currentOverlay.dataReady = true;
+    }
+    if (plugin && plugin->m_bShowSeaTemp && gui->myMessage.hasSSTData()) {
+        m_seaTempOverlay.prepareGrid(gui);
+        m_seaTempOverlay.dataReady = true;
+    }
+    if (plugin && plugin->m_bShowSalinity && gui->myMessage.hasSalData()) {
+        m_salinityOverlay.prepareGrid(gui);
+        m_salinityOverlay.dataReady = true;
+    }
+
+    auto t1 = std::chrono::high_resolution_clock::now();
+    ncdfLog("[perf] prepareAllGrids: TOTAL=%lldms\n",
+        (long long)std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count());
+}
+
+void ncdfOverlayFactory::updateTimeStep()
+{
+    ncdfLog("[updateTimeStep] ENTER — same-file time step switch\n");
+    // Only clear B-spline coefficients (data-dependent). Preserve grids for reuse.
+    m_currentOverlay.clearCoefficients();
+    m_seaTempOverlay.clearCoefficients();
+    m_salinityOverlay.clearCoefficients();
+    m_last_vp_scale = -1;
+    m_last_vp_latMax = -99999.0;
+    m_bUpdateParticles = true;
+    m_particleBurstCount = 30;
+    ClearParticles();
+}
+
 void ncdfOverlayFactory::reset()
 {
     this->m_bReadyToRender = false;
     clearBmp();
+    // Only invalidate overlays that are currently visible
+    // Hidden overlays keep their textures cached (no expensive rebuild)
+    if (plugin && plugin->m_bShowCurrentForce)
+        m_currentOverlay.Invalidate();
+    if (plugin && plugin->m_bShowSeaTemp)
+        m_seaTempOverlay.Invalidate();
+    if (plugin && plugin->m_bShowSalinity)
+        m_salinityOverlay.Invalidate();
 }
 
 
@@ -224,14 +300,14 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
     this->vp = vp;
     if (!vp) return false;
 
-    // Guard: must have valid gui and at least one grid
+    // Guard: must have valid gui and at least one overlay with prepared data
     if (!gui) return false;
-    bool hasCurrentGrid = gui->myMessage.hasCurrent();
-    bool hasSSTGrid = gui->myMessage.hasSSTData();
-    bool hasSalinityGrid = gui->myMessage.hasSalData();
+    bool hasCurrentGrid = m_currentOverlay.dataReady;
+    bool hasSSTGrid = m_seaTempOverlay.dataReady;
+    bool hasSalinityGrid = m_salinityOverlay.dataReady;
+    ncdfLog("[render] DoRenderncdfOverlay: ENTER, hasCurr=%d hasSST=%d hasSal=%d ready=%d\n",
+        (int)hasCurrentGrid, (int)hasSSTGrid, (int)hasSalinityGrid, (int)m_bReadyToRender);
     if (!hasCurrentGrid && !hasSSTGrid && !hasSalinityGrid) {
-        static int s_nullDbg = 0;
-        if (s_nullDbg < 5) { wxLogMessage(_T("[render] SKIP: ucurr.size=%zu vcurr.size=%zu sst.size=%zu sal.size=%zu"), gui->myMessage.ucurr.size(), gui->myMessage.vcurr.size(), gui->myMessage.sst.size(), gui->myMessage.salinity.size()); s_nullDbg++; }
         return false;
     }
     if (gui->myMessage.lonLength < 2 || gui->myMessage.latLength < 2) return false;
@@ -243,36 +319,71 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
         !plugin->m_bShowSeaTempIso && !plugin->m_bShowSalinity) return false;
 
     // Lazy shader compile (first render call, GL context is available)
-    // Shader is compiled once; m_useShader toggles via checkbox
-    static bool s_shaderCompiled = false;
-    static bool s_shaderOk = false;
-    if (!s_shaderCompiled) {
-        s_shaderCompiled = true;
-        s_shaderOk = ncdf_shader_init();
+    // Use ncdf_shader_initialized() to handle factory recreation
+    if (!ncdf_shader_initialized()) {
+        ncdf_shader_init();
     }
-    // m_useShader is set per data type below
-    m_useShader = false;
 
     static bool s_shaderDbg = false;
     if (!s_shaderDbg) {
         s_shaderDbg = true;
-        wxLogMessage(_T("[shader] compiled=%d ok=%d m_useShader=%d"),
-                     (int)s_shaderCompiled, (int)s_shaderOk, (int)m_useShader);
+        wxLogMessage(_T("[shader] initialized=%d"),
+                     (int)ncdf_shader_initialized());
     }
 
-    // Animation: DISABLED for now — needs per-type advection to avoid
-    // cross-contaminating SST/salinity with current data.
-    // TODO: re-enable with per-type animGrid (one per data type)
+    // Animation: CPU path — advect grids, then feed to existing color map shader
     double** animGrid = NULL;
-
-    // ... normal rendering uses animGrid when available ...
+    double** animUGrid = NULL;
+    double** animVGrid = NULL;
+    bool animateActive = (plugin->m_settingsCurrent.animate && plugin->m_bShowCurrentForce) ||
+                         (plugin->m_settingsSeaTemp.animate && plugin->m_bShowSeaTemp) ||
+                         (plugin->m_settingsSalinity.animate && plugin->m_bShowSalinity);
+    if (animateActive && m_animate.IsInitialized()) {
+        ncdfLog("[anim] animateActive=1, HasDisplacement=%d IsInit=%d\n",
+                (int)m_animate.HasDisplacement(), (int)m_animate.IsInitialized());
+        if (!m_animate.HasDisplacement()) {
+            float* const* uGrid = m_currentOverlay.cachedU;
+            float* const* vGrid = m_currentOverlay.cachedV;
+            int ni = m_currentOverlay.cachedVNi;
+            int nj = m_currentOverlay.cachedUNj;
+            if (uGrid && vGrid && ni > 2 && nj > 2) {
+                ncdfLog("[anim] computing displacement from float grids %dx%d\n", ni, nj);
+                m_animate.ComputeDisplacementMap(uGrid, vGrid, ni, nj);
+                // Store external grids for BuildSourceFields (in case myMessage has no current data)
+                m_animate.SetExternalSourceGrids(uGrid, vGrid, ni, nj);
+            } else {
+                ncdfLog("[anim] SKIP displacement: uGrid=%p vGrid=%p ni=%d nj=%d\n",
+                        (void*)uGrid, (void*)vGrid, ni, nj);
+            }
+        }
+        animGrid = m_animate.GetAdvectedGrid();
+        animUGrid = m_animate.GetAdvectedUGrid();
+        animVGrid = m_animate.GetAdvectedVGrid();
+        // DEBUG: check if advected U/V changes between frames
+        if (animUGrid && animVGrid) {
+            int ci = m_currentOverlay.cachedVNi / 2;
+            int cj = m_currentOverlay.cachedUNj / 2;
+            float au = (float)animUGrid[cj][ci], av = (float)animVGrid[cj][ci];
+            static float s_prevU = -999, s_prevV = -999;
+            if (fabs(au - s_prevU) > 0.0001f || fabs(av - s_prevV) > 0.0001f || m_animate.GetFrame() <= 2) {
+                ncdfLog("[anim-UV] frame=%d center U=(%.4f->%.4f) V=(%.4f->%.4f) spd=%.4f\n",
+                    m_animate.GetFrame(), s_prevU, au, s_prevV, av, sqrtf(au*au+av*av));
+                s_prevU = au; s_prevV = av;
+            }
+        }
+        ncdfLog("[anim] grids: animGrid=%p animUGrid=%p animVGrid=%p\n",
+                (void*)animGrid, (void*)animUGrid, (void*)animVGrid);
+    } else {
+        ncdfLog("[anim] inactive: animateActive=%d IsInit=%d\n",
+                (int)animateActive, (int)m_animate.IsInitialized());
+    }
 
     static int s_frameDbg = 0;
     if (s_frameDbg < 5) {
         wxLogMessage(_T("[render] frame %d ucurr.size=%zu vcurr.size=%zu sst.size=%zu sal.size=%zu"), s_frameDbg, gui->myMessage.ucurr.size(), gui->myMessage.vcurr.size(), gui->myMessage.sst.size(), gui->myMessage.salinity.size());
         s_frameDbg++;
     }
-    
+
     if(vp->view_scale_ppm != m_last_vp_scale)
     {
       if(vp->view_scale_ppm < 0.001135)
@@ -280,16 +391,16 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
       else if(vp->view_scale_ppm <= 0.001135)
 	  m_space = space[1];
       else if(vp->view_scale_ppm <= 0.018165)
-	  m_space = space[2]; 
+	  m_space = space[2];
       else if(vp->view_scale_ppm <= 0.072659)
-	  m_space = space[3];  
+	  m_space = space[3];
 
     }
 	// No need to clear on viewport change - texture is cached
 	m_last_vp_latMax = vp->lat_max;
 
-	static int s_renderDbg = 0;
-	if (s_renderDbg < 10) {
+    static int s_renderDbg = 0;
+    if (s_renderDbg < 10) {
 		wxLogMessage(_T("[render] ready=%d gui=%p ucurr.size=%zu ni=%d showF=%d showD=%d showP=%d"),
 			(int)m_bReadyToRender, gui,
 			gui ? gui->myMessage.ucurr.size() : (size_t)0,
@@ -300,112 +411,62 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 		s_renderDbg++;
 	}
 
-	// Current color map overlay (delegated to per-type overlay)
-	if(plugin->m_bShowCurrentForce && gui->myMessage.hasCurrent() && !m_pdc) {
-#ifdef ocpnUSE_GL
-	      glDisable(GL_TEXTURE_2D);
-	      glBindTexture(GL_TEXTURE_2D, 0);
-	      m_useShader = s_shaderOk && (plugin->m_settingsCurrent.interpMode >= 0);
-	      m_currentInterpMode = plugin->m_settingsCurrent.interpMode;
-	      m_currentSmoothColors = plugin->m_settingsCurrent.smoothColors;
-	      m_currentSCurve = plugin->m_settingsCurrent.sCurve;
-	      m_currentSlopeShading = plugin->m_settingsCurrent.slopeShading;
-	      m_currentSlopeMode = 0;
-	      m_currentDataMin = m_currentOverlay.cachedDataMin;
-	      m_currentDataMax = m_currentOverlay.cachedDataMax;
-	      m_currentOverlay.RenderColorMap(vp, gui, plugin, this, m_useShader, m_currentInterpMode);
-#endif
-	}
+    ncdfLog("[render] dispatch: showCurr=%d showSST=%d showSal=%d showDir=%d showP=%d | cur[dataR=%d hasTex=%d] sst[dataR=%d hasTex=%d] sal[dataR=%d hasTex=%d]\n",
+        (int)plugin->m_bShowCurrentForce, (int)plugin->m_bShowSeaTemp, (int)plugin->m_bShowSalinity,
+        (int)plugin->m_bShowCurrentDir, (int)plugin->m_bShowParticles,
+        (int)m_currentOverlay.dataReady, (int)m_currentOverlay.hasTexture,
+        (int)m_seaTempOverlay.dataReady, (int)m_seaTempOverlay.hasTexture,
+        (int)m_salinityOverlay.dataReady, (int)m_salinityOverlay.hasTexture);
 
+    // Render overlays (animation grids are passed to color map shader)
+    RenderCurrentOverlay(vp, animGrid, animUGrid, animVGrid);
 
-	// Arrows
-	if(plugin->m_bShowCurrentDir) {
-      RenderncdfCurrent();
-	}
+    if(plugin->m_bShowCurrentDir) {
+        RenderncdfCurrent();
+    }
 
-	// Particles
-	if(plugin->m_bShowParticles) {
-      RenderParticles(vp);
-	} else {
-      ClearParticles();
-	}
+    if(plugin->m_bShowParticles) {
+        RenderParticles(vp);
+    } else {
+        ClearParticles();
+    }
 
-	// Sea temperature color map overlay
-	if (plugin->m_bShowSeaTemp && gui && gui->myMessage.hasSSTData() && !m_pdc) {
-#ifdef ocpnUSE_GL
-		m_useShader = s_shaderOk && (plugin->m_settingsSeaTemp.interpMode >= 0);
-		m_currentInterpMode = plugin->m_settingsSeaTemp.interpMode;
-		m_currentSmoothColors = plugin->m_settingsSeaTemp.smoothColors;
-		m_currentSCurve = plugin->m_settingsSeaTemp.sCurve;
-		m_currentSlopeShading = plugin->m_settingsSeaTemp.slopeShading;
-		m_currentSlopeMode = 1;
-		m_currentDataMin = m_seaTempOverlay.cachedDataMin;
-		m_currentDataMax = m_seaTempOverlay.cachedDataMax;
-		m_seaTempOverlay.RenderColorMap(vp, gui, plugin, this, m_useShader, m_currentInterpMode);
-#endif
-	}
+    RenderSeaTempOverlay(vp, animGrid);
+    RenderSalinityOverlay(vp, animGrid);
 
-	// Sea temperature isolines
-	if (plugin->m_bShowSeaTempIso && gui && gui->myMessage.hasSSTData()) {
-		m_seaTempOverlay.RenderIsoLines(vp, gui);
-	}
-
-	// Salinity color map overlay
-	if (plugin->m_bShowSalinity && gui && gui->myMessage.hasSalData() && !m_pdc) {
-#ifdef ocpnUSE_GL
-		m_useShader = s_shaderOk && (plugin->m_settingsSalinity.interpMode >= 0);
-		m_currentInterpMode = plugin->m_settingsSalinity.interpMode;
-		m_currentSmoothColors = plugin->m_settingsSalinity.smoothColors;
-		m_currentSCurve = plugin->m_settingsSalinity.sCurve;
-		m_currentSlopeShading = plugin->m_settingsSalinity.slopeShading;
-		m_currentSlopeMode = 0;
-		m_currentDataMin = m_salinityOverlay.cachedDataMin;
-		m_currentDataMax = m_salinityOverlay.cachedDataMax;
-		m_salinityOverlay.RenderColorMap(vp, gui, plugin, this, m_useShader, m_currentInterpMode);
-#endif
-	}
-
-	// Salinity isolines
-	if (plugin->m_settingsSalinity.showIsoLines && plugin->m_bShowSalinity && gui && gui->myMessage.hasSalData()) {
-		m_salinityOverlay.RenderIsoLines(vp, gui);
-	}
-
-	// Color legend
-	{
-		static const ColorStop tempStops[] = {
-			{-2, 0x80, 0x00, 0xc0}, {2, 0x40, 0x30, 0xff}, {7, 0x00, 0x90, 0xfa},
-			{12, 0x00, 0xd8, 0xb0}, {17, 0x10, 0xbb, 0x20}, {22, 0x90, 0xd0, 0x00},
-			{26, 0xf0, 0xd0, 0x00}, {30, 0xf0, 0x70, 0x00}, {32, 0xff, 0x00, 0x00}
-		};
-		static const ColorStop salStops[] = {
-			{30, 0x87, 0xce, 0xeb}, {31, 0x60, 0xb0, 0xe0}, {32, 0x40, 0x90, 0xd0},
-			{33, 0x20, 0x70, 0xc0}, {34, 0x10, 0x50, 0xa0}, {35, 0x00, 0x80, 0x80},
-			{35.5, 0x20, 0xa0, 0x70}, {36, 0x40, 0xc0, 0x60}, {36.5, 0x80, 0xc0, 0x40},
-			{37, 0xc0, 0xb0, 0x20}, {37.5, 0xe0, 0xa0, 0x10}, {38, 0xe0, 0x70, 0x20},
-			{38.5, 0xd0, 0x40, 0x20}, {39, 0xc0, 0x20, 0x20}
-		};
-		static const ColorStop currStops[] = {
-			{0.00, 20, 20, 180}, {0.10, 30, 80, 220}, {0.25, 0, 180, 220},
-			{0.50, 0, 200, 80}, {0.75, 220, 220, 20}, {1.00, 240, 100, 20},
-			{1.50, 220, 20, 20}
-		};
-		if (plugin->m_bShowSeaTemp && gui && gui->myMessage.hasSSTData()) {
-			m_legend.SetData(tempStops, 9, "\xC2\xB0" "C", "Sea Temperature");
-			m_legend.Draw((int)vp->pix_width, (int)vp->pix_height);
-		} else if (plugin->m_bShowSalinity && gui && gui->myMessage.hasSalData()) {
-			m_legend.SetData(salStops, 14, "PSU", "Salinity");
-			m_legend.Draw((int)vp->pix_width, (int)vp->pix_height);
-		} else if (plugin->m_bShowCurrentForce && gui && gui->myMessage.hasCurrent()) {
-			m_legend.SetData(currStops, 7, "m/s", "Current Speed");
-			m_legend.Draw((int)vp->pix_width, (int)vp->pix_height);
-		}
-	}
+    // Color legend
+    {
+        static const ColorStop tempStops[] = {
+            {-2, 0x80, 0x00, 0xc0}, {2, 0x40, 0x30, 0xff}, {7, 0x00, 0x90, 0xfa},
+            {12, 0x00, 0xd8, 0xb0}, {17, 0x10, 0xbb, 0x20}, {22, 0x90, 0xd0, 0x00},
+            {26, 0xf0, 0xd0, 0x00}, {30, 0xf0, 0x70, 0x00}, {32, 0xff, 0x00, 0x00}
+        };
+        static const ColorStop salStops[] = {
+            {30, 0x87, 0xce, 0xeb}, {31, 0x60, 0xb0, 0xe0}, {32, 0x40, 0x90, 0xd0},
+            {33, 0x20, 0x70, 0xc0}, {34, 0x10, 0x50, 0xa0}, {35, 0x00, 0x80, 0x80},
+            {35.5, 0x20, 0xa0, 0x70}, {36, 0x40, 0xc0, 0x60}, {36.5, 0x80, 0xc0, 0x40},
+            {37, 0xc0, 0xb0, 0x20}, {37.5, 0xe0, 0xa0, 0x10}, {38, 0xe0, 0x70, 0x20},
+            {38.5, 0xd0, 0x40, 0x20}, {39, 0xc0, 0x20, 0x20}
+        };
+        static const ColorStop currStops[] = {
+            {0.00, 20, 20, 180}, {0.10, 30, 80, 220}, {0.25, 0, 180, 220},
+            {0.50, 0, 200, 80}, {0.75, 220, 220, 20}, {1.00, 240, 100, 20},
+            {1.50, 220, 20, 20}
+        };
+        if (plugin->m_bShowSeaTemp && gui && m_seaTempOverlay.dataReady) {
+            m_legend.SetData(tempStops, 9, "\xC2\xB0" "C", "Sea Temperature");
+            m_legend.Draw((int)vp->pix_width, (int)vp->pix_height);
+        } else if (plugin->m_bShowSalinity && gui && m_salinityOverlay.dataReady) {
+            m_legend.SetData(salStops, 14, "PSU", "Salinity");
+            m_legend.Draw((int)vp->pix_width, (int)vp->pix_height);
+        } else if (plugin->m_bShowCurrentForce && gui && m_currentOverlay.dataReady) {
+            m_legend.SetData(currStops, 7, "m/s", "Current Speed");
+            m_legend.Draw((int)vp->pix_width, (int)vp->pix_height);
+        }
+    }
 
     m_last_vp_scale = vp->view_scale_ppm;
     m_last_vp_latMax = vp->lat_max;
-
-    // Advance animation frame
-    if (animGrid) m_animate.AdvanceFrame();
 
     // Reset GL state to avoid corrupting other plugins (GRIB, OpenCPN core)
     glDisable(GL_TEXTURE_2D);
@@ -414,7 +475,128 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
     glBindTexture(GL_TEXTURE_2D, 0);
     glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
 
+    // Advance animation frame AFTER GetAdvectedGrid has completed
+    // (coord field updates and U/V blending both use m_frame).
+    // GetAdvectedScalarGrid() in overlay renderers uses the same m_frame.
+    if (animateActive && m_animate.IsInitialized()) {
+        m_animate.AdvanceFrame();
+    }
+
     return true;
+}
+
+void ncdfOverlayFactory::RenderCurrentOverlay(PlugIn_ViewPort *vp, double **animGrid, double **animUGrid, double **animVGrid)
+{
+    // Auto-recover if coefficients were released or cleared
+    if (plugin->m_bShowCurrentForce &&
+        m_currentOverlay.cachedU && m_currentOverlay.cachedV &&
+        (!m_currentOverlay.dataReady || !m_currentOverlay.cachedCoeffU)) {
+        ncdfLog("[render:current] AUTO-RECOVER: dataReady=%d cachedCoeffU=%p\n",
+                (int)m_currentOverlay.dataReady, (void*)m_currentOverlay.cachedCoeffU);
+        m_currentOverlay.prepareCoeff(this);
+    }
+    if(plugin->m_bShowCurrentForce && m_currentOverlay.dataReady && !m_pdc) {
+#ifdef ocpnUSE_GL
+        ncdfLog("[render:current] ENTER hasTex=%d needsRebuild=%d dataReady=%d cachedU=%p cachedCoeffU=%p\n",
+            (int)m_currentOverlay.hasTexture, (int)m_currentOverlay.needsRebuild,
+            (int)m_currentOverlay.dataReady, (void*)m_currentOverlay.cachedU, (void*)m_currentOverlay.cachedCoeffU);
+        glDisable(GL_TEXTURE_2D);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        m_currentInterpMode = 0;
+        m_currentOverlay.RenderColorMap(vp, gui, plugin, this, animGrid, animUGrid, animVGrid);
+        m_currentDataMin = m_currentOverlay.cachedDataMin;
+        m_currentDataMax = m_currentOverlay.cachedDataMax;
+        ncdfLog("[render] RenderCurrentOverlay: EXIT\n");
+#endif
+    }
+}
+
+void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp, double **animGrid)
+{
+    // Auto-recover if coefficients were released or cleared
+    if (plugin->m_bShowSeaTemp && gui && m_seaTempOverlay.cachedBaseGrid &&
+        (!m_seaTempOverlay.dataReady || !m_seaTempOverlay.cachedCoeff)) {
+        ncdfLog("[render:sst] AUTO-RECOVER: dataReady=%d cachedCoeff=%p\n",
+                (int)m_seaTempOverlay.dataReady, (void*)m_seaTempOverlay.cachedCoeff);
+        m_seaTempOverlay.prepareCoeff(this);
+    }
+    if (plugin->m_bShowSeaTemp && gui && m_seaTempOverlay.dataReady && !m_pdc) {
+#ifdef ocpnUSE_GL
+        // For scalar animation: advect the source scalar field at flow coordinates
+        double** scalarAnimGrid = animGrid;
+        if (animGrid && m_seaTempOverlay.cachedBaseGrid && m_animate.IsInitialized()) {
+            float* const* baseGrid = m_seaTempOverlay.cachedBaseGrid.get();
+            int ni = m_seaTempOverlay.cachedNi;
+            int nj = m_seaTempOverlay.cachedNj;
+            if (baseGrid && ni > 2 && nj > 2) {
+                double** advScalar = m_animate.GetAdvectedScalarGrid(baseGrid, ni, nj);
+                if (advScalar) scalarAnimGrid = advScalar;
+            }
+        }
+        m_currentInterpMode = 0;
+        m_seaTempOverlay.RenderColorMap(vp, gui, plugin, this, scalarAnimGrid);
+        m_currentDataMin = m_seaTempOverlay.cachedDataMin;
+        m_currentDataMax = m_seaTempOverlay.cachedDataMax;
+        ncdfLog("[render] RenderSeaTempOverlay: EXIT\n");
+#endif
+    }
+
+    if (plugin->m_bShowSeaTempIso && gui && m_seaTempOverlay.dataReady) {
+        m_seaTempOverlay.RenderIsoLines(vp, gui);
+    }
+}
+
+void ncdfOverlayFactory::DrawAnimOverlay(PlugIn_ViewPort *vp, MainDialog *gui,
+                                          GLuint texID, int texW, int texH) {
+    // Implementation in ncdftexture.cpp (needs access to static tile structs)
+    extern void DrawAnimOverlayImpl(ncdfOverlayFactory* factory, PlugIn_ViewPort *vp,
+                                     MainDialog *gui, GLuint texID, int texW, int texH,
+                                     double tlon, double tlat, double blon, double blat);
+    DrawAnimOverlayImpl(this, vp, gui, texID, texW, texH, tlon, tlat, blon, blat);
+}
+
+void ncdfOverlayFactory::RenderSalinityOverlay(PlugIn_ViewPort *vp, double **animGrid)
+{
+    // Auto-recover if coefficients were released or cleared
+    if (plugin->m_bShowSalinity && gui && m_salinityOverlay.cachedBaseGrid &&
+        (!m_salinityOverlay.dataReady || !m_salinityOverlay.cachedCoeff)) {
+        ncdfLog("[render:sal] AUTO-RECOVER: dataReady=%d cachedCoeff=%p\n",
+                (int)m_salinityOverlay.dataReady, (void*)m_salinityOverlay.cachedCoeff);
+        m_salinityOverlay.prepareCoeff(this);
+    }
+    if (plugin->m_bShowSalinity && gui && m_salinityOverlay.dataReady && !m_pdc) {
+#ifdef ocpnUSE_GL
+        // Same rendering path as static color map: CPU sampling → RenderColorMap → ncdf shader
+        double** scalarAnimGrid = animGrid;
+        if (animGrid && m_salinityOverlay.cachedBaseGrid && m_animate.IsInitialized()) {
+            float* const* baseGrid = m_salinityOverlay.cachedBaseGrid.get();
+            int ni = m_salinityOverlay.cachedNi;
+            int nj = m_salinityOverlay.cachedNj;
+            if (baseGrid && ni > 2 && nj > 2) {
+                double** advScalar = m_animate.GetAdvectedScalarGrid(baseGrid, ni, nj);
+                if (advScalar) {
+                    // advScalar contains raw B-spline coefficients (same domain as static coeffBuf)
+                    // FillScalarCoeffTex will normalize them using coefMin/coefRange
+                    scalarAnimGrid = advScalar;
+                }
+            }
+        }
+        m_currentInterpMode = 0;
+        m_salinityOverlay.RenderColorMap(vp, gui, plugin, this, scalarAnimGrid);
+        m_currentDataMin = m_salinityOverlay.cachedDataMin;
+        m_currentDataMax = m_salinityOverlay.cachedDataMax;
+#else
+        // Non-GL fallback
+        m_currentInterpMode = 0;
+        m_salinityOverlay.RenderColorMap(vp, gui, plugin, this, animGrid);
+        m_currentDataMin = m_salinityOverlay.cachedDataMin;
+        m_currentDataMax = m_salinityOverlay.cachedDataMax;
+#endif
+    }
+
+    if (plugin->m_settingsSalinity.showIsoLines && plugin->m_bShowSalinity && gui && m_salinityOverlay.dataReady) {
+        m_salinityOverlay.RenderIsoLines(vp, gui);
+    }
 }
 
 void ncdfOverlayFactory::clearBmp()
@@ -1197,343 +1379,8 @@ void ncdfOverlayFactory::drawTriangle(wxDC *pmdc, wxPen pen, bool south,
 
 
 //===================================================================
-// Adaptive Laplacian sharpening based on gradient magnitude
-//===================================================================
-double** ncdfOverlayFactory::BuildSharpenedGrid(double** grid, int nj, int ni)
-{
-    if (!grid || ni < 3 || nj < 3) return NULL;
-    double** out = new(std::nothrow) double*[nj];
-    if (!out) return NULL;
-    for (int j = 0; j < nj; j++) {
-        out[j] = new(std::nothrow) double[ni];
-        if (!out[j]) { for (int k = 0; k < j; k++) delete[] out[k]; delete[] out; return NULL; }
-    }
-
-    for (int j = 0; j < nj; j++) {
-        for (int i = 0; i < ni; i++) {
-            double v = grid[j][i];
-            if (v == ncdf_NOTDEF || v != v || !isfinite(v)) {
-                out[j][i] = v;
-                continue;
-            }
-            // Boundary: copy original
-            if (j == 0 || j == nj-1 || i == 0 || i == ni-1) {
-                out[j][i] = v;
-                continue;
-            }
-            // Check 4-neighbors for valid data
-            double vn = grid[j-1][i], vs = grid[j+1][i];
-            double vw = grid[j][i-1], ve = grid[j][i+1];
-            if (vn == ncdf_NOTDEF || vs == ncdf_NOTDEF ||
-                vw == ncdf_NOTDEF || ve == ncdf_NOTDEF) {
-                out[j][i] = v;
-                continue;
-            }
-            // Gradient magnitude
-            double gx = ve - vw;
-            double gy = vs - vn;
-            double mag = sqrt(gx * gx + gy * gy);
-            // Laplacian
-            double lap = vn + vs + vw + ve - 4.0 * v;
-            // Adaptive strength: stronger at edges (0.5~2.0)
-            double strength = 0.5 + 1.5 * (1.0 - exp(-mag * 2.0));
-            out[j][i] = v - strength * lap;
-        }
-    }
-    return out;
-}
-
-void ncdfOverlayFactory::FreeSharpenedGrid(double** grid, int nj)
-{
-    if (!grid) return;
-    for (int j = 0; j < nj; j++) delete[] grid[j];
-    delete[] grid;
-}
-
-//===================================================================
-// Vorticity: curl of velocity field (∂v/∂x - ∂u/∂y)
-//===================================================================
-double** ncdfOverlayFactory::BuildVorticityGrid(double** uGrid, double** vGrid, int nj, int ni)
-{
-    if (!uGrid || !vGrid || ni < 3 || nj < 3) return NULL;
-    double** out = new(std::nothrow) double*[nj];
-    if (!out) return NULL;
-    for (int j = 0; j < nj; j++) {
-        out[j] = new(std::nothrow) double[ni];
-        if (!out[j]) { for (int k = 0; k < j; k++) delete[] out[k]; delete[] out; return NULL; }
-    }
-    for (int j = 0; j < nj; j++) {
-        for (int i = 0; i < ni; i++) {
-            if (uGrid[j][i] == ncdf_NOTDEF || vGrid[j][i] == ncdf_NOTDEF ||
-                j == 0 || j == nj-1 || i == 0 || i == ni-1) {
-                out[j][i] = 0;
-                continue;
-            }
-            double dVdx = vGrid[j][i+1] - vGrid[j][i-1];
-            double dUdy = uGrid[j+1][i] - uGrid[j-1][i];
-            out[j][i] = dVdx - dUdy;
-        }
-    }
-    return out;
-}
-
-//===================================================================
-// Guided Anisotropic Diffusion (Perona-Malik, edge-preserving)
-//===================================================================
-double** ncdfOverlayFactory::BuildAnisoDiffusedGrid(double** grid, int nj, int ni)
-{
-    if (!grid || ni < 3 || nj < 3) return NULL;
-
-    // Allocate two buffers and 4 coefficient arrays (one per direction)
-    double** bufA = new(std::nothrow) double*[nj];
-    double** bufB = new(std::nothrow) double*[nj];
-    float* cN = new(std::nothrow) float[nj * ni];
-    float* cS = new(std::nothrow) float[nj * ni];
-    float* cW = new(std::nothrow) float[nj * ni];
-    float* cE = new(std::nothrow) float[nj * ni];
-    if (!bufA || !bufB || !cN || !cS || !cW || !cE) {
-        delete[] bufA; delete[] bufB; delete[] cN; delete[] cS; delete[] cW; delete[] cE;
-        return NULL;
-    }
-    for (int j = 0; j < nj; j++) {
-        bufA[j] = new(std::nothrow) double[ni];
-        bufB[j] = new(std::nothrow) double[ni];
-        if (!bufA[j] || !bufB[j]) {
-            for (int k = 0; k <= j; k++) { delete[] bufA[k]; delete[] bufB[k]; }
-            delete[] bufA; delete[] bufB; delete[] cN; delete[] cS; delete[] cW; delete[] cE;
-            return NULL;
-        }
-    }
-
-    // Copy original data
-    for (int j = 0; j < nj; j++)
-        for (int i = 0; i < ni; i++)
-            bufA[j][i] = grid[j][i];
-
-    // Compute k from data range
-    double dMin = 1e30, dMax = -1e30;
-    for (int j = 0; j < nj; j++)
-        for (int i = 0; i < ni; i++) {
-            double v = grid[j][i];
-            if (v != ncdf_NOTDEF && v == v && isfinite(v)) {
-                if (v < dMin) dMin = v;
-                if (v > dMax) dMax = v;
-            }
-        }
-    double k = (dMax - dMin) * 0.1;
-    if (k < 1e-10) k = 1.0;
-    double invK2 = 1.0 / (k * k);
-    double lambda = 0.2;
-
-    // Pre-compute diffusion coefficients from original data (guided)
-    for (int j = 0; j < nj; j++) {
-        for (int i = 0; i < ni; i++) {
-            int idx = j * ni + i;
-            double v = grid[j][i];
-            if (v == ncdf_NOTDEF || v != v || !isfinite(v) ||
-                j == 0 || j == nj-1 || i == 0 || i == ni-1) {
-                cN[idx] = cS[idx] = cW[idx] = cE[idx] = 0.0f;
-                continue;
-            }
-            double vn = grid[j-1][i], vs = grid[j+1][i];
-            double vw = grid[j][i-1], ve = grid[j][i+1];
-            if (vn == ncdf_NOTDEF || vs == ncdf_NOTDEF ||
-                vw == ncdf_NOTDEF || ve == ncdf_NOTDEF) {
-                cN[idx] = cS[idx] = cW[idx] = cE[idx] = 0.0f;
-                continue;
-            }
-            double dn = vn - v, ds = vs - v, dw = vw - v, de = ve - v;
-            cN[idx] = (float)exp(-dn * dn * invK2);
-            cS[idx] = (float)exp(-ds * ds * invK2);
-            cW[idx] = (float)exp(-dw * dw * invK2);
-            cE[idx] = (float)exp(-de * de * invK2);
-        }
-    }
-
-    // Iterate: coefficients are fixed (guided), only values change
-    const int ITERATIONS = 5;
-    for (int iter = 0; iter < ITERATIONS; iter++) {
-        double** src = (iter % 2 == 0) ? bufA : bufB;
-        double** dst = (iter % 2 == 0) ? bufB : bufA;
-
-        for (int j = 1; j < nj - 1; j++) {
-            for (int i = 1; i < ni - 1; i++) {
-                int idx = j * ni + i;
-                if (cN[idx] == 0.0f && cS[idx] == 0.0f &&
-                    cW[idx] == 0.0f && cE[idx] == 0.0f) {
-                    dst[j][i] = src[j][i];
-                    continue;
-                }
-                double v = src[j][i];
-                dst[j][i] = v + lambda * (
-                    cN[idx] * (src[j-1][i] - v) +
-                    cS[idx] * (src[j+1][i] - v) +
-                    cW[idx] * (src[j][i-1] - v) +
-                    cE[idx] * (src[j][i+1] - v));
-            }
-        }
-        // Copy borders
-        for (int i = 0; i < ni; i++) { dst[0][i] = src[0][i]; dst[nj-1][i] = src[nj-1][i]; }
-        for (int j = 0; j < nj; j++) { dst[j][0] = src[j][0]; dst[j][ni-1] = src[j][ni-1]; }
-    }
-
-    // Result is in the buffer that was last written to
-    double** result = (ITERATIONS % 2 == 0) ? bufA : bufB;
-    double** other  = (ITERATIONS % 2 == 0) ? bufB : bufA;
-    for (int j = 0; j < nj; j++) delete[] other[j];
-    delete[] other;
-    delete[] cN; delete[] cS; delete[] cW; delete[] cE;
-
-    return result;
-}
-
-//===================================================================
 // Line Integral Convolution (LIC) for current vector field
 //===================================================================
-void ncdfOverlayFactory::DeleteLICTexture()
-{
-    if (m_bHasLICTexture && m_glLICTexture) {
-        glDeleteTextures(1, &m_glLICTexture);
-        m_glLICTexture = 0;
-        m_bHasLICTexture = false;
-    }
-}
-
-void ncdfOverlayFactory::BuildLICTexture(int ni, int nj)
-{
-    if (!gui || !gui->myMessage.hasCurrent() || ni < 3 || nj < 3) return;
-
-    // Generate float noise field (padded)
-    const int STEPS = 40;
-    const float STEPSIZE = 0.002f;  // step in normalized texture space
-    int pad = 20;
-    int padW = ni + 2 * pad;
-    int padH = nj + 2 * pad;
-    float* noiseField = new(std::nothrow) float[padH * padW];
-    if (!noiseField) return;
-    srand(42);
-    for (int k = 0; k < padH * padW; k++) noiseField[k] = (float)rand() / RAND_MAX;
-
-    unsigned char* licData = new(std::nothrow) unsigned char[ni * nj * 4];
-    if (!licData) { delete[] noiseField; return; }
-
-    // Access vector field directly from message (no intermediate grid needed)
-
-    // Normalize vector field to [-1, 1] texture space
-    double maxSpeed = 0;
-    for (int j = 0; j < nj; j++)
-        for (int i = 0; i < ni; i++) {
-            double uval = gui->myMessage.getU(i, j);
-            double vval = gui->myMessage.getV(i, j);
-            if (uval == ncdf_NOTDEF || vval == ncdf_NOTDEF) continue;
-            double sp = sqrt(uval*uval + vval*vval);
-            if (maxSpeed < sp) maxSpeed = sp;
-        }
-    if (maxSpeed < 1e-10) maxSpeed = 1.0;
-
-    // Helper: bilinear noise lookup in padded field
-    // coord in normalized [0,1] → padded field index
-    auto sampleNoise = [&](float u, float v) -> float {
-        // Map [0,1] to padded grid coordinates
-        float px = u * (ni - 1) + pad;
-        float py = v * (nj - 1) + pad;
-        int xi = (int)px, yi = (int)py;
-        if (xi < 0) xi = 0; if (xi >= padW - 1) xi = padW - 2;
-        if (yi < 0) yi = 0; if (yi >= padH - 1) yi = padH - 2;
-        float fx = px - xi, fy = py - yi;
-        return (1-fx)*(1-fy)*noiseField[yi*padW + xi]
-             + fx*(1-fy)*noiseField[yi*padW + xi+1]
-             + (1-fx)*fy*noiseField[(yi+1)*padW + xi]
-             + fx*fy*noiseField[(yi+1)*padW + xi+1];
-    };
-
-    // Helper: bilinear vector field lookup
-    auto sampleVector = [&](float u, float v, float& outU, float& outV) -> bool {
-        float px = u * (ni - 1);
-        float py = v * (nj - 1);
-        int xi = (int)px, yi = (int)py;
-        if (xi < 0 || xi >= ni - 1 || yi < 0 || yi >= nj - 1) return false;
-        float fx = px - xi, fy = py - yi;
-        double uu = (1-fx)*(1-fy)*gui->myMessage.getU(xi, yi) + fx*(1-fy)*gui->myMessage.getU(xi+1, yi)
-                   + (1-fx)*fy*gui->myMessage.getU(xi, yi+1) + fx*fy*gui->myMessage.getU(xi+1, yi+1);
-        double vv = (1-fx)*(1-fy)*gui->myMessage.getV(xi, yi) + fx*(1-fy)*gui->myMessage.getV(xi+1, yi)
-                   + (1-fx)*fy*gui->myMessage.getV(xi, yi+1) + fx*fy*gui->myMessage.getV(xi+1, yi+1);
-        if (uu == ncdf_NOTDEF || vv == ncdf_NOTDEF) return false;
-        outU = (float)(uu / maxSpeed);
-        outV = (float)(vv / maxSpeed);
-        return true;
-    };
-
-    for (int j = 0; j < nj; j++) {
-        for (int i = 0; i < ni; i++) {
-            int off = (j * ni + i) * 4;
-
-            // Land: white (no modulation)
-            if (gui->myMessage.getU(i, j) == ncdf_NOTDEF || gui->myMessage.getV(i, j) == ncdf_NOTDEF) {
-                licData[off] = licData[off+1] = licData[off+2] = 255;
-                licData[off+3] = 255;
-                continue;
-            }
-
-            // Start at this pixel's normalized position
-            float u0 = (float)i / (ni - 1);
-            float v0 = (float)j / (nj - 1);
-
-            float runningTotal = 0.0f;
-            int sampleCount = 0;
-
-            // Trace forward
-            float cu = u0, cv = v0;
-            for (int s = 0; s < STEPS; s++) {
-                float vu, vv;
-                if (!sampleVector(cu, cv, vu, vv)) break;
-                cu += vu * STEPSIZE;
-                cv += vv * STEPSIZE;
-                if (cu < 0 || cu > 1 || cv < 0 || cv > 1) break;
-                runningTotal += sampleNoise(cu, cv);
-                sampleCount++;
-            }
-
-            // Trace backward
-            cu = u0; cv = v0;
-            for (int s = 0; s < STEPS; s++) {
-                float vu, vv;
-                if (!sampleVector(cu, cv, vu, vv)) break;
-                cu -= vu * STEPSIZE;
-                cv -= vv * STEPSIZE;
-                if (cu < 0 || cu > 1 || cv < 0 || cv > 1) break;
-                runningTotal += sampleNoise(cu, cv);
-                sampleCount++;
-            }
-
-            // Average (exclude center pixel, like reference implementation)
-            float avgValue = (sampleCount > 0) ? runningTotal / sampleCount : 0.5f;
-
-            // Brightness: 0.3 (dark) to 1.0 (white)
-            float brightness = 0.3f + 0.7f * avgValue;
-            unsigned char bri = (unsigned char)(brightness * 255.0f);
-            licData[off] = licData[off+1] = licData[off+2] = bri;
-            licData[off+3] = 255;
-        }
-    }
-
-    delete[] noiseField;
-
-    DeleteLICTexture();
-    glGenTextures(1, &m_glLICTexture);
-    glBindTexture(GL_TEXTURE_2D, m_glLICTexture);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, ni, nj, 0, GL_RGBA, GL_UNSIGNED_BYTE, licData);
-    m_bHasLICTexture = true;
-    m_bNeedsLICRebuild = false;
-
-    delete[] licData;
-}
-
-
 wxColour ncdfOverlayFactory::GetSeaCurrentGraphicColor(double val_in)
 {
     static const double stops[][4] = {

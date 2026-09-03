@@ -6,6 +6,7 @@
 #endif
 #include <GL/gl.h>
 #include "ncdf.h"
+#include <memory>
 
 class MainDialog;
 class ncdf_pi;
@@ -18,6 +19,7 @@ struct CurrentOverlay {
     GLuint glTexture;
     bool hasTexture;
     bool needsRebuild;
+    bool dataReady;  // true after prepareData completes (data is in cached grids/coefficients)
     int dataDim[2];
     int glDim[2];
 
@@ -25,42 +27,71 @@ struct CurrentOverlay {
     GLuint lutID;
     bool hasLUT;
 
+    // Physical value texture for bilinear fallback (vector mode only)
+    GLuint physicalTexID;
+    bool hasPhysicalTex;
+
     // Persistent upload buffer
     unsigned char *uploadBuf;
     int uploadBufSize;
 
-    // Cached processed grid (sharpened / diffused)
-    double **cachedGrid;
     int cachedNj, cachedNi;
-    bool cachedOwns;
+
+    // Cached U/V grids for vector mode (float, avoid per-frame rebuild)
+    float **cachedU, **cachedV;
+    int cachedUNj, cachedVNi;
+
+    // Cached B-spline coefficients for vector mode (computed once per data change)
+    float *cachedCoeffU, *cachedCoeffV;
+    float cachedCoefU_min, cachedCoefU_max, cachedCoefV_min, cachedCoefV_max;
+    int cachedCoeffNj, cachedCoeffNi;
 
     // Cached data range (computed during rebuild, not every frame)
     float cachedDataMin, cachedDataMax;
+    float cachedDataMinV, cachedDataMaxV;  // V component range (vector only)
+    // Cached coefficient range (set by RenderGridOverlay during texture creation)
+    float cachedCoefMin, cachedCoefMax;
+    // Cached physical value range (for shader bilinear fallback)
+    float cachedPhysMin, cachedPhysMax;
+    float cachedPhysMinV, cachedPhysMaxV;  // V component range (vector only)
 
-    // Vorticity grid for slope shading
-    double **cachedVorticity;
-    int vortNj, vortNi;
-    GLuint vortTexture;
-    bool hasVortTexture;
-    GLuint slopeSource;
+    // Grid data flag: true after prepareGrid fills the grid with actual data
+    bool gridReady = false;
 
-    // LIC texture
-    GLuint licTexture;
-    bool hasLICTexture;
-    bool needsLICRebuild;
+    // Pre-allocated float buffers for animation (avoid per-frame double→float conversion)
+    float **m_animUF, **m_animVF;
+    int m_animNi, m_animNj;
+
+    // Cached B-spline coefficients from SOURCE data for animation (computed once, reused every frame)
+    float *m_animCoeffU, *m_animCoeffV;
+    float m_animCoefU_min, m_animCoefU_max, m_animCoefV_min, m_animCoefV_max;
+    bool m_animCoeffReady;
 
     void Init();
     void Cleanup();
+    void clearCache();           // Free CPU caches + derived GPU textures
+    void clearCoefficients();    // Free B-spline coefficients only, preserve grids (same-file switch)
+    void prepareGrid(MainDialog *gui);   // Convert myMessage data to float grids (no coefficients)
+    void prepareCoeff(ncdfOverlayFactory *factory);  // Compute B-spline coefficients from grids
+    void releaseCoeffData();     // Free coefficient data after texture upload (keep grid capacity)
+    void ensureGridAllocated(int ni, int nj);  // Pre-allocate grid structures if needed
+    void ensureAnimBuffers(int ni, int nj);    // Pre-allocate float** buffers for animation
+    void freeAnimBuffers();                     // Free animation float buffers
+    void computeAnimCoefficients(ncdfOverlayFactory *factory);  // Compute B-spline coeffs from source data (once)
+    ~CurrentOverlay() { Cleanup(); }
     void Invalidate();
+    void prepareData(MainDialog *gui, ncdf_pi *plugin, ncdfOverlayFactory *factory);  // Precompute grids + coefficients
 
     // Render the current color map overlay
-    // Returns true if something was rendered
+    // animatedGrid: if non-NULL, use this as speed grid (scalar mode for animation)
+    // animUGrid/animVGrid: if non-NULL, use vector mode with these u/v grids
     bool RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_pi *plugin,
                         ncdfOverlayFactory *factory,
-                        bool useShader, int interpMode);
+                        double** animatedGrid = NULL,
+                        double** animUGrid = NULL,
+                        double** animVGrid = NULL);
 
     // Color function (static for use as function pointer)
-    static bool s_smoothColors;  // set by RenderColorMap before drawing
     static wxColour GetColor(double val_in);
 };
 

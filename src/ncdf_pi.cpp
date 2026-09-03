@@ -41,6 +41,8 @@
 #include "ncdf_pi.h"
 #include "ncdf.h"
 
+extern void ncdfLog(const char* format, ...);
+
 // Crash dump handler — generates minidump on access violation
 #include <dbghelp.h>
 #pragma comment(lib, "dbghelp.lib")
@@ -304,6 +306,14 @@ bool ncdf_pi::RenderGLOverlay(wxGLContext *pcontext, PlugIn_ViewPort *vp)
 		return true;
 	}
 
+	static int s_glDbg = 0;
+	if (s_glDbg < 10) {
+		ncdfLog("[render] RenderGLOverlay: dialog=%p factory=%p ready=%d\n",
+			(void*)m_pncdfDialog, (void*)m_pncdfOverlayFactory,
+			m_pncdfOverlayFactory ? (int)m_pncdfOverlayFactory->isReadyToRender() : -1);
+		s_glDbg++;
+	}
+
 	if (m_pncdfDialog && m_pncdfOverlayFactory)
 	{
 		if (m_pncdfOverlayFactory->isReadyToRender())
@@ -384,27 +394,8 @@ bool ncdf_pi::LoadConfig(void)
             pConf->Read ( _T( "ShowSeaTemp" ), &m_bShowSeaTemp, 0 );
             pConf->Read ( _T( "ShowSeaTempIso" ), &m_bShowSeaTempIso, 0 );
             pConf->Read ( _T( "ShowSalinity" ), &m_bShowSalinity, 0 );
-            pConf->Read ( _T( "CurrentInterpMode" ), &m_settingsCurrent.interpMode, 0 );
-            pConf->Read ( _T( "CurrentSmooth" ), &m_settingsCurrent.smoothColors, 0 );
-            pConf->Read ( _T( "CurrentSharpen" ), &m_settingsCurrent.sharpen, 0 );
-            pConf->Read ( _T( "CurrentAnisoDiff" ), &m_settingsCurrent.anisoDiffusion, 0 );
-            pConf->Read ( _T( "CurrentSCurve" ), &m_settingsCurrent.sCurve, 0 );
-            pConf->Read ( _T( "CurrentSlope" ), &m_settingsCurrent.slopeShading, 0 );
-            pConf->Read ( _T( "CurrentLIC" ), &m_settingsCurrent.licFlow, 0 );
             pConf->Read ( _T( "Animate" ), &m_settingsCurrent.animate, 0 );
-            pConf->Read ( _T( "SeaTempInterpMode" ), &m_settingsSeaTemp.interpMode, 0 );
-            pConf->Read ( _T( "SeaTempSmooth" ), &m_settingsSeaTemp.smoothColors, 0 );
-            pConf->Read ( _T( "SeaTempSharpen" ), &m_settingsSeaTemp.sharpen, 0 );
-            pConf->Read ( _T( "SeaTempAnisoDiff" ), &m_settingsSeaTemp.anisoDiffusion, 0 );
-            pConf->Read ( _T( "SeaTempSCurve" ), &m_settingsSeaTemp.sCurve, 0 );
-            pConf->Read ( _T( "SeaTempSlope" ), &m_settingsSeaTemp.slopeShading, 0 );
             pConf->Read ( _T( "SeaTempIso" ), &m_settingsSeaTemp.showIsoLines, 0 );
-            pConf->Read ( _T( "SalinityInterpMode" ), &m_settingsSalinity.interpMode, 0 );
-            pConf->Read ( _T( "SalinitySmooth" ), &m_settingsSalinity.smoothColors, 0 );
-            pConf->Read ( _T( "SalinitySharpen" ), &m_settingsSalinity.sharpen, 0 );
-            pConf->Read ( _T( "SalinityAnisoDiff" ), &m_settingsSalinity.anisoDiffusion, 0 );
-            pConf->Read ( _T( "SalinitySCurve" ), &m_settingsSalinity.sCurve, 0 );
-            pConf->Read ( _T( "SalinitySlope" ), &m_settingsSalinity.slopeShading, 0 );
             pConf->Read ( _T( "SalinityIso" ), &m_settingsSalinity.showIsoLines, 0 );
             pConf->Read ( _T( "ParticleDensity" ), &m_iParticleDensity, 5 );
 
@@ -447,27 +438,8 @@ bool ncdf_pi::SaveConfig(void)
             pConf->Write ( _T ( "ShowSeaTemp" ), m_bShowSeaTemp );
             pConf->Write ( _T ( "ShowSeaTempIso" ), m_bShowSeaTempIso );
             pConf->Write ( _T ( "ShowSalinity" ), m_bShowSalinity );
-            pConf->Write ( _T ( "CurrentInterpMode" ), m_settingsCurrent.interpMode );
-            pConf->Write ( _T ( "CurrentSmooth" ), m_settingsCurrent.smoothColors );
-            pConf->Write ( _T ( "CurrentSharpen" ), m_settingsCurrent.sharpen );
-            pConf->Write ( _T ( "CurrentAnisoDiff" ), m_settingsCurrent.anisoDiffusion );
-            pConf->Write ( _T ( "CurrentSCurve" ), m_settingsCurrent.sCurve );
-            pConf->Write ( _T ( "CurrentSlope" ), m_settingsCurrent.slopeShading );
-            pConf->Write ( _T ( "CurrentLIC" ), m_settingsCurrent.licFlow );
             pConf->Write ( _T ( "Animate" ), m_settingsCurrent.animate );
-            pConf->Write ( _T ( "SeaTempInterpMode" ), m_settingsSeaTemp.interpMode );
-            pConf->Write ( _T ( "SeaTempSmooth" ), m_settingsSeaTemp.smoothColors );
-            pConf->Write ( _T ( "SeaTempSharpen" ), m_settingsSeaTemp.sharpen );
-            pConf->Write ( _T ( "SeaTempAnisoDiff" ), m_settingsSeaTemp.anisoDiffusion );
-            pConf->Write ( _T ( "SeaTempSCurve" ), m_settingsSeaTemp.sCurve );
-            pConf->Write ( _T ( "SeaTempSlope" ), m_settingsSeaTemp.slopeShading );
             pConf->Write ( _T ( "SeaTempIso" ), m_settingsSeaTemp.showIsoLines );
-            pConf->Write ( _T ( "SalinityInterpMode" ), m_settingsSalinity.interpMode );
-            pConf->Write ( _T ( "SalinitySmooth" ), m_settingsSalinity.smoothColors );
-            pConf->Write ( _T ( "SalinitySharpen" ), m_settingsSalinity.sharpen );
-            pConf->Write ( _T ( "SalinityAnisoDiff" ), m_settingsSalinity.anisoDiffusion );
-            pConf->Write ( _T ( "SalinitySCurve" ), m_settingsSalinity.sCurve );
-            pConf->Write ( _T ( "SalinitySlope" ), m_settingsSalinity.slopeShading );
             pConf->Write ( _T ( "SalinityIso" ), m_settingsSalinity.showIsoLines );
             pConf->Write ( _T ( "ParticleDensity" ), m_iParticleDensity );
 

@@ -104,16 +104,9 @@ public:
       bool              m_bShowSalinity;
       // Per-data-type rendering settings
       struct InterpSettings {
-          int  interpMode;      // 0=linear scalar, 1=bicubic, 2=monotone bicubic
-          bool smoothColors;
-          bool sharpen;
-          bool anisoDiffusion;  // guided anisotropic diffusion (edge-preserving)
-          bool sCurve;          // S-curve color mapping
-          bool slopeShading;    // gradient-based slope shading
-          bool licFlow;         // line integral convolution (current only)
           bool showIsoLines;    // isolines (SST/salinity)
-          bool animate;         // flow-field animation (global, shared across types)
-          InterpSettings() : interpMode(0), smoothColors(false), sharpen(false), anisoDiffusion(false), sCurve(false), slopeShading(false), licFlow(false), showIsoLines(false), animate(false) {}
+          bool animate;         // flow-field animation
+          InterpSettings() : showIsoLines(false), animate(false) {}
       };
       InterpSettings m_settingsCurrent;
       InterpSettings m_settingsSeaTemp;

@@ -25,7 +25,7 @@ bool PointInLLBox(PlugIn_ViewPort *vp, double x, double y)
 
 void ncdfOverlayFactory::RenderncdfCurrent()
 {
-    if (!gui || !gui->myMessage.hasCurrent()) return;
+    if (!gui || !m_currentOverlay.cachedU || !m_currentOverlay.cachedV) return;
     int ni = gui->myMessage.lonLength;
     int nj = gui->myMessage.latLength;
     if (ni < 2 || nj < 2) return;
@@ -71,9 +71,14 @@ void ncdfOverlayFactory::RenderncdfCurrent()
             while (nlon > 180.0) nlon -= 360.0;
             while (nlon < -180.0) nlon += 360.0;
             double vx, vy;
-            if (!gui->myMessage.getInterpolatedUV(gui->myMessage, nlon, lat, vx, vy))
+            if (!gui->myMessage.getInterpolatedUVFloat(m_currentOverlay.cachedU, m_currentOverlay.cachedV,
+                    ni, nj,
+                    gui->myMessage.firstGridPointLat, gui->myMessage.lastGridPointLat,
+                    gui->myMessage.firstGridPointLong, gui->myMessage.lastGridPointLong,
+                    gui->myMessage.iDirectionIncr, gui->myMessage.jDirectionIncr,
+                    nlon, lat, vx, vy))
                 continue;
-            if (vx == ncdf_NOTDEF || vy == ncdf_NOTDEF || !isfinite(vx) || !isfinite(vy)) continue;
+            if (!isfinite(vx) || !isfinite(vy)) continue;
             double mag = sqrt(vx * vx + vy * vy);
             if (mag < 0.01) continue;
             wxPoint p;
@@ -131,7 +136,7 @@ bool ncdfOverlayFactory::RenderncdfCurrentBmp()
 					  }
 
 					  //    This could take a while....
-			      if (gui->myMessage.ucurr.empty() || gui->myMessage.vcurr.empty()){
+			      if (!m_currentOverlay.cachedU || !m_currentOverlay.cachedV){
 					  return false;
 				  }
                               wxImage gr_image(width, height);
@@ -155,8 +160,8 @@ bool ncdfOverlayFactory::RenderncdfCurrentBmp()
                                           GetCanvasLLPix( vp, p, &lat, &lon);
 
 					                if(!PointInLLBox(vp, lon, lat) && !PointInLLBox(vp, lon-360.0, lat)) continue;
-									double vx = gui->myMessage.getInterpolatedValue(gui->myMessage, gui->myMessage.ucurr.data(), lon, lat, true);
-									double vy = gui->myMessage.getInterpolatedValue(gui->myMessage, gui->myMessage.vcurr.data(), lon, lat, true);
+									double vx, vy;
+							if (!gui->myMessage.getInterpolatedUVFloat(m_currentOverlay.cachedU, m_currentOverlay.cachedV, (int)gui->myMessage.lonLength, (int)gui->myMessage.latLength, gui->myMessage.firstGridPointLat, gui->myMessage.lastGridPointLat, gui->myMessage.firstGridPointLong, gui->myMessage.lastGridPointLong, gui->myMessage.iDirectionIncr, gui->myMessage.jDirectionIncr, lon, lat, vx, vy)) { vx = vy = ncdf_NOTDEF; }
 
                                           if ((vx != ncdf_NOTDEF) && (vy != ncdf_NOTDEF))
                                           {

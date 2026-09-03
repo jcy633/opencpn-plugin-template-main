@@ -67,13 +67,20 @@ public:
             ~ncdfOverlayFactory();
 
 			void setData(MainDialog *gui, ncdf_pi *plugin, const ncdfDataMessage& g2data, int numberOfPoints, wxDouble tlat, wxDouble tlon, wxDouble blat, wxDouble blon);
+			bool isInitialized() const { return gui != NULL; }
      void reset();
+     void prepareAllOverlays();  // Precompute grids + B-spline coefficients for all data types
+     void prepareAllGrids();     // Convert myMessage data to float grids only (no coefficients)
+     void updateTimeStep();      // Same-file time step switch: invalidate without destroying grid caches
      void setSelectionRectangle(Selection *rect);
      bool isReadyToRender(){ return m_bReadyToRender; }
      void clearBmp();
 	 bool RenderGLncdfOverlay(wxGLContext *pcontext, PlugIn_ViewPort *vp);
 	 bool RenderncdfOverlay(wxDC &dc, PlugIn_ViewPort *vp);
 	 bool DoRenderncdfOverlay(PlugIn_ViewPort *vp);
+	 void RenderCurrentOverlay(PlugIn_ViewPort *vp, double **animGrid, double **animUGrid, double **animVGrid);
+	 void RenderSeaTempOverlay(PlugIn_ViewPort *vp, double **animGrid);
+	 void RenderSalinityOverlay(PlugIn_ViewPort *vp, double **animGrid);
 	 void SetBicubicMode(bool enable);
 	 ncdfAnimate m_animate;
 	 CurrentOverlay m_currentOverlay;
@@ -130,21 +137,72 @@ public:
 
      // Per-call shader settings (passed by each overlay type)
      struct RenderSettings {
-         bool useShader;
-         int interpMode;
-         bool smoothColors;
-         bool sCurve;
-         bool slopeShading;
          float dataMin, dataMax;
-         int slopeMode;
+         float dataMinV, dataMaxV;
+         float lutMin, lutMax;
+         float physMin, physMax;
+         float physMinV, physMaxV;
+         bool vectorMode;
+         bool animateMode;
+         float** uGrid;
+         float** vGrid;
+         // Pre-computed B-spline coefficients (skip prefilter if provided)
+         float *precompCoeffU, *precompCoeffV;
+         float precompCoefU_min, precompCoefU_max;
+         float precompCoefV_min, precompCoefV_max;
+         // Pre-computed scalar B-spline coefficients (skip prefilter if provided)
+         float *precompScalarCoeff;
+         float precompScalarCoefMin, precompScalarCoefMax;
+         float precompScalarPhysMin, precompScalarPhysMax;
+         RenderSettings() :
+             dataMin(0), dataMax(1), dataMinV(0), dataMaxV(1),
+             lutMin(0), lutMax(1), physMin(0), physMax(1), physMinV(0), physMaxV(1),
+             vectorMode(false), animateMode(false), uGrid(NULL), vGrid(NULL),
+             precompCoeffU(NULL), precompCoeffV(NULL),
+             precompCoefU_min(0), precompCoefU_max(1),
+             precompCoefV_min(0), precompCoefV_max(1),
+             precompScalarCoeff(NULL), precompScalarCoefMin(0), precompScalarCoefMax(1),
+             precompScalarPhysMin(0), precompScalarPhysMax(1) {}
      };
+
+     // Shared scalar overlay rendering (used by SeaTemp and Salinity)
+     struct ScalarOverlayState {
+         GLuint *p_glTexture; bool *p_hasTexture; bool *p_needsRebuild;
+         int *p_dataDim; int *p_glDim;
+         GLuint *p_lutID; bool *p_hasLUT;
+         unsigned char **p_uploadBuf; int *p_uploadBufSize;
+         std::unique_ptr<float*[]> *p_cachedBaseGrid;  // raw data grid (float), freed after first texture build
+         int *p_cachedNj, *p_cachedNi;
+         float *p_cachedDataMin, *p_cachedDataMax;
+         float *p_cachedCoefMin, *p_cachedCoefMax;
+         float *p_cachedPhysMin, *p_cachedPhysMax;
+         float *p_cachedPhysMinV, *p_cachedPhysMaxV;
+         // B-spline coefficient cache (computed once per data change)
+         float **p_cachedCoeff;
+         float *p_cachedCoefScalarMin, *p_cachedCoefScalarMax;
+         float *p_cachedPhysScalarMin, *p_cachedPhysScalarMax;
+         int *p_cachedCoeffNj, *p_cachedCoeffNi;
+     };
+     bool RenderScalarColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_pi *plugin,
+                               ScalarOverlayState &state,
+                               ColorFunc colorFunc, float lutMin, float lutMax,
+                               bool (*hasData)(MainDialog&),
+                               void (*fillGrid)(MainDialog&, std::unique_ptr<double*[]>&, int, int),
+                               double** animatedGrid = NULL);
 
      // Shared color interpolation with optional smoothstep
      static wxColour InterpolateStops(const double stops[][4], int nStops, double val, bool smooth);
-     static double** BuildSharpenedGrid(double** grid, int nj, int ni);
-     static double** BuildAnisoDiffusedGrid(double** grid, int nj, int ni);
-     static double** BuildVorticityGrid(double** uGrid, double** vGrid, int nj, int ni);
-     static void FreeSharpenedGrid(double** grid, int nj);
+     // B-spline prefilter wrapper for overlay use
+     static void PrefilterCoefficients(float* coeffU, float* coeffV,
+                                        float** uGrid, float** vGrid,
+                                        int ni, int nj, bool isGlobal,
+                                        float &coefU_min, float &coefU_max,
+                                        float &coefV_min, float &coefV_max);
+     // Scalar overload: single-channel B-spline prefilter (for SST, Salinity)
+     static void PrefilterScalarCoefficients(float* coeff, float** grid,
+                                              int ni, int nj, bool isGlobal,
+                                              float &coefMin, float &coefMax,
+                                              float physMin, float physMax);
      static void DrawIsoLines(PlugIn_ViewPort *vp,
                               double **grid, int ni, int nj,
                               bool &needsRebuild,
@@ -152,15 +210,14 @@ public:
                               double tlat, double tlon, double blat, double blon,
                               double jDirectionIncr);
      void RenderGridOverlay(PlugIn_ViewPort *vp,
-                            double **grid,
+                            float **grid,
                             ColorFunc colorFunc,
-                            const RenderSettings &settings,
+                            RenderSettings &settings,
                             GLuint &texID, bool &hasTex, bool &needsRebuild,
                             int dataDim[2], int glDim[2],
                             GLuint &lutID, bool &hasLUT,
                             unsigned char *&uploadBuf, int &uploadBufSize,
-                            double **slopeGrid = NULL,
-                            GLuint slopeTexID = 0);
+                            GLuint *physicalTexID = NULL, bool *hasPhysicalTex = NULL);
 
      PlugIn_ViewPort 	*vp;
 	 bool 		m_bReadyToRender;
@@ -175,6 +232,8 @@ private:
      MainDialog		*gui;
      ncdf_pi        *plugin;
      double 		m_last_vp_scale;
+
+public:
      wxDouble		tlon,tlat,blon,blat;
      wxDouble		incrLon, incrLat;
      wxUint32		sectors, latSectors, lonSectors;
@@ -213,19 +272,10 @@ private:
 	 void ClearParticles();
 	 void RenderParticles(PlugIn_ViewPort *vp);
 
-	 // Shader bicubic interpolation (optional, auto-fallback to fixed pipeline)
-	 bool m_useShader;
+	 // Current rendering state
 	 int  m_currentInterpMode;
-	 bool m_currentSmoothColors;
-	 bool m_currentSCurve;
-	 bool m_currentSlopeShading;
 	 float m_currentDataMin;
 	 float m_currentDataMax;
-	 int m_currentSlopeMode;
-	 GLuint m_glVortTexture;  // normalized vorticity texture for shader slope
-	 bool m_bHasVortTexture;
-	 GLuint m_glSlopeSource;  // texture ID bound to slopeTex uniform
-
 	 // Color legend
 	 ncdfLegend m_legend;
 
@@ -245,16 +295,12 @@ private:
 	 int m_animSalTexDataDim[2];
 	 int m_animSalTexGLDim[2];
 
-	 // Cached vorticity grid for current slope shading
-	 double** m_cachedVorticity;
-	 int m_cachedVortNj, m_cachedVortNi;
+	 // Animation blit buffer (for glDrawPixels)
+	 unsigned char *m_animBlitBuf = nullptr;
+	 int m_animBlitBufSize = 0;
 
-	 // LIC texture cache (current only)
-	 GLuint m_glLICTexture;
-	 bool m_bHasLICTexture;
-	 bool m_bNeedsLICRebuild;
-	 void DeleteLICTexture();
-	 void BuildLICTexture(int ni, int nj);
+	 // Draw a pre-built texture to the map using tile-based geographic projection
+	 void DrawAnimOverlay(PlugIn_ViewPort *vp, MainDialog *gui, GLuint texID, int texW, int texH);
 };
 
 

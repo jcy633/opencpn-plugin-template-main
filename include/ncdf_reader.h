@@ -4,6 +4,7 @@
 #include <wx/wx.h>
 #include <vector>
 #include <cstring>
+#include <memory>
 
 #ifndef ncdf_NOTDEF
 #define ncdf_NOTDEF -999999999
@@ -11,6 +12,27 @@
 
 class MainDialog;
 class ncdfData;
+
+// Shared coordinate arrays — all time steps within a file share the same lat/lon/time data.
+// Lifetime is managed by shared_ptr; last ncdfDataMessage holding a reference frees the memory.
+struct SharedCoords {
+    wxDouble* latValues;
+    wxDouble* lonValues;
+    double* timeValues;
+    size_t latLength;
+    size_t lonLength;
+    size_t timeLength;
+    SharedCoords() : latValues(NULL), lonValues(NULL), timeValues(NULL),
+        latLength(0), lonLength(0), timeLength(0) {}
+    ~SharedCoords() {
+        if (latValues) { free(latValues); latValues = NULL; }
+        if (lonValues) { free(lonValues); lonValues = NULL; }
+        if (timeValues) { free(timeValues); timeValues = NULL; }
+    }
+private:
+    SharedCoords(const SharedCoords&);
+    SharedCoords& operator=(const SharedCoords&);
+};
 
 class ncdfDataMessage
 {
@@ -53,12 +75,30 @@ public:
 		hasSalinity = false;
 	}
 
-	// Clear everything including coordinate arrays (for destructor/file switch)
+	// Clear everything including coordinate references (for destructor/file switch)
 	void clear() {
 		clearData();
-		if (latValues) { free(latValues); latValues = NULL; }
-		if (lonValues) { free(lonValues); lonValues = NULL; }
-		if (timeValues) { free(timeValues); timeValues = NULL; }
+		// sharedCoords manages lat/lon/time lifetime via shared_ptr.
+		// Reset raw pointer aliases to avoid dangling references.
+		sharedCoords.reset();
+		latValues = NULL;
+		lonValues = NULL;
+		timeValues = NULL;
+	}
+
+	// Swap data content from another message, reusing vector capacity.
+	// Keeps this object's lat/lon/time arrays intact (same-file time step switch).
+	void swapData(const ncdfDataMessage& src) {
+		ucurr = src.ucurr;       // vector::operator= reuses capacity when size matches
+		vcurr = src.vcurr;
+		sst = src.sst;
+		salinity = src.salinity;
+		hasSeaTemp = src.hasSeaTemp;
+		hasSalinity = src.hasSalinity;
+		timeIndex = src.timeIndex;
+		dataDateTime = src.dataDateTime;
+		minutesAfterStart = src.minutesAfterStart;
+		// lat/lon/time pointers and grid geometry stay unchanged
 	}
 
 	// Direct grid access — no intermediate 2D array needed
@@ -106,21 +146,13 @@ private:
 		timeIndex = other.timeIndex;
 		timeValid = other.timeValid;
 
-		// Coordinate arrays (deep copy, raw pointer)
-		if (other.latValues) {
-			latValues = (wxDouble*)calloc(latLength, sizeof(wxDouble));
-			memcpy(latValues, other.latValues, latLength * sizeof(wxDouble));
-		}
-		if (other.lonValues) {
-			lonValues = (wxDouble*)calloc(lonLength, sizeof(wxDouble));
-			memcpy(lonValues, other.lonValues, lonLength * sizeof(wxDouble));
-		}
-		if (other.timeValues) {
-			timeValues = (double*)calloc(timeLength, sizeof(double));
-			memcpy(timeValues, other.timeValues, timeLength * sizeof(double));
-		}
+		// Coordinate arrays: share ownership via shared_ptr (no deep copy)
+		sharedCoords = other.sharedCoords;
+		latValues = sharedCoords ? sharedCoords->latValues : NULL;
+		lonValues = sharedCoords ? sharedCoords->lonValues : NULL;
+		timeValues = sharedCoords ? sharedCoords->timeValues : NULL;
 
-		// Data arrays — vector assignment = deep copy, automatic memory management
+		// Data arrays — assign directly, avoid shrink_to_fit memory churn
 		ucurr = other.ucurr;
 		vcurr = other.vcurr;
 		sst = other.sst;
@@ -134,9 +166,24 @@ public:
 	double getInterpolatedValue(const ncdfDataMessage& msg, const double* data,
 	                            double px, double py, bool numericalInterpolation) const;
 
+	// Float version: bilinear interpolation from 2D float grid (row pointers)
+	double getInterpolatedValueFloat(float* const* grid, int ni, int nj,
+	                                 double firstLat, double lastLat,
+	                                 double firstLon, double lastLon,
+	                                 double iIncr, double jIncr,
+	                                 double px, double py) const;
+
 	// Joint UV interpolation — one boundary check, one index calc, Hermite smoothing
 	bool getInterpolatedUV(const ncdfDataMessage& msg, double px, double py,
 	                       double &uOut, double &vOut) const;
+
+	// Float version: joint UV interpolation from cached float grids
+	bool getInterpolatedUVFloat(float* const* uGrid, float* const* vGrid, int ni, int nj,
+	                            double firstLat, double lastLat,
+	                            double firstLon, double lastLon,
+	                            double iIncr, double jIncr,
+	                            double px, double py,
+	                            double &uOut, double &vOut) const;
 
 	bool isPointInMap(const ncdfDataMessage& g2message, double x, double y) const;
 	bool isXInMap(const ncdfDataMessage& g2message, double x) const;
@@ -167,6 +214,9 @@ public:
 	int			numberOfPoints;
 	wxString   fileName;
 
+	// Shared coordinate arrays — all time steps in a file share the same allocation.
+	// Raw pointers are non-owning aliases into sharedCoords; never free them directly.
+	std::shared_ptr<SharedCoords> sharedCoords;
 	wxDouble* latValues;
 	wxDouble* lonValues;
 	double* timeValues;
