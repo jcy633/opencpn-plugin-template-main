@@ -102,6 +102,8 @@ public:
       bool              m_bShowSeaTemp;
       bool              m_bShowSeaTempIso;
       bool              m_bShowSalinity;
+      bool              m_bShowZos;
+      bool              m_bShowZosIso;
       // Per-data-type rendering settings
       struct InterpSettings {
           bool showIsoLines;    // isolines (SST/salinity)
@@ -111,6 +113,7 @@ public:
       InterpSettings m_settingsCurrent;
       InterpSettings m_settingsSeaTemp;
       InterpSettings m_settingsSalinity;
+      InterpSettings m_settingsZos;
       int               m_iOverlayTransparency;
       int               m_iArrowSpacing;
       int               m_iNumberSpacing;

@@ -97,6 +97,11 @@ class ncdfDialog : public wxDialog
 		wxTextCtrl* m_textCtrlSalinity;
 		wxStaticText* m_staticTextSalinityUnit;
 		virtual void onSalinityClick( wxCommandEvent& event ) { event.Skip(); }
+		wxCheckBox* m_checkBoxZos;
+		wxStaticText* m_staticTextZos;
+		wxTextCtrl* m_textCtrlZos;
+		wxStaticText* m_staticTextZosUnit;
+		virtual void onZosClick( wxCommandEvent& event ) { event.Skip(); }
 		// Settings page (replaces Download)
 		wxPanel* m_panelSettings;
 		wxNotebook* m_notebookSettings;
@@ -116,6 +121,12 @@ class ncdfDialog : public wxDialog
 		virtual void onIsoSalClick( wxCommandEvent& event ) { event.Skip(); }
 		wxCheckBox* m_checkBoxAnimateSal;
 		virtual void onAnimateSalClick( wxCommandEvent& event ) { event.Skip(); }
+		// Zos settings tab
+		wxPanel* m_panelZosSettings;
+		wxCheckBox* m_checkBoxIsoZos;
+		virtual void onIsoZosClick( wxCommandEvent& event ) { event.Skip(); }
+		wxCheckBox* m_checkBoxAnimateZos;
+		virtual void onAnimateZosClick( wxCommandEvent& event ) { event.Skip(); }
 
 		ncdfDialog( wxWindow* parent, wxWindowID id = wxID_ANY, const wxString& title = _("ncdf Dialog"), const wxPoint& pos = wxDefaultPosition, const wxSize& size = wxSize( 280,460 ), long style = wxDEFAULT_DIALOG_STYLE|wxRESIZE_BORDER );
 

@@ -48,6 +48,7 @@
 #include "ncdf_overlay_current.h"
 #include "ncdf_overlay_seatemp.h"
 #include "ncdf_overlay_salinity.h"
+#include "ncdf_overlay_zos.h"
 
 using namespace std;
 
@@ -81,11 +82,13 @@ public:
 	 void RenderCurrentOverlay(PlugIn_ViewPort *vp, double **animGrid, double **animUGrid, double **animVGrid);
 	 void RenderSeaTempOverlay(PlugIn_ViewPort *vp, double **animGrid);
 	 void RenderSalinityOverlay(PlugIn_ViewPort *vp, double **animGrid);
+	 void RenderZosOverlay(PlugIn_ViewPort *vp, double **animGrid);
 	 void SetBicubicMode(bool enable);
 	 ncdfAnimate m_animate;
 	 CurrentOverlay m_currentOverlay;
 	 SeaTempOverlay m_seaTempOverlay;
 	 SalinityOverlay m_salinityOverlay;
+	 ZosOverlay m_zosOverlay;
 	 GLuint m_glDispTexture;   // displacement map for animation
 	 bool m_bHasDispTexture;
 	 void DeleteDispTexture();

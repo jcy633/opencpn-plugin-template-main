@@ -138,13 +138,27 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	bSizerSalinity->Add( m_textCtrlSalinity, 0, wxALL|wxALIGN_CENTER_VERTICAL, 0 );
 	fgSizer2->Add( bSizerSalinity, 0, 0, 5 );
 
+	// Row 4: Sea Surface Height (Zos)
+	wxFlexGridSizer* bSizerZos;
+	bSizerZos = new wxFlexGridSizer( 1, 5, 0, 0 );
+	bSizerZos->Add( 24, 0, 0, wxEXPAND, 0 );
+	m_checkBoxZos = new wxCheckBox( m_panel1, wxID_ANY, wxEmptyString );
+	bSizerZos->Add( m_checkBoxZos, 0, wxALL|wxALIGN_CENTER_VERTICAL, 0 );
+	m_staticTextZos = new wxStaticText( m_panel1, wxID_ANY, _("Zos") );
+	m_staticTextZos->SetMinSize( wxSize( 80,-1 ) );
+	bSizerZos->Add( m_staticTextZos, 0, wxALIGN_CENTER_VERTICAL|wxALL, 0 );
+	m_textCtrlZos = new wxTextCtrl( m_panel1, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize( 75,-1 ), wxTE_READONLY|wxTE_CENTRE );
+	bSizerZos->Add( m_textCtrlZos, 0, wxALL|wxALIGN_CENTER_VERTICAL, 0 );
+	m_staticTextZosUnit = new wxStaticText( m_panel1, wxID_ANY, _("m") );
+	m_staticTextZosUnit->SetMinSize( wxSize( 30,-1 ) );
+	bSizerZos->Add( m_staticTextZosUnit, 0, wxALL|wxALIGN_CENTER_VERTICAL, 2 );
+	fgSizer2->Add( bSizerZos, 0, 0, 5 );
+
 	// Numbers checkbox (hidden - feature removed)
 	m_checkBoxNumbers = new wxCheckBox( m_panel1, wxID_ANY, wxEmptyString );
 	m_staticTextNumbers = new wxStaticText( m_panel1, wxID_ANY, _("Numbers") );
 	m_checkBoxNumbers->Hide();
 	m_staticTextNumbers->Hide();
-
-	fgSizer2->Add( bSizerSalinity, 0, 0, 5 );
 
 
 	fgSizer1->Add( fgSizer2, 0, wxEXPAND, 0 );
@@ -206,6 +220,19 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	m_panelSalSettings->SetSizer( sizerSal );
 	m_notebookSettings->AddPage( m_panelSalSettings, _("Salinity") );
 
+	// --- Zos settings tab ---
+	m_panelZosSettings = new wxPanel( m_notebookSettings );
+	wxFlexGridSizer* sizerZos = new wxFlexGridSizer( 0, 2, 5, 5 );
+	sizerZos->AddGrowableCol( 1 );
+	sizerZos->AddSpacer(0);
+	m_checkBoxIsoZos = new wxCheckBox( m_panelZosSettings, wxID_ANY, _("Show isolines") );
+	sizerZos->Add( m_checkBoxIsoZos, 0, wxALL, 3 );
+	sizerZos->AddSpacer(0);
+	m_checkBoxAnimateZos = new wxCheckBox( m_panelZosSettings, wxID_ANY, _("Flow animation") );
+	sizerZos->Add( m_checkBoxAnimateZos, 0, wxALL, 3 );
+	m_panelZosSettings->SetSizer( sizerZos );
+	m_notebookSettings->AddPage( m_panelZosSettings, _("Zos") );
+
 	sizerSettings->Add( m_notebookSettings, 1, wxEXPAND|wxALL, 5 );
 	m_panelSettings->SetSizer( sizerSettings );
 	m_panelSettings->Layout();
@@ -234,6 +261,9 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	m_checkBoxIsoSal->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onIsoSalClick ), NULL, this );
 	m_checkBoxAnimateSal->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onAnimateSalClick ), NULL, this );
 	m_checkBoxSalinity->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSalinityClick ), NULL, this );
+	m_checkBoxZos->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onZosClick ), NULL, this );
+	m_checkBoxIsoZos->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onIsoZosClick ), NULL, this );
+	m_checkBoxAnimateZos->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onAnimateZosClick ), NULL, this );
 	m_checkBoxAnimate->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onAnimateClick ), NULL, this );
 
 }
@@ -257,6 +287,9 @@ ncdfDialog::~ncdfDialog()
 	m_checkBoxIsoSal->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onIsoSalClick ), NULL, this );
 	m_checkBoxAnimateSal->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onAnimateSalClick ), NULL, this );
 	m_checkBoxSalinity->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSalinityClick ), NULL, this );
+	m_checkBoxZos->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onZosClick ), NULL, this );
+	m_checkBoxIsoZos->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onIsoZosClick ), NULL, this );
+	m_checkBoxAnimateZos->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onAnimateZosClick ), NULL, this );
 	m_checkBoxAnimate->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onAnimateClick ), NULL, this );
 
 

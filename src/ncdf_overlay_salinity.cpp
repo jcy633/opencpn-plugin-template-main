@@ -298,14 +298,14 @@ void SalinityOverlay::prepareData(MainDialog *gui, ncdf_pi *plugin, ncdfOverlayF
 }
 
 wxColour SalinityOverlay::GetColor(double sal_psu) {
+    // cmocean "haline" style: pale sand (low) -> mint -> teal -> deep blue -> purple (high)
     static const double stops[][4] = {
-        {30.0, 120, 120, 255}, {31.0,  80,  80, 240}, {32.0,  40,  40, 220},
-        {33.0,  20,  20, 200}, {33.5,   0,  60, 200}, {34.0,   0, 120, 180},
-        {34.5,   0, 180, 140}, {35.0,   0, 200,  80}, {35.5,  40, 220,  40},
-        {36.0, 120, 230,  20}, {36.5, 200, 220,  20}, {37.0, 240, 180,  20},
-        {37.5, 240, 120,  20}, {38.0, 220,  60,  20}, {39.0, 200,  20,  20},
+        {30.0, 245, 235, 195}, {31.0, 210, 225, 185}, {32.0, 170, 210, 175},
+        {33.0, 125, 195, 172}, {34.0,  80, 180, 170}, {35.0,  55, 165, 172},
+        {36.0,  30, 140, 168}, {37.0,  28, 105, 152}, {38.0,  30,  70, 130},
+        {39.0,  40,  30,  90},
     };
-    return ncdfOverlayFactory::InterpolateStops(stops, 15, sal_psu, false);
+    return ncdfOverlayFactory::InterpolateStops(stops, 10, sal_psu, false);
 }
 
 // Helper: fill grid from salinity data

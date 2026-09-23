@@ -59,7 +59,8 @@ static void ncdfLogMem(MainDialog *dlg, const char* tag) {
     size_t msgMem = dlg->myMessage.ucurr.capacity() * sizeof(double)
                   + dlg->myMessage.vcurr.capacity() * sizeof(double)
                   + dlg->myMessage.sst.capacity() * sizeof(double)
-                  + dlg->myMessage.salinity.capacity() * sizeof(double);
+                  + dlg->myMessage.salinity.capacity() * sizeof(double)
+                  + dlg->myMessage.zos.capacity() * sizeof(double);
     size_t gridMem = 0;
     if (f) {
         auto gridBytes = [](float** g, int nj) -> size_t {
@@ -116,6 +117,10 @@ MainDialog::MainDialog(wxWindow *parent) : ncdfDialog( parent ), m_isTreeUpdatin
 	m_checkBoxSalinity->Hide();
 	m_staticTextSalinity->Hide();
 	m_textCtrlSalinity->Hide();
+	m_checkBoxZos->Hide();
+	m_staticTextZos->Hide();
+	m_textCtrlZos->Hide();
+	m_staticTextZosUnit->Hide();
 
 	BuildHelpPage();
 
@@ -154,6 +159,7 @@ MainDialog::~MainDialog()
 	pPlugIn->m_bShowParticles = m_checkBoxParticles->GetValue();
 	pPlugIn->m_bShowSeaTemp = m_checkBoxSeaTemp->GetValue();
 	pPlugIn->m_bShowSalinity = m_checkBoxSalinity->GetValue();
+	pPlugIn->m_bShowZos = m_checkBoxZos->GetValue();
 
 	ncdfLog("[ncdf] ~MainDialog: settings saved\n");
 	
@@ -174,8 +180,10 @@ void MainDialog::setPlugIn(ncdf_pi *p)
   m_checkBoxParticles->SetValue(pPlugIn->m_bShowParticles);
   m_checkBoxSeaTemp->SetValue(pPlugIn->m_bShowSeaTemp);
   m_checkBoxSalinity->SetValue(pPlugIn->m_bShowSalinity);
+  m_checkBoxZos->SetValue(pPlugIn->m_bShowZos);
   m_checkBoxIsoSST->SetValue(pPlugIn->m_settingsSeaTemp.showIsoLines);
   m_checkBoxIsoSal->SetValue(pPlugIn->m_settingsSalinity.showIsoLines);
+  m_checkBoxIsoZos->SetValue(pPlugIn->m_settingsZos.showIsoLines);
 }
 
 void MainDialog::SetCursorLatLon(double lat, double lon)
@@ -229,6 +237,24 @@ void MainDialog::UpdateTrackingControls()
            m_textCtrlSalinity->SetValue(t);
        } else {
            m_textCtrlSalinity->SetValue(_T("--"));
+       }
+   }
+
+   // Zos at cursor position — from float grid
+   m_textCtrlZos->Clear();
+   if (pof && pof->m_zosOverlay.cachedBaseGrid) {
+       double z = myMessage.getInterpolatedValueFloat(
+           pof->m_zosOverlay.cachedBaseGrid.get(),
+           (int)myMessage.lonLength, (int)myMessage.latLength,
+           myMessage.firstGridPointLat, myMessage.lastGridPointLat,
+           myMessage.firstGridPointLong, myMessage.lastGridPointLong,
+           myMessage.iDirectionIncr, myMessage.jDirectionIncr,
+           m_cursor_lon, m_cursor_lat);
+       if (z != ncdf_NOTDEF && !isnan(z) && isfinite(z)) {
+           wxString t = wxString::Format(_T("%.3f"), z) + _T(" m");
+           m_textCtrlZos->SetValue(t);
+       } else {
+           m_textCtrlZos->SetValue(_T("--"));
        }
    }
 }
@@ -774,6 +800,13 @@ MainDialog::FileMetadata MainDialog::nc_read_metadata(const wxString &fileName) 
 		meta.cached_sal_varid = find_var_by_cf(ncid, "sea_water_salinity", alt_std, long_hints, var_hints);
 		meta.hasSalinity = (meta.cached_sal_varid != -1);
 	}
+	{
+		const char* alt_std[] = {"sea_surface_height", NULL};
+		const char* long_hints[] = {"Sea surface height above geoid", "Sea surface height", NULL};
+		const char* var_hints[] = {"zos", "ssh", "sea_surface_height", "eta", "SSH", NULL};
+		meta.cached_zos_varid = find_var_by_cf(ncid, "sea_surface_height_above_geoid", alt_std, long_hints, var_hints);
+		meta.hasZos = (meta.cached_zos_varid != -1);
+	}
 
 	// Read lat/lon coordinates and dimension sizes
 	{
@@ -900,9 +933,11 @@ int MainDialog::nc_get(wxString filestr){
 	m_cached_v_varid = -1;
 	m_cached_sst_varid = -1;
 	m_cached_sal_varid = -1;
+	m_cached_zos_varid = -1;
 	m_fileHasCurrent = false;
 	m_fileHasSeaTemp = false;
 	m_fileHasSalinity = false;
+	m_fileHasZos = false;
 
 	ncdfLog("[ncdf] nc_get: declaring variables...\n");
 	int ncid;
@@ -1011,6 +1046,16 @@ int MainDialog::nc_get(wxString filestr){
 	}
 	ncdfLog("[ncdf] nc_get: sal_varid=%d\n", sal_varid);
 
+	/* sea surface height above geoid (optional) */
+	int zos_varid = -1;
+	{
+		const char* alt_std[] = {"sea_surface_height", NULL};
+		const char* long_hints[] = {"Sea surface height above geoid", "Sea surface height", NULL};
+		const char* var_hints[] = {"zos", "ssh", "sea_surface_height", "eta", "SSH", NULL};
+		zos_varid = find_var_by_cf(ncid, "sea_surface_height_above_geoid", alt_std, long_hints, var_hints);
+	}
+	ncdfLog("[ncdf] nc_get: zos_varid=%d\n", zos_varid);
+
 	/* depth - commented out */
 	/*int depth_varid = -1;
 	{
@@ -1020,21 +1065,24 @@ int MainDialog::nc_get(wxString filestr){
 		depth_varid = find_var_by_cf(ncid, "depth", alt_std, long_hints, var_hints);
 	}*/
 
-	ncdfLog("[ncdf] nc_get: result - u_varid=%d, v_varid=%d, lat_varid=%d, lon_varid=%d, time_varid=%d, sst_varid=%d\n",
-		u_varid, v_varid, lat_varid, lon_varid, time_varid, sst_varid);
+	ncdfLog("[ncdf] nc_get: result - u_varid=%d, v_varid=%d, lat_varid=%d, lon_varid=%d, time_varid=%d, sst_varid=%d, zos_varid=%d\n",
+		u_varid, v_varid, lat_varid, lon_varid, time_varid, sst_varid, zos_varid);
 
 	bool hasCurrent = (u_varid != -1 && v_varid != -1);
 	bool hasSST = (sst_varid != -1);
 	bool hasSalinity = (sal_varid != -1);
+	bool hasZos = (zos_varid != -1);
 
 	// Store file-level data availability and cached variable IDs
 	m_fileHasCurrent = hasCurrent;
 	m_fileHasSeaTemp = hasSST;
 	m_fileHasSalinity = hasSalinity;
+	m_fileHasZos = hasZos;
 	m_cached_u_varid = u_varid;
 	m_cached_v_varid = v_varid;
 	m_cached_sst_varid = sst_varid;
 	m_cached_sal_varid = sal_varid;
+	m_cached_zos_varid = zos_varid;
 	ncdfLog("[ncdf] nc_get: m_fileHasCurrent=%d, m_fileHasSeaTemp=%d, cached varids: u=%d v=%d sst=%d\n",
 		(int)m_fileHasCurrent, (int)m_fileHasSeaTemp, m_cached_u_varid, m_cached_v_varid, m_cached_sst_varid);
 
@@ -1344,6 +1392,7 @@ int MainDialog::nc_get(wxString filestr){
 		myncdfData.lonLength = lonlength;
 		myncdfData.hasSeaTemp = hasSST;
 		myncdfData.hasSalinity = hasSalinity;
+		myncdfData.hasZos = hasZos;
 		/*myncdfData.depthLength = depthlength;*/
 
 		// Share coordinate arrays across all time steps (one allocation)
@@ -1701,6 +1750,102 @@ static bool readSalinityFromNC(int ncid, int sal_varid, ncdfDataMessage& dataMes
 	return true;
 }
 
+static bool readZosFromNC(int ncid, int zos_varid, ncdfDataMessage& dataMessage) {
+	ncdfLog("[ncdf] readZosFromNC: zos_varid=%d\n", zos_varid);
+
+	if (zos_varid < 0) {
+		const char* alt_std[] = {"sea_surface_height", NULL};
+		const char* long_hints[] = {"Sea surface height above geoid", "Sea surface height", NULL};
+		const char* var_hints[] = {"zos", "ssh", "sea_surface_height", "eta", "SSH", NULL};
+		zos_varid = find_var_by_cf(ncid, "sea_surface_height_above_geoid", alt_std, long_hints, var_hints);
+	}
+	if (zos_varid == -1) return false;
+
+	VarDimInfo dims = discover_var_dims(ncid, zos_varid);
+	if (!dims.valid) return false;
+
+	int ndims;
+	nc_inq_varndims(ncid, zos_varid, &ndims);
+
+	size_t start[NC_MAX_DIMS] = {0};
+	size_t count[NC_MAX_DIMS] = {0};
+
+	start[dims.time_idx] = dataMessage.timeIndex;
+	count[dims.time_idx] = 1;
+	start[dims.lat_idx] = 0;
+	count[dims.lat_idx] = dataMessage.latLength;
+	start[dims.lon_idx] = 0;
+	count[dims.lon_idx] = dataMessage.lonLength;
+	if (dims.depth_idx != -1) {
+		start[dims.depth_idx] = 0;
+		count[dims.depth_idx] = 1;
+	}
+
+	size_t nbr_uv = dataMessage.latLength * dataMessage.lonLength;
+
+	nc_type var_type;
+	nc_inq_vartype(ncid, zos_varid, &var_type);
+
+	float* zos_vals = (float*)calloc(nbr_uv, sizeof(float));
+	if (!zos_vals) return false;
+
+	if (var_type == NC_DOUBLE) {
+		double* zos_double = (double*)calloc(nbr_uv, sizeof(double));
+		if (!zos_double) { free(zos_vals); return false; }
+		if (nc_get_vara_double(ncid, zos_varid, start, count, zos_double) != NC_NOERR) {
+			free(zos_double); free(zos_vals); return false;
+		}
+		for (size_t i = 0; i < nbr_uv; i++) zos_vals[i] = (float)zos_double[i];
+		free(zos_double);
+	} else {
+		if (nc_get_vara_float(ncid, zos_varid, start, count, zos_vals) != NC_NOERR) {
+			free(zos_vals); return false;
+		}
+	}
+
+	float zos_fill = -32767.0f;
+	nc_get_att_float(ncid, zos_varid, "_FillValue", &zos_fill);
+
+	dataMessage.zos.resize(nbr_uv, ncdf_NOTDEF);
+
+	size_t latLen = dataMessage.latLength;
+	size_t lonLen = dataMessage.lonLength;
+	size_t count_records = 0;
+
+	if (dims.lat_before_lon) {
+		for (size_t j = 0; j < latLen; j++) {
+			for (size_t k = 0; k < lonLen; k++) {
+				double val = (double)zos_vals[count_records];
+				if (!isnan(val) && isfinite(val) && val != zos_fill && val > -10.0 && val < 10.0)
+					dataMessage.zos[count_records] = val;
+				else
+					dataMessage.zos[count_records] = ncdf_NOTDEF;
+				count_records++;
+			}
+		}
+	} else {
+		float* reordered = (float*)calloc(nbr_uv, sizeof(float));
+		if (reordered) {
+			for (size_t k = 0; k < lonLen; k++)
+				for (size_t j = 0; j < latLen; j++)
+					reordered[j * lonLen + k] = zos_vals[k * latLen + j];
+			for (size_t i = 0; i < nbr_uv; i++) {
+				double val = (double)reordered[i];
+				if (!isnan(val) && isfinite(val) && val != zos_fill && val > -10.0 && val < 10.0)
+					dataMessage.zos[i] = val;
+				else
+					dataMessage.zos[i] = ncdf_NOTDEF;
+			}
+			free(reordered);
+		}
+	}
+
+	free(zos_vals);
+	ncdfLog("[ncdf] readZosFromNC: Zos read, lat_before_lon=%d\n", (int)dims.lat_before_lon);
+	dataMessage.hasZos = true;
+	return true;
+}
+
 bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 	ncdfLog("[ncdf] readTimeStepData: timeIndex=%d, latLength=%d, lonLength=%d, ucurr.size=%zu\n",
 		dataMessage.timeIndex, (int)dataMessage.latLength, (int)dataMessage.lonLength, dataMessage.ucurr.size());
@@ -1721,6 +1866,7 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 		dataMessage.vcurr.clear(); dataMessage.vcurr.shrink_to_fit();
 		dataMessage.sst.clear(); dataMessage.sst.shrink_to_fit();
 		dataMessage.salinity.clear(); dataMessage.salinity.shrink_to_fit();
+		dataMessage.zos.clear(); dataMessage.zos.shrink_to_fit();
 	}
 	try {
 		dataMessage.ucurr.assign(nbr_uv, ncdf_NOTDEF);
@@ -1731,6 +1877,7 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 	}
 	dataMessage.sst.clear();
 	dataMessage.salinity.clear();
+	dataMessage.zos.clear();
 
 	int ncid;
 	int retval;
@@ -1792,6 +1939,7 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 	bool needCurrent = pPlugIn && pPlugIn->m_bShowCurrentForce;
 	bool needSST = pPlugIn && pPlugIn->m_bShowSeaTemp;
 	bool needSal = pPlugIn && pPlugIn->m_bShowSalinity;
+	bool needZos = pPlugIn && pPlugIn->m_bShowZos;
 
 	if (hasUV && needCurrent) {
 		if (!readUVFromNC(ncid, u_varid, v_varid, dataMessage)) {
@@ -1813,6 +1961,12 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 	if (ncid >= 0 && m_fileHasSalinity && needSal) {
 		if (!readSalinityFromNC(ncid, m_cached_sal_varid, dataMessage)) {
 			ncdfLog("[ncdf] readTimeStepData: readSalinityFromNC failed\n");
+		}
+	}
+
+	if (ncid >= 0 && m_fileHasZos && needZos) {
+		if (!readZosFromNC(ncid, m_cached_zos_varid, dataMessage)) {
+			ncdfLog("[ncdf] readTimeStepData: readZosFromNC failed\n");
 		}
 	}
 
@@ -1879,6 +2033,7 @@ bool MainDialog::switchToFile(const wxString &fileName, const wxString &fn, int 
 			pof->m_currentOverlay.Cleanup();
 			pof->m_seaTempOverlay.Cleanup();
 			pof->m_salinityOverlay.Cleanup();
+			pof->m_zosOverlay.Cleanup();
 			pof->m_bReadyToRender = false;
 		}
 	}
@@ -1897,10 +2052,12 @@ bool MainDialog::switchToFile(const wxString &fileName, const wxString &fn, int 
 	m_fileHasCurrent = meta.hasCurrent;
 	m_fileHasSeaTemp = meta.hasSeaTemp;
 	m_fileHasSalinity = meta.hasSalinity;
+	m_fileHasZos = meta.hasZos;
 	m_cached_u_varid = meta.cached_u_varid;
 	m_cached_v_varid = meta.cached_v_varid;
 	m_cached_sst_varid = meta.cached_sst_varid;
 	m_cached_sal_varid = meta.cached_sal_varid;
+	m_cached_zos_varid = meta.cached_zos_varid;
 
 	// Pre-allocate float grid structures (one-time per file, reused across all time steps)
 	if (pPlugIn) {
@@ -1917,8 +2074,11 @@ bool MainDialog::switchToFile(const wxString &fileName, const wxString &fn, int 
 			if (meta.hasSalinity) {
 				pof->m_salinityOverlay.ensureGridAllocated(ni, nj);
 			}
-			ncdfLog("[switchToFile] pre-allocated grids: ni=%d nj=%d current=%d sst=%d sal=%d\n",
-				ni, nj, (int)meta.hasCurrent, (int)meta.hasSeaTemp, (int)meta.hasSalinity);
+			if (meta.hasZos) {
+				pof->m_zosOverlay.ensureGridAllocated(ni, nj);
+			}
+			ncdfLog("[switchToFile] pre-allocated grids: ni=%d nj=%d current=%d sst=%d sal=%d zos=%d\n",
+				ni, nj, (int)meta.hasCurrent, (int)meta.hasSeaTemp, (int)meta.hasSalinity, (int)meta.hasZos);
 		}
 	}
 
@@ -1951,6 +2111,7 @@ bool MainDialog::switchToFile(const wxString &fileName, const wxString &fn, int 
 		entry.dataDateTime = meta.dates[i];
 		entry.hasSeaTemp = meta.hasSeaTemp;
 		entry.hasSalinity = meta.hasSalinity;
+		entry.hasZos = meta.hasZos;
 		// Share coordinates (one allocation, all entries share)
 		entry.sharedCoords = meta.sharedCoords;
 		entry.latValues = meta.sharedCoords ? meta.sharedCoords->latValues : NULL;
@@ -1985,6 +2146,11 @@ bool MainDialog::switchToFile(const wxString &fileName, const wxString &fn, int 
 	m_checkBoxSalinity->Show(showSal);
 	m_staticTextSalinity->Show(showSal);
 	m_textCtrlSalinity->Show(showSal);
+	bool showZos = m_fileHasZos;
+	m_checkBoxZos->Show(showZos);
+	m_staticTextZos->Show(showZos);
+	m_textCtrlZos->Show(showZos);
+	m_staticTextZosUnit->Show(showZos);
 	Layout();
 	// Disable unavailable types. Don't auto-enable — use persisted settings.
 	if (!showCur) {
@@ -2001,6 +2167,10 @@ bool MainDialog::switchToFile(const wxString &fileName, const wxString &fn, int 
 	if (!showSal) {
 		pPlugIn->m_bShowSalinity = false;
 		m_checkBoxSalinity->SetValue(false);
+	}
+	if (!showZos) {
+		pPlugIn->m_bShowZos = false;
+		m_checkBoxZos->SetValue(false);
 	}
 
 	return true;
@@ -2114,6 +2284,12 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 			} else {
 				m_checkBoxSalinity->SetValue(pPlugIn->m_bShowSalinity);
 			}
+			if (!m_fileHasZos) {
+				m_checkBoxZos->SetValue(false);
+				pPlugIn->m_bShowZos = false;
+			} else {
+				m_checkBoxZos->SetValue(pPlugIn->m_bShowZos);
+			}
 		}
 
 		// Show/hide checkboxes based on file-level data availability
@@ -2126,6 +2302,10 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 		m_checkBoxSalinity->Show(m_fileHasSalinity);
 		m_staticTextSalinity->Show(m_fileHasSalinity);
 		m_textCtrlSalinity->Show(m_fileHasSalinity);
+		m_checkBoxZos->Show(m_fileHasZos);
+		m_staticTextZos->Show(m_fileHasZos);
+		m_textCtrlZos->Show(m_fileHasZos);
+		m_staticTextZosUnit->Show(m_fileHasZos);
 		Layout();
 		// Disable unavailable types
 		if (!m_fileHasCurrent) {
@@ -2142,6 +2322,10 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 		if (!m_fileHasSalinity) {
 			pPlugIn->m_bShowSalinity = false;
 			m_checkBoxSalinity->SetValue(false);
+		}
+		if (!m_fileHasZos) {
+			pPlugIn->m_bShowZos = false;
+			m_checkBoxZos->SetValue(false);
 		}
 
 		// Copy metadata to myMessage (no data yet)
@@ -2281,6 +2465,8 @@ void MainDialog::onBmpCurrentForceClick(wxCommandEvent& event)
 		pPlugIn->m_bShowSeaTemp = false;
 		m_checkBoxSalinity->SetValue(false);
 		pPlugIn->m_bShowSalinity = false;
+		m_checkBoxZos->SetValue(false);
+		pPlugIn->m_bShowZos = false;
 	}
 	s_guard = false;
 	// Phase 3: Compute B-spline coefficients for the checked type
@@ -2332,6 +2518,8 @@ void MainDialog::onSeaTempClick(wxCommandEvent& event)
 		pPlugIn->m_bShowCurrentForce = false;
 		m_checkBoxSalinity->SetValue(false);
 		pPlugIn->m_bShowSalinity = false;
+		m_checkBoxZos->SetValue(false);
+		pPlugIn->m_bShowZos = false;
 	}
 	s_guard = false;
 	// Phase 3: Compute B-spline coefficients for SST
@@ -2389,6 +2577,8 @@ void MainDialog::onSalinityClick(wxCommandEvent& event)
 		pPlugIn->m_bShowCurrentForce = false;
 		m_checkBoxSeaTemp->SetValue(false);
 		pPlugIn->m_bShowSeaTemp = false;
+		m_checkBoxZos->SetValue(false);
+		pPlugIn->m_bShowZos = false;
 	}
 	s_guard = false;
 	// Phase 3: Compute B-spline coefficients for Salinity
@@ -2413,6 +2603,85 @@ void MainDialog::onSalinityClick(wxCommandEvent& event)
 				pof->m_bReadyToRender = true;
 			}
 		}
+	}
+	RequestRefresh(m_parent);
+}
+
+void MainDialog::onZosClick(wxCommandEvent& event)
+{
+	static bool s_guard = false;
+	if (s_guard || m_isLoading) return;
+	s_guard = true;
+	bool checked = m_checkBoxZos->GetValue();
+	pPlugIn->m_bShowZos = checked;
+	// Mutual exclusion: uncheck Current, SST and Salinity color maps
+	if (checked) {
+		m_checkBoxBmpCurrentForce->SetValue(false);
+		pPlugIn->m_bShowCurrentForce = false;
+		m_checkBoxSeaTemp->SetValue(false);
+		pPlugIn->m_bShowSeaTemp = false;
+		m_checkBoxSalinity->SetValue(false);
+		pPlugIn->m_bShowSalinity = false;
+	}
+	s_guard = false;
+	// Phase 3: Compute B-spline coefficients for Zos
+	if (checked && m_lastSelectedTimeIndex >= 0) {
+		ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
+		if (pof) {
+			if (pof->m_zosOverlay.hasTexture) {
+				ncdfLog("[phase3:zos] texture exists, reusing\n");
+				pof->m_zosOverlay.dataReady = true;
+				pof->m_zosOverlay.needsRebuild = false;
+			} else {
+				ncdfLog("[phase3:zos] loading data + computing coefficients\n");
+				pof->m_bReadyToRender = false;
+				if (readTimeStepData(this->myMessage)) {
+					pof->setData(this, pPlugIn, this->myMessage,
+						this->myMessage.numberOfPoints,
+						this->myMessage.firstGridPointLat, this->myMessage.firstGridPointLong,
+						this->myMessage.lastGridPointLat, this->myMessage.lastGridPointLong);
+					if (!pof->m_zosOverlay.gridReady) pof->m_zosOverlay.prepareGrid(this);
+					pof->m_zosOverlay.prepareCoeff(pof);
+				}
+				pof->m_bReadyToRender = true;
+			}
+		}
+	}
+	RequestRefresh(m_parent);
+}
+
+void MainDialog::onIsoZosClick(wxCommandEvent& event)
+{
+	pPlugIn->m_settingsZos.showIsoLines = m_checkBoxIsoZos->GetValue();
+	pPlugIn->m_bShowZosIso = pPlugIn->m_settingsZos.showIsoLines;
+	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
+	if (pof) pof->SetBicubicMode(true);
+	RequestRefresh(m_parent);
+}
+
+void MainDialog::onAnimateZosClick(wxCommandEvent& event)
+{
+	pPlugIn->m_settingsZos.animate = m_checkBoxAnimateZos->GetValue();
+	// Mutual exclusion: uncheck other animation types
+	if (pPlugIn->m_settingsZos.animate) {
+		pPlugIn->m_settingsCurrent.animate = false;
+		m_checkBoxAnimate->SetValue(false);
+		pPlugIn->m_settingsSeaTemp.animate = false;
+		m_checkBoxAnimateSST->SetValue(false);
+		pPlugIn->m_settingsSalinity.animate = false;
+		m_checkBoxAnimateSal->SetValue(false);
+	}
+	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
+	if (pof) {
+		if (pPlugIn->m_settingsZos.animate) {
+			pof->m_animate.Init(pPlugIn, this);
+			pof->m_animate.ComputeDisplacementMap();
+			pof->m_animateTimer.Start(100);
+		} else if (!pPlugIn->m_settingsCurrent.animate && !pPlugIn->m_settingsSeaTemp.animate && !pPlugIn->m_settingsSalinity.animate) {
+			pof->m_animateTimer.Stop();
+			pof->m_animate.Cleanup();
+		}
+		pof->SetBicubicMode(true);
 	}
 	RequestRefresh(m_parent);
 }
@@ -2543,6 +2812,8 @@ void MainDialog::onAnimateClick(wxCommandEvent& event)
 		pPlugIn->m_settingsSeaTemp.animate = false;
 		m_checkBoxAnimateSal->SetValue(false);
 		pPlugIn->m_settingsSalinity.animate = false;
+		m_checkBoxAnimateZos->SetValue(false);
+		pPlugIn->m_settingsZos.animate = false;
 	}
 	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
 	if (pof) {
@@ -2550,7 +2821,7 @@ void MainDialog::onAnimateClick(wxCommandEvent& event)
 			pof->m_animate.Init(pPlugIn, this);
 			pof->m_animate.ComputeDisplacementMap();
 			pof->m_animateTimer.Start(100);
-		} else if (!pPlugIn->m_settingsSeaTemp.animate && !pPlugIn->m_settingsSalinity.animate) {
+		} else if (!pPlugIn->m_settingsSeaTemp.animate && !pPlugIn->m_settingsSalinity.animate && !pPlugIn->m_settingsZos.animate) {
 			pof->m_animateTimer.Stop();
 			pof->m_animate.Cleanup();
 		}
@@ -2567,6 +2838,8 @@ void MainDialog::onAnimateSSTClick(wxCommandEvent& event)
 		pPlugIn->m_settingsCurrent.animate = false;
 		m_checkBoxAnimateSal->SetValue(false);
 		pPlugIn->m_settingsSalinity.animate = false;
+		m_checkBoxAnimateZos->SetValue(false);
+		pPlugIn->m_settingsZos.animate = false;
 	}
 	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
 	if (pof) {
@@ -2574,7 +2847,7 @@ void MainDialog::onAnimateSSTClick(wxCommandEvent& event)
 			pof->m_animate.Init(pPlugIn, this);
 			pof->m_animate.ComputeDisplacementMap();
 			pof->m_animateTimer.Start(100);
-		} else if (!pPlugIn->m_settingsCurrent.animate && !pPlugIn->m_settingsSalinity.animate) {
+		} else if (!pPlugIn->m_settingsCurrent.animate && !pPlugIn->m_settingsSalinity.animate && !pPlugIn->m_settingsZos.animate) {
 			pof->m_animateTimer.Stop();
 			pof->m_animate.Cleanup();
 		}
@@ -2591,6 +2864,8 @@ void MainDialog::onAnimateSalClick(wxCommandEvent& event)
 		pPlugIn->m_settingsCurrent.animate = false;
 		m_checkBoxAnimateSST->SetValue(false);
 		pPlugIn->m_settingsSeaTemp.animate = false;
+		m_checkBoxAnimateZos->SetValue(false);
+		pPlugIn->m_settingsZos.animate = false;
 	}
 	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
 	if (pof) {
@@ -2598,7 +2873,7 @@ void MainDialog::onAnimateSalClick(wxCommandEvent& event)
 			pof->m_animate.Init(pPlugIn, this);
 			pof->m_animate.ComputeDisplacementMap();
 			pof->m_animateTimer.Start(100);
-		} else if (!pPlugIn->m_settingsCurrent.animate && !pPlugIn->m_settingsSeaTemp.animate) {
+		} else if (!pPlugIn->m_settingsCurrent.animate && !pPlugIn->m_settingsSeaTemp.animate && !pPlugIn->m_settingsZos.animate) {
 			pof->m_animateTimer.Stop();
 			pof->m_animate.Cleanup();
 		}

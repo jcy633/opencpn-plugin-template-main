@@ -89,33 +89,35 @@ public:
 	// Lightweight file metadata (for tree building, no data allocation)
 	struct FileMetadata {
 		bool valid;
-		bool hasCurrent, hasSeaTemp, hasSalinity;
+		bool hasCurrent, hasSeaTemp, hasSalinity, hasZos;
 		size_t timelength, latlength, lonlength;
 		wxDouble firstGridPointLat, firstGridPointLong;
 		wxDouble lastGridPointLat, lastGridPointLong;
 		wxDouble iDirectionIncr, jDirectionIncr;
-		int cached_u_varid, cached_v_varid, cached_sst_varid, cached_sal_varid;
+		int cached_u_varid, cached_v_varid, cached_sst_varid, cached_sal_varid, cached_zos_varid;
 		std::vector<wxDateTime> dates;
 		std::vector<bool> timeValid;
 		std::vector<double> timeValues;
 		std::shared_ptr<SharedCoords> sharedCoords;
-		FileMetadata() : valid(false), hasCurrent(false), hasSeaTemp(false), hasSalinity(false),
+		FileMetadata() : valid(false), hasCurrent(false), hasSeaTemp(false), hasSalinity(false), hasZos(false),
 			timelength(0), latlength(0), lonlength(0),
 			firstGridPointLat(0), firstGridPointLong(0),
 			lastGridPointLat(0), lastGridPointLong(0),
 			iDirectionIncr(0), jDirectionIncr(0),
 			cached_u_varid(-1), cached_v_varid(-1),
-			cached_sst_varid(-1), cached_sal_varid(-1) {}
+			cached_sst_varid(-1), cached_sal_varid(-1), cached_zos_varid(-1) {}
 	};
 	FileMetadata nc_read_metadata(const wxString &fileName);
 
 	bool m_fileHasCurrent = false;   // File contains u/v ocean current data
 	bool m_fileHasSeaTemp = false;   // File contains SST data
 	bool m_fileHasSalinity = false;  // File contains salinity data
+	bool m_fileHasZos = false;       // File contains sea surface height data
 	int m_cached_u_varid = -1;       // Cached NetCDF variable ID for u-current
 	int m_cached_v_varid = -1;       // Cached NetCDF variable ID for v-current
 	int m_cached_sst_varid = -1;     // Cached NetCDF variable ID for SST
 	int m_cached_sal_varid = -1;     // Cached NetCDF variable ID for salinity
+	int m_cached_zos_varid = -1;     // Cached NetCDF variable ID for zos
 
 	// Persistent NetCDF file handle (reused across same-file time step switches)
 	int m_openedNcid = -1;
@@ -126,6 +128,7 @@ public:
 	std::vector<double> m_fileVBuffer;
 	std::vector<double> m_fileSSTBuffer;
 	std::vector<double> m_fileSalBuffer;
+	std::vector<double> m_fileZosBuffer;
 	bool m_fileBufferReady;
 
 	ncdfDataMessage myncdfData, myData, myMessage;
@@ -182,11 +185,14 @@ protected:
 	virtual void onParticlesClick( wxCommandEvent& event );
 	virtual void onSeaTempClick( wxCommandEvent& event );
 	virtual void onSalinityClick( wxCommandEvent& event );
+	virtual void onZosClick( wxCommandEvent& event );
 	virtual void onAnimateClick( wxCommandEvent& event );
 	virtual void onAnimateSSTClick( wxCommandEvent& event );
 	virtual void onAnimateSalClick( wxCommandEvent& event );
+	virtual void onAnimateZosClick( wxCommandEvent& event );
 	virtual void onIsoSSTClick( wxCommandEvent& event );
 	virtual void onIsoSalClick( wxCommandEvent& event );
+	virtual void onIsoZosClick( wxCommandEvent& event );
 	void fillDirTree(wxString dir, bool start, wxTreeItemId id);
 	void addChildren(wxTreeItemId id, wxString s);
 	void readData(wxTreeItemId itemId);

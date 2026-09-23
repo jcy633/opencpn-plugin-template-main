@@ -261,12 +261,13 @@ void CurrentOverlay::prepareData(MainDialog *gui, ncdf_pi *plugin, ncdfOverlayFa
 }
 
 wxColour CurrentOverlay::GetColor(double val_in) {
+    // Turbo style (improved jet): smoother perceptual progression for flow speed
     static const double stops[][4] = {
-        {0.00,  20,  20, 180}, {0.10,  30,  80, 220}, {0.25,   0, 180, 220},
-        {0.50,   0, 200,  80}, {0.75, 220, 220,  20}, {1.00, 240, 100,  20},
-        {1.50, 220,  20,  20},
+        {0.00,  60,  20, 120}, {0.10,  40,  80, 200}, {0.25,   0, 160, 220},
+        {0.50,   0, 190, 100}, {0.75,  80, 210,  40}, {1.00, 230, 220,  30},
+        {1.25, 250, 140,  20}, {1.50, 200,  30,  30},
     };
-    return ncdfOverlayFactory::InterpolateStops(stops, 7, wxMax(val_in, 0.0), false);
+    return ncdfOverlayFactory::InterpolateStops(stops, 8, wxMax(val_in, 0.0), false);
 }
 
 bool CurrentOverlay::RenderColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_pi *plugin,

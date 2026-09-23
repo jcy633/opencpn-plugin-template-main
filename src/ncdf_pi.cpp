@@ -120,6 +120,8 @@ int ncdf_pi::Init(void)
 	  m_bShowSeaTemp = false;
 	  m_bShowSeaTempIso = false;
 	  m_bShowSalinity = false;
+	  m_bShowZos = false;
+	  m_bShowZosIso = false;
 	  // Per-type settings default to all off
 	  m_iParticleDensity = 5;
 
@@ -394,9 +396,12 @@ bool ncdf_pi::LoadConfig(void)
             pConf->Read ( _T( "ShowSeaTemp" ), &m_bShowSeaTemp, 0 );
             pConf->Read ( _T( "ShowSeaTempIso" ), &m_bShowSeaTempIso, 0 );
             pConf->Read ( _T( "ShowSalinity" ), &m_bShowSalinity, 0 );
+            pConf->Read ( _T( "ShowZos" ), &m_bShowZos, 0 );
+            pConf->Read ( _T( "ZosIso" ), &m_bShowZosIso, 0 );
             pConf->Read ( _T( "Animate" ), &m_settingsCurrent.animate, 0 );
             pConf->Read ( _T( "SeaTempIso" ), &m_settingsSeaTemp.showIsoLines, 0 );
             pConf->Read ( _T( "SalinityIso" ), &m_settingsSalinity.showIsoLines, 0 );
+            pConf->Read ( _T( "ZosAnimate" ), &m_settingsZos.animate, 0 );
             pConf->Read ( _T( "ParticleDensity" ), &m_iParticleDensity, 5 );
 
 
@@ -438,9 +443,12 @@ bool ncdf_pi::SaveConfig(void)
             pConf->Write ( _T ( "ShowSeaTemp" ), m_bShowSeaTemp );
             pConf->Write ( _T ( "ShowSeaTempIso" ), m_bShowSeaTempIso );
             pConf->Write ( _T ( "ShowSalinity" ), m_bShowSalinity );
+            pConf->Write ( _T ( "ShowZos" ), m_bShowZos );
+            pConf->Write ( _T ( "ZosIso" ), m_bShowZosIso );
             pConf->Write ( _T ( "Animate" ), m_settingsCurrent.animate );
             pConf->Write ( _T ( "SeaTempIso" ), m_settingsSeaTemp.showIsoLines );
             pConf->Write ( _T ( "SalinityIso" ), m_settingsSalinity.showIsoLines );
+            pConf->Write ( _T ( "ZosAnimate" ), m_settingsZos.animate );
             pConf->Write ( _T ( "ParticleDensity" ), m_iParticleDensity );
 
             pConf->Write ( _T ( "ncdfDialogSizeX" ),  m_ncdf_dialog_sx );

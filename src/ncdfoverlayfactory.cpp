@@ -90,6 +90,7 @@ ncdfOverlayFactory::ncdfOverlayFactory()
       m_currentOverlay.Init();
       m_seaTempOverlay.Init();
       m_salinityOverlay.Init();
+      m_zosOverlay.Init();
 
       // Pre-compute arrow shape (GRIB LineBuffer pattern)
       // Shaft: from -10 to +10
@@ -117,6 +118,7 @@ ncdfOverlayFactory::~ncdfOverlayFactory()
     m_currentOverlay.clearCoefficients();
     m_seaTempOverlay.clearCoefficients();
     m_salinityOverlay.clearCoefficients();
+    m_zosOverlay.clearCoefficients();
     ClearParticles();
     DeleteDispTexture();
     if (m_animateTimer.IsRunning()) m_animateTimer.Stop();
@@ -146,18 +148,21 @@ void ncdfOverlayFactory::SetBicubicMode(bool enable)
         m_seaTempOverlay.Invalidate();
     else if (plugin && plugin->m_bShowSalinity)
         m_salinityOverlay.Invalidate();
+    else if (plugin && plugin->m_bShowZos)
+        m_zosOverlay.Invalidate();
 }
 
 void ncdfOverlayFactory::setData(MainDialog *gui, ncdf_pi *plugin, const ncdfDataMessage& g2data, int numberOfPoints, wxDouble tlat, wxDouble tlon, wxDouble blat, wxDouble blon)
 {
-	ncdfLog("[setData] ENTER: hasCurr=%d hasSST=%d hasSal=%d | showCurr=%d showSST=%d showSal=%d\n",
-		(int)g2data.hasCurrent(), (int)g2data.hasSSTData(), (int)g2data.hasSalData(),
-		(int)(plugin && plugin->m_bShowCurrentForce), (int)(plugin && plugin->m_bShowSeaTemp), (int)(plugin && plugin->m_bShowSalinity));
+	ncdfLog("[setData] ENTER: hasCurr=%d hasSST=%d hasSal=%d hasZos=%d | showCurr=%d showSST=%d showSal=%d showZos=%d\n",
+		(int)g2data.hasCurrent(), (int)g2data.hasSSTData(), (int)g2data.hasSalData(), (int)g2data.hasZosData(),
+		(int)(plugin && plugin->m_bShowCurrentForce), (int)(plugin && plugin->m_bShowSeaTemp), (int)(plugin && plugin->m_bShowSalinity), (int)(plugin && plugin->m_bShowZos));
 
 	// Clear B-spline coefficients (data-dependent). Preserve grids for reuse.
 	m_currentOverlay.clearCoefficients();
 	m_seaTempOverlay.clearCoefficients();
 	m_salinityOverlay.clearCoefficients();
+	m_zosOverlay.clearCoefficients();
 	ClearParticles();
 	m_last_vp_scale = -1;
 	m_last_vp_latMax = -99999.0;
@@ -187,8 +192,8 @@ void ncdfOverlayFactory::setSelectionRectangle(Selection *rect)
 void ncdfOverlayFactory::prepareAllOverlays()
 {
     if (!gui) return;
-    ncdfLog("[render] prepareAllOverlays: ENTER, hasCurrent=%d hasSST=%d hasSal=%d\n",
-        (int)gui->myMessage.hasCurrent(), (int)gui->myMessage.hasSSTData(), (int)gui->myMessage.hasSalData());
+    ncdfLog("[render] prepareAllOverlays: ENTER, hasCurrent=%d hasSST=%d hasSal=%d hasZos=%d\n",
+        (int)gui->myMessage.hasCurrent(), (int)gui->myMessage.hasSSTData(), (int)gui->myMessage.hasSalData(), (int)gui->myMessage.hasZosData());
 
     auto t0 = std::chrono::high_resolution_clock::now();
 
@@ -197,12 +202,14 @@ void ncdfOverlayFactory::prepareAllOverlays()
     bool hasCurr = gui->myMessage.hasCurrent() && plugin && plugin->m_bShowCurrentForce;
     bool hasSST  = gui->myMessage.hasSSTData()  && plugin && plugin->m_bShowSeaTemp;
     bool hasSal  = gui->myMessage.hasSalData()  && plugin && plugin->m_bShowSalinity;
-    ncdfLog("[prepare] hasCurr=%d hasSST=%d hasSal=%d (visible only)\n",
-        (int)hasCurr, (int)hasSST, (int)hasSal);
+    bool hasZos  = gui->myMessage.hasZosData()  && plugin && plugin->m_bShowZos;
+    ncdfLog("[prepare] hasCurr=%d hasSST=%d hasSal=%d hasZos=%d (visible only)\n",
+        (int)hasCurr, (int)hasSST, (int)hasSal, (int)hasZos);
 
     if (hasCurr) { ncdfLog("[prepare] current START\n"); m_currentOverlay.prepareData(gui, plugin, this); ncdfLog("[prepare] current DONE needsRebuild=%d\n", (int)m_currentOverlay.needsRebuild); }
     if (hasSST)  { ncdfLog("[prepare] sst START\n"); m_seaTempOverlay.prepareData(gui, plugin, this); ncdfLog("[prepare] sst DONE needsRebuild=%d\n", (int)m_seaTempOverlay.needsRebuild); }
     if (hasSal)  { ncdfLog("[prepare] sal START\n"); m_salinityOverlay.prepareData(gui, plugin, this); ncdfLog("[prepare] sal DONE needsRebuild=%d\n", (int)m_salinityOverlay.needsRebuild); }
+    if (hasZos)  { ncdfLog("[prepare] zos START\n"); m_zosOverlay.prepareData(gui, plugin, this); ncdfLog("[prepare] zos DONE needsRebuild=%d\n", (int)m_zosOverlay.needsRebuild); }
 
     // Free CPU-side raw data — all computations are now cached in overlay structs
     // Texture upload will happen lazily on first RenderColorMap (needs GL context)
@@ -236,6 +243,10 @@ void ncdfOverlayFactory::prepareAllGrids()
         m_salinityOverlay.prepareGrid(gui);
         m_salinityOverlay.dataReady = true;
     }
+    if (plugin && plugin->m_bShowZos && gui->myMessage.hasZosData()) {
+        m_zosOverlay.prepareGrid(gui);
+        m_zosOverlay.dataReady = true;
+    }
 
     auto t1 = std::chrono::high_resolution_clock::now();
     ncdfLog("[perf] prepareAllGrids: TOTAL=%lldms\n",
@@ -249,6 +260,7 @@ void ncdfOverlayFactory::updateTimeStep()
     m_currentOverlay.clearCoefficients();
     m_seaTempOverlay.clearCoefficients();
     m_salinityOverlay.clearCoefficients();
+    m_zosOverlay.clearCoefficients();
     m_last_vp_scale = -1;
     m_last_vp_latMax = -99999.0;
     m_bUpdateParticles = true;
@@ -268,6 +280,8 @@ void ncdfOverlayFactory::reset()
         m_seaTempOverlay.Invalidate();
     if (plugin && plugin->m_bShowSalinity)
         m_salinityOverlay.Invalidate();
+    if (plugin && plugin->m_bShowZos)
+        m_zosOverlay.Invalidate();
 }
 
 
@@ -301,9 +315,10 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
     bool hasCurrentGrid = m_currentOverlay.dataReady;
     bool hasSSTGrid = m_seaTempOverlay.dataReady;
     bool hasSalinityGrid = m_salinityOverlay.dataReady;
-    ncdfLog("[render] DoRenderncdfOverlay: ENTER, hasCurr=%d hasSST=%d hasSal=%d ready=%d\n",
-        (int)hasCurrentGrid, (int)hasSSTGrid, (int)hasSalinityGrid, (int)m_bReadyToRender);
-    if (!hasCurrentGrid && !hasSSTGrid && !hasSalinityGrid) {
+    bool hasZosGrid = m_zosOverlay.dataReady;
+    ncdfLog("[render] DoRenderncdfOverlay: ENTER, hasCurr=%d hasSST=%d hasSal=%d hasZos=%d ready=%d\n",
+        (int)hasCurrentGrid, (int)hasSSTGrid, (int)hasSalinityGrid, (int)hasZosGrid, (int)m_bReadyToRender);
+    if (!hasCurrentGrid && !hasSSTGrid && !hasSalinityGrid && !hasZosGrid) {
         return false;
     }
     if (gui->myMessage.lonLength < 2 || gui->myMessage.latLength < 2) return false;
@@ -312,7 +327,8 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
     // Must have at least one rendering feature enabled
     if (!plugin->m_bShowCurrentForce && !plugin->m_bShowCurrentDir &&
         !plugin->m_bShowParticles && !plugin->m_bShowSeaTemp &&
-        !plugin->m_bShowSeaTempIso && !plugin->m_bShowSalinity) return false;
+        !plugin->m_bShowSeaTempIso && !plugin->m_bShowSalinity &&
+        !plugin->m_bShowZos) return false;
 
     // Lazy shader compile (first render call, GL context is available)
     // Use ncdf_shader_initialized() to handle factory recreation
@@ -333,7 +349,8 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
     double** animVGrid = NULL;
     bool animateActive = (plugin->m_settingsCurrent.animate && plugin->m_bShowCurrentForce) ||
                          (plugin->m_settingsSeaTemp.animate && plugin->m_bShowSeaTemp) ||
-                         (plugin->m_settingsSalinity.animate && plugin->m_bShowSalinity);
+                         (plugin->m_settingsSalinity.animate && plugin->m_bShowSalinity) ||
+                         (plugin->m_settingsZos.animate && plugin->m_bShowZos);
     if (animateActive && m_animate.IsInitialized()) {
         if (!m_animate.HasDisplacement()) {
             m_animate.ComputeDisplacementMap();
@@ -345,7 +362,7 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 
     static int s_frameDbg = 0;
     if (s_frameDbg < 5) {
-        wxLogMessage(_T("[render] frame %d ucurr.size=%zu vcurr.size=%zu sst.size=%zu sal.size=%zu"), s_frameDbg, gui->myMessage.ucurr.size(), gui->myMessage.vcurr.size(), gui->myMessage.sst.size(), gui->myMessage.salinity.size());
+        wxLogMessage(_T("[render] frame %d ucurr.size=%zu vcurr.size=%zu sst.size=%zu sal.size=%zu zos.size=%zu"), s_frameDbg, gui->myMessage.ucurr.size(), gui->myMessage.vcurr.size(), gui->myMessage.sst.size(), gui->myMessage.salinity.size(), gui->myMessage.zos.size());
         s_frameDbg++;
     }
 
@@ -376,12 +393,14 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 		s_renderDbg++;
 	}
 
-    ncdfLog("[render] dispatch: showCurr=%d showSST=%d showSal=%d showDir=%d showP=%d | cur[dataR=%d hasTex=%d] sst[dataR=%d hasTex=%d] sal[dataR=%d hasTex=%d]\n",
+    ncdfLog("[render] dispatch: showCurr=%d showSST=%d showSal=%d showZos=%d showDir=%d showP=%d | cur[dataR=%d hasTex=%d] sst[dataR=%d hasTex=%d] sal[dataR=%d hasTex=%d] zos[dataR=%d hasTex=%d]\n",
         (int)plugin->m_bShowCurrentForce, (int)plugin->m_bShowSeaTemp, (int)plugin->m_bShowSalinity,
+        (int)plugin->m_bShowZos,
         (int)plugin->m_bShowCurrentDir, (int)plugin->m_bShowParticles,
         (int)m_currentOverlay.dataReady, (int)m_currentOverlay.hasTexture,
         (int)m_seaTempOverlay.dataReady, (int)m_seaTempOverlay.hasTexture,
-        (int)m_salinityOverlay.dataReady, (int)m_salinityOverlay.hasTexture);
+        (int)m_salinityOverlay.dataReady, (int)m_salinityOverlay.hasTexture,
+        (int)m_zosOverlay.dataReady, (int)m_zosOverlay.hasTexture);
     RenderCurrentOverlay(vp, animGrid, animUGrid, animVGrid);
 
     if(plugin->m_bShowCurrentDir) {
@@ -396,34 +415,44 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 
     RenderSeaTempOverlay(vp, animGrid);
     RenderSalinityOverlay(vp, animGrid);
+    RenderZosOverlay(vp, animGrid);
 
     // Color legend
     {
         static const ColorStop tempStops[] = {
-            {-2, 0x80, 0x00, 0xc0}, {2, 0x40, 0x30, 0xff}, {7, 0x00, 0x90, 0xfa},
-            {12, 0x00, 0xd8, 0xb0}, {17, 0x10, 0xbb, 0x20}, {22, 0x90, 0xd0, 0x00},
-            {26, 0xf0, 0xd0, 0x00}, {30, 0xf0, 0x70, 0x00}, {32, 0xff, 0x00, 0x00}
+            {-2.0, 120, 130, 220}, {0.0,  70, 100, 225}, {2.0,  30,  60, 210},
+            { 5.0,  15,  25, 190}, {8.0,   0, 100, 200}, {10.0,  0, 160, 185},
+            {13.0,   0, 200, 130}, {16.0, 50, 220,  70}, {19.0,130, 230,  25},
+            {22.0, 205, 220,  25}, {25.0,240, 185,  25}, {28.0,240, 130,  25},
+            {30.0, 225,  80,  30}, {32.0,195,  45,  45}
         };
         static const ColorStop salStops[] = {
-            {30, 0x87, 0xce, 0xeb}, {31, 0x60, 0xb0, 0xe0}, {32, 0x40, 0x90, 0xd0},
-            {33, 0x20, 0x70, 0xc0}, {34, 0x10, 0x50, 0xa0}, {35, 0x00, 0x80, 0x80},
-            {35.5, 0x20, 0xa0, 0x70}, {36, 0x40, 0xc0, 0x60}, {36.5, 0x80, 0xc0, 0x40},
-            {37, 0xc0, 0xb0, 0x20}, {37.5, 0xe0, 0xa0, 0x10}, {38, 0xe0, 0x70, 0x20},
-            {38.5, 0xd0, 0x40, 0x20}, {39, 0xc0, 0x20, 0x20}
+            {30.0, 245, 235, 195}, {31.0, 210, 225, 185}, {32.0, 170, 210, 175},
+            {33.0, 125, 195, 172}, {34.0,  80, 180, 170}, {35.0,  55, 165, 172},
+            {36.0,  30, 140, 168}, {37.0,  28, 105, 152}, {38.0,  30,  70, 130},
+            {39.0,  40,  30,  90}
         };
         static const ColorStop currStops[] = {
-            {0.00, 20, 20, 180}, {0.10, 30, 80, 220}, {0.25, 0, 180, 220},
-            {0.50, 0, 200, 80}, {0.75, 220, 220, 20}, {1.00, 240, 100, 20},
-            {1.50, 220, 20, 20}
+            {0.00,  60,  20, 120}, {0.10,  40,  80, 200}, {0.25,   0, 160, 220},
+            {0.50,   0, 190, 100}, {0.75,  80, 210,  40}, {1.00, 230, 220,  30},
+            {1.25, 250, 140,  20}, {1.50, 200,  30,  30}
+        };
+        static const ColorStop zosStops[] = {
+            {-2.0,  30,  60, 140}, {-1.5,  60, 110, 180}, {-1.0, 110, 160, 210},
+            {-0.5, 170, 200, 230}, { 0.0, 240, 240, 225}, { 0.5, 245, 190, 160},
+            { 1.0, 235, 130,  90}, { 1.5, 210,  70,  50}, { 2.0, 170,  30,  30}
         };
         if (plugin->m_bShowSeaTemp && gui && m_seaTempOverlay.dataReady) {
-            m_legend.SetData(tempStops, 9, "\xC2\xB0" "C", "Sea Temperature");
+            m_legend.SetData(tempStops, 14, "\xC2\xB0" "C", "Sea Temperature");
             m_legend.Draw((int)vp->pix_width, (int)vp->pix_height);
         } else if (plugin->m_bShowSalinity && gui && m_salinityOverlay.dataReady) {
-            m_legend.SetData(salStops, 14, "PSU", "Salinity");
+            m_legend.SetData(salStops, 10, "PSU", "Salinity");
             m_legend.Draw((int)vp->pix_width, (int)vp->pix_height);
         } else if (plugin->m_bShowCurrentForce && gui && m_currentOverlay.dataReady) {
-            m_legend.SetData(currStops, 7, "m/s", "Current Speed");
+            m_legend.SetData(currStops, 8, "m/s", "Current Speed");
+            m_legend.Draw((int)vp->pix_width, (int)vp->pix_height);
+        } else if (plugin->m_bShowZos && gui && m_zosOverlay.dataReady) {
+            m_legend.SetData(zosStops, 9, "m", "Sea Surface Height");
             m_legend.Draw((int)vp->pix_width, (int)vp->pix_height);
         }
     }
@@ -495,6 +524,25 @@ void ncdfOverlayFactory::RenderSalinityOverlay(PlugIn_ViewPort *vp, double **ani
 
     if (plugin->m_settingsSalinity.showIsoLines && plugin->m_bShowSalinity && gui && m_salinityOverlay.dataReady) {
         m_salinityOverlay.RenderIsoLines(vp, gui);
+    }
+}
+
+void ncdfOverlayFactory::RenderZosOverlay(PlugIn_ViewPort *vp, double **animGrid)
+{
+    if (plugin->m_bShowZos && gui && m_zosOverlay.dataReady && !m_pdc) {
+#ifdef ocpnUSE_GL
+        ncdfLog("[render:zos] ENTER hasTex=%d needsRebuild=%d dataReady=%d cachedCoeff=%p cachedBaseGrid=%d\n",
+            (int)m_zosOverlay.hasTexture, (int)m_zosOverlay.needsRebuild,
+            (int)m_zosOverlay.dataReady, (void*)m_zosOverlay.cachedCoeff, (int)(bool)m_zosOverlay.cachedBaseGrid);
+        m_currentInterpMode = 0;
+        m_zosOverlay.RenderColorMap(vp, gui, plugin, this, animGrid);
+        m_currentDataMin = m_zosOverlay.cachedDataMin;
+        m_currentDataMax = m_zosOverlay.cachedDataMax;
+#endif
+    }
+
+    if (plugin->m_settingsZos.showIsoLines && plugin->m_bShowZos && gui && m_zosOverlay.dataReady) {
+        m_zosOverlay.RenderIsoLines(vp, gui);
     }
 }
 

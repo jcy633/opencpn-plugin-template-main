@@ -60,8 +60,9 @@ void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 	bool hasCurrent = dataMessage.hasCurrent();
 	bool hasSST = dataMessage.hasSSTData();
 	bool hasSal = dataMessage.hasSalData();
-	ncdfLog("[ncdf] readncdfFile: hasCurrent=%d hasSST=%d hasSal=%d ucurr.size=%zu sst.size=%zu\n",
-		(int)hasCurrent, (int)hasSST, (int)hasSal, dataMessage.ucurr.size(), dataMessage.sst.size());
+	bool hasZos = dataMessage.hasZosData();
+	ncdfLog("[ncdf] readncdfFile: hasCurrent=%d hasSST=%d hasSal=%d hasZos=%d ucurr.size=%zu sst.size=%zu\n",
+		(int)hasCurrent, (int)hasSST, (int)hasSal, (int)hasZos, dataMessage.ucurr.size(), dataMessage.sst.size());
 
 	// clear() handles coordinate lifetime via shared_ptr — no manual free needed
 	gui->myMessage.clear();
@@ -87,7 +88,7 @@ void ncdfReader::readncdfFile(const ncdfDataMessage& dataMessage)
 	dbg = fopen("C:\\ProgramData\\opencpn\\ncdf_crash_trace.log", "a");
 	if (dbg) { fprintf(dbg, "readncdfFile: C-after reset\n"); fflush(dbg); fclose(dbg); }
 
-	if (!hasCurrent && !hasSST && !hasSal) {
+	if (!hasCurrent && !hasSST && !hasSal && !hasZos) {
 		gui->pPlugIn->GetncdfOverlayFactory()->setData(gui,
 								   gui->pPlugIn,
 								   dataMessage,

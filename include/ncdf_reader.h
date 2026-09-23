@@ -38,7 +38,7 @@ class ncdfDataMessage
 {
 public:
 	ncdfDataMessage() :
-		hasSeaTemp(false), hasSalinity(false),
+		hasSeaTemp(false), hasSalinity(false), hasZos(false),
 		latValues(NULL), lonValues(NULL), timeValues(NULL),
 		timeIndex(-1), timeValid(false),
 		numberOfPoints(0), minutesAfterStart(0),
@@ -49,7 +49,7 @@ public:
 		latLength(0), lonLength(0), timeLength(0) {}
 
 	ncdfDataMessage(const ncdfDataMessage& other) :
-		hasSeaTemp(false), hasSalinity(false),
+		hasSeaTemp(false), hasSalinity(false), hasZos(false),
 		latValues(NULL), lonValues(NULL), timeValues(NULL),
 		timeIndex(-1) {
 		copyFrom(other);
@@ -70,9 +70,10 @@ public:
 	// Clear data arrays only (keep coordinate metadata for re-read)
 	void clearData() {
 		ucurr.clear(); vcurr.clear();
-		sst.clear(); salinity.clear();
+		sst.clear(); salinity.clear(); zos.clear();
 		hasSeaTemp = false;
 		hasSalinity = false;
+		hasZos = false;
 	}
 
 	// Clear everything including coordinate references (for destructor/file switch)
@@ -93,8 +94,10 @@ public:
 		vcurr = src.vcurr;
 		sst = src.sst;
 		salinity = src.salinity;
+		zos = src.zos;
 		hasSeaTemp = src.hasSeaTemp;
 		hasSalinity = src.hasSalinity;
+		hasZos = src.hasZos;
 		timeIndex = src.timeIndex;
 		dataDateTime = src.dataDateTime;
 		minutesAfterStart = src.minutesAfterStart;
@@ -118,11 +121,16 @@ public:
 		if (salinity.empty() || j < 0 || j >= (int)latLength || i < 0 || i >= (int)lonLength) return ncdf_NOTDEF;
 		return salinity[j * lonLength + i];
 	}
+	double getZos(int i, int j) const {
+		if (zos.empty() || j < 0 || j >= (int)latLength || i < 0 || i >= (int)lonLength) return ncdf_NOTDEF;
+		return zos[j * lonLength + i];
+	}
 
 	// Check if data type has valid data
 	bool hasCurrent() const { return !ucurr.empty() && !vcurr.empty(); }
 	bool hasSSTData() const { return !sst.empty() && hasSeaTemp; }
 	bool hasSalData() const { return !salinity.empty() && hasSalinity; }
+	bool hasZosData() const { return !zos.empty() && hasZos; }
 
 private:
 	void copyFrom(const ncdfDataMessage& other) {
@@ -159,6 +167,8 @@ private:
 		hasSeaTemp = other.hasSeaTemp;
 		salinity = other.salinity;
 		hasSalinity = other.hasSalinity;
+		zos = other.zos;
+		hasZos = other.hasZos;
 	}
 
 public:
@@ -208,6 +218,8 @@ public:
 	bool hasSeaTemp;
 	std::vector<double> salinity;
 	bool hasSalinity;
+	std::vector<double> zos;
+	bool hasZos;
 
 	wxDateTime  dataDateTime;
 	int			minutesAfterStart;
