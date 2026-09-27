@@ -1,4 +1,4 @@
-///////////////////////////////////////////////////////////////////////////
+﻿///////////////////////////////////////////////////////////////////////////
 // C++ code generated with wxFormBuilder (version 4.2.1-0-g80c4cb6)
 // http://www.wxformbuilder.org/
 //
@@ -127,6 +127,34 @@ class ncdfDialog : public wxDialog
 		virtual void onIsoZosClick( wxCommandEvent& event ) { event.Skip(); }
 		wxCheckBox* m_checkBoxAnimateZos;
 		virtual void onAnimateZosClick( wxCommandEvent& event ) { event.Skip(); }
+		// Feature detection settings tab (识别, plan docs/ocean-feature-detection-plan.md)
+		wxPanel* m_panelFeatSettings;
+		wxCheckBox* m_checkBoxFeatClip;
+		virtual void onFeatClipClick( wxCommandEvent& event ) { event.Skip(); }
+		wxCheckBox* m_checkBoxFeatFront;
+		virtual void onFeatFrontClick( wxCommandEvent& event ) { event.Skip(); }
+		wxCheckBox* m_checkBoxFeatEddy;
+		virtual void onFeatEddyClick( wxCommandEvent& event ) { event.Skip(); }
+		wxCheckBox* m_checkBoxFeatJet;
+		virtual void onFeatJetClick( wxCommandEvent& event ) { event.Skip(); }
+		wxCheckBox* m_checkBoxFeatConverg;
+		virtual void onFeatConvergClick( wxCommandEvent& event ) { event.Skip(); }
+		wxCheckBox* m_checkBoxFeatShear;
+		virtual void onFeatShearClick( wxCommandEvent& event ) { event.Skip(); }
+		wxChoice* m_choiceFeatROI;
+		virtual void onFeatROIChoice( wxCommandEvent& event ) { event.Skip(); }
+		wxTextCtrl* m_textFeatLatMin;
+		wxTextCtrl* m_textFeatLatMax;
+		wxTextCtrl* m_textFeatLonMin;
+		wxTextCtrl* m_textFeatLonMax;
+		wxButton* m_btnFeatRegionApply;
+		virtual void onFeatRegionApply( wxCommandEvent& event ) { event.Skip(); }
+		wxButton* m_btnFeatRegionPick;
+		virtual void onFeatRegionPick( wxCommandEvent& event ) { event.Skip(); }
+		wxStaticText* m_staticFeatFileExtent;
+		wxSlider* m_sliderFeatSens;
+		virtual void onFeatSensChanged( wxScrollEvent& event ) { event.Skip(); }
+		wxTextCtrl* m_textCtrlFeatReadout;
 
 		ncdfDialog( wxWindow* parent, wxWindowID id = wxID_ANY, const wxString& title = _("ncdf Dialog"), const wxPoint& pos = wxDefaultPosition, const wxSize& size = wxSize( 280,460 ), long style = wxDEFAULT_DIALOG_STYLE|wxRESIZE_BORDER );
 

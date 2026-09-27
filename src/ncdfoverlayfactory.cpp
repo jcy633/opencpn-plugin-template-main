@@ -1,4 +1,4 @@
-/*
+﻿/*
     Copyright (c) 2011, Konni <email>
     All rights reserved.
 
@@ -27,6 +27,7 @@
 #define PI 3.14159265
 
 #include "ncdfoverlayfactory.h"
+#include "ncdf_feature_render.h"
 #include "ncdf.h"
 #include "ncdf_pi.h"
 #include "IsoLine2.h"
@@ -37,6 +38,11 @@
 #include <wx/dynarray.h>
 
 extern void ncdfLog(const char* format, ...);
+
+// Per-frame log budget (v1.1): render-path logs were doing fopen/fclose on the
+// debug log EVERY FRAME -> visible jank. Only the first N frames log.
+static int s_frameLogBudget = 60;
+#define FRAME_LOG(...) do { if (s_frameLogBudget > 0) { s_frameLogBudget--; ncdfLog(__VA_ARGS__); } } while (0)
 
 #ifdef __WXMSW__
 #define snprintf _snprintf
@@ -62,6 +68,7 @@ ncdfOverlayFactory::ncdfOverlayFactory()
       space[0]=30; space[1]=50; space[2]=100; space[3]=200; space[4]=400; space[5]=600; space[6]=1200;
 	  m_bReadyToRender = false;
       m_space = 0;
+      m_bHasVpCopy = false;
       m_ParticleMap = nullptr;
       m_currentInterpMode = 0;
       m_currentDataMin = 0.0f;
@@ -309,6 +316,8 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 {
     this->vp = vp;
     if (!vp) return false;
+    m_vpCopy = *vp;          // snapshot for mouse-time coordinate work
+    m_bHasVpCopy = true;
 
     // Guard: must have valid gui and at least one overlay with prepared data
     if (!gui) return false;
@@ -316,9 +325,11 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
     bool hasSSTGrid = m_seaTempOverlay.dataReady;
     bool hasSalinityGrid = m_salinityOverlay.dataReady;
     bool hasZosGrid = m_zosOverlay.dataReady;
-    ncdfLog("[render] DoRenderncdfOverlay: ENTER, hasCurr=%d hasSST=%d hasSal=%d hasZos=%d ready=%d\n",
-        (int)hasCurrentGrid, (int)hasSSTGrid, (int)hasSalinityGrid, (int)hasZosGrid, (int)m_bReadyToRender);
-    if (!hasCurrentGrid && !hasSSTGrid && !hasSalinityGrid && !hasZosGrid) {
+    const FeatureSet &fset = m_featureEngine.features();
+    bool hasFeatures = fset.fronts.size() || fset.zones.size();
+    FRAME_LOG("[render] DoRenderncdfOverlay: ENTER, hasCurr=%d hasSST=%d hasSal=%d hasZos=%d feat=%d ready=%d\n",
+        (int)hasCurrentGrid, (int)hasSSTGrid, (int)hasSalinityGrid, (int)hasZosGrid, (int)hasFeatures, (int)m_bReadyToRender);
+    if (!hasCurrentGrid && !hasSSTGrid && !hasSalinityGrid && !hasZosGrid && !hasFeatures) {
         return false;
     }
     if (gui->myMessage.lonLength < 2 || gui->myMessage.latLength < 2) return false;
@@ -328,7 +339,7 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
     if (!plugin->m_bShowCurrentForce && !plugin->m_bShowCurrentDir &&
         !plugin->m_bShowParticles && !plugin->m_bShowSeaTemp &&
         !plugin->m_bShowSeaTempIso && !plugin->m_bShowSalinity &&
-        !plugin->m_bShowZos) return false;
+        !plugin->m_bShowZos && !m_featureEngine.anyEnabled()) return false;
 
     // Lazy shader compile (first render call, GL context is available)
     // Use ncdf_shader_initialized() to handle factory recreation
@@ -393,7 +404,7 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
 		s_renderDbg++;
 	}
 
-    ncdfLog("[render] dispatch: showCurr=%d showSST=%d showSal=%d showZos=%d showDir=%d showP=%d | cur[dataR=%d hasTex=%d] sst[dataR=%d hasTex=%d] sal[dataR=%d hasTex=%d] zos[dataR=%d hasTex=%d]\n",
+    FRAME_LOG("[render] dispatch: showCurr=%d showSST=%d showSal=%d showZos=%d showDir=%d showP=%d | cur[dataR=%d hasTex=%d] sst[dataR=%d hasTex=%d] sal[dataR=%d hasTex=%d] zos[dataR=%d hasTex=%d]\n",
         (int)plugin->m_bShowCurrentForce, (int)plugin->m_bShowSeaTemp, (int)plugin->m_bShowSalinity,
         (int)plugin->m_bShowZos,
         (int)plugin->m_bShowCurrentDir, (int)plugin->m_bShowParticles,
@@ -401,21 +412,32 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
         (int)m_seaTempOverlay.dataReady, (int)m_seaTempOverlay.hasTexture,
         (int)m_salinityOverlay.dataReady, (int)m_salinityOverlay.hasTexture,
         (int)m_zosOverlay.dataReady, (int)m_zosOverlay.hasTexture);
-    RenderCurrentOverlay(vp, animGrid, animUGrid, animVGrid);
+    // ---- feature clip mode (plan §4.1): data layers only inside areal features ----
+    bool clipOn = plugin->m_bFeatClipMode;
+    bool clipActive = false;
+    if (clipOn) clipActive = FeatureRender::clipMaskBegin(fset, vp);
+    const bool renderDataLayers = !clipOn || clipActive;
 
-    if(plugin->m_bShowCurrentDir) {
-        RenderncdfCurrent();
+    if (renderDataLayers) {
+        RenderCurrentOverlay(vp, animGrid, animUGrid, animVGrid);
+
+        if(plugin->m_bShowCurrentDir) {
+            RenderncdfCurrent();
+        }
+
+        if(plugin->m_bShowParticles) {
+            RenderParticles(vp);
+        } else {
+            ClearParticles();
+        }
+
+        RenderSeaTempOverlay(vp, animGrid);
+        RenderSalinityOverlay(vp, animGrid);
+        RenderZosOverlay(vp, animGrid);
+    } else if (plugin->m_bShowParticles) {
+        ClearParticles();   // clip unavailable: keep particle state clean
     }
-
-    if(plugin->m_bShowParticles) {
-        RenderParticles(vp);
-    } else {
-        ClearParticles();
-    }
-
-    RenderSeaTempOverlay(vp, animGrid);
-    RenderSalinityOverlay(vp, animGrid);
-    RenderZosOverlay(vp, animGrid);
+    if (clipActive) FeatureRender::clipMaskEnd();
 
     // Color legend
     {
@@ -443,19 +465,27 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
             { 1.0, 235, 130,  90}, { 1.5, 210,  70,  50}, { 2.0, 170,  30,  30}
         };
         if (plugin->m_bShowSeaTemp && gui && m_seaTempOverlay.dataReady) {
-            m_legend.SetData(tempStops, 14, "\xC2\xB0" "C", "Sea Temperature");
+            m_legend.SetData(tempStops, 14, "\xC2\xB0" "C", "海 温");
             m_legend.Draw((int)vp->pix_width, (int)vp->pix_height);
         } else if (plugin->m_bShowSalinity && gui && m_salinityOverlay.dataReady) {
-            m_legend.SetData(salStops, 10, "PSU", "Salinity");
+            m_legend.SetData(salStops, 10, "PSU", "盐 度");
             m_legend.Draw((int)vp->pix_width, (int)vp->pix_height);
         } else if (plugin->m_bShowCurrentForce && gui && m_currentOverlay.dataReady) {
-            m_legend.SetData(currStops, 8, "m/s", "Current Speed");
+            m_legend.SetData(currStops, 8, "m/s", "流 速");
             m_legend.Draw((int)vp->pix_width, (int)vp->pix_height);
         } else if (plugin->m_bShowZos && gui && m_zosOverlay.dataReady) {
-            m_legend.SetData(zosStops, 9, "m", "Sea Surface Height");
+            m_legend.SetData(zosStops, 9, "m", "海面高度");
             m_legend.Draw((int)vp->pix_width, (int)vp->pix_height);
         }
     }
+
+    // ---- feature objects + feature legend (plan §4.2) ----
+    FeatureRender::drawAll(fset, vp, this, m_featureEngine.anyEnabled(),
+        gui ? gui->m_selFeatLon : -9999.0, gui ? gui->m_selFeatLat : -9999.0);
+
+    if (renderSelectionRectangle && rect) RenderSelectionRectangle();
+
+    if (gui) gui->updateFeaturePopupPos(vp);   // popup follows its feature anchor
 
     m_last_vp_scale = vp->view_scale_ppm;
     m_last_vp_latMax = vp->lat_max;
@@ -474,7 +504,7 @@ void ncdfOverlayFactory::RenderCurrentOverlay(PlugIn_ViewPort *vp, double **anim
 {
     if(plugin->m_bShowCurrentForce && m_currentOverlay.dataReady && !m_pdc) {
 #ifdef ocpnUSE_GL
-        ncdfLog("[render:current] ENTER hasTex=%d needsRebuild=%d dataReady=%d cachedU=%p cachedCoeffU=%p\n",
+        FRAME_LOG("[render:current] ENTER hasTex=%d needsRebuild=%d dataReady=%d cachedU=%p cachedCoeffU=%p\n",
             (int)m_currentOverlay.hasTexture, (int)m_currentOverlay.needsRebuild,
             (int)m_currentOverlay.dataReady, (void*)m_currentOverlay.cachedU, (void*)m_currentOverlay.cachedCoeffU);
         glDisable(GL_TEXTURE_2D);
@@ -483,7 +513,7 @@ void ncdfOverlayFactory::RenderCurrentOverlay(PlugIn_ViewPort *vp, double **anim
         m_currentOverlay.RenderColorMap(vp, gui, plugin, this, animGrid, animUGrid, animVGrid);
         m_currentDataMin = m_currentOverlay.cachedDataMin;
         m_currentDataMax = m_currentOverlay.cachedDataMax;
-        ncdfLog("[render] RenderCurrentOverlay: EXIT\n");
+        FRAME_LOG("[render] RenderCurrentOverlay: EXIT\n");
 #endif
     }
 }
@@ -492,14 +522,14 @@ void ncdfOverlayFactory::RenderSeaTempOverlay(PlugIn_ViewPort *vp, double **anim
 {
     if (plugin->m_bShowSeaTemp && gui && m_seaTempOverlay.dataReady && !m_pdc) {
 #ifdef ocpnUSE_GL
-        ncdfLog("[render:sst] ENTER hasTex=%d needsRebuild=%d dataReady=%d cachedCoeff=%p cachedBaseGrid=%d\n",
+        FRAME_LOG("[render:sst] ENTER hasTex=%d needsRebuild=%d dataReady=%d cachedCoeff=%p cachedBaseGrid=%d\n",
             (int)m_seaTempOverlay.hasTexture, (int)m_seaTempOverlay.needsRebuild,
             (int)m_seaTempOverlay.dataReady, (void*)m_seaTempOverlay.cachedCoeff, (int)(bool)m_seaTempOverlay.cachedBaseGrid);
         m_currentInterpMode = 0;
         m_seaTempOverlay.RenderColorMap(vp, gui, plugin, this, animGrid);
         m_currentDataMin = m_seaTempOverlay.cachedDataMin;
         m_currentDataMax = m_seaTempOverlay.cachedDataMax;
-        ncdfLog("[render] RenderSeaTempOverlay: EXIT\n");
+        FRAME_LOG("[render] RenderSeaTempOverlay: EXIT\n");
 #endif
     }
 
@@ -512,7 +542,7 @@ void ncdfOverlayFactory::RenderSalinityOverlay(PlugIn_ViewPort *vp, double **ani
 {
     if (plugin->m_bShowSalinity && gui && m_salinityOverlay.dataReady && !m_pdc) {
 #ifdef ocpnUSE_GL
-        ncdfLog("[render:sal] ENTER hasTex=%d needsRebuild=%d dataReady=%d cachedCoeff=%p cachedBaseGrid=%d\n",
+        FRAME_LOG("[render:sal] ENTER hasTex=%d needsRebuild=%d dataReady=%d cachedCoeff=%p cachedBaseGrid=%d\n",
             (int)m_salinityOverlay.hasTexture, (int)m_salinityOverlay.needsRebuild,
             (int)m_salinityOverlay.dataReady, (void*)m_salinityOverlay.cachedCoeff, (int)(bool)m_salinityOverlay.cachedBaseGrid);
         m_currentInterpMode = 0;
@@ -531,7 +561,7 @@ void ncdfOverlayFactory::RenderZosOverlay(PlugIn_ViewPort *vp, double **animGrid
 {
     if (plugin->m_bShowZos && gui && m_zosOverlay.dataReady && !m_pdc) {
 #ifdef ocpnUSE_GL
-        ncdfLog("[render:zos] ENTER hasTex=%d needsRebuild=%d dataReady=%d cachedCoeff=%p cachedBaseGrid=%d\n",
+        FRAME_LOG("[render:zos] ENTER hasTex=%d needsRebuild=%d dataReady=%d cachedCoeff=%p cachedBaseGrid=%d\n",
             (int)m_zosOverlay.hasTexture, (int)m_zosOverlay.needsRebuild,
             (int)m_zosOverlay.dataReady, (void*)m_zosOverlay.cachedCoeff, (int)(bool)m_zosOverlay.cachedBaseGrid);
         m_currentInterpMode = 0;

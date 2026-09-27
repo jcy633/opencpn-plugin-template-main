@@ -1,4 +1,4 @@
-/******************************************************************************
+﻿/******************************************************************************
  * $Id: ncdf_pi.cpp,v 1.8 2010/06/21 01:54:37 bdbcat Exp $
  *
  * Project:  OpenCPN
@@ -122,6 +122,16 @@ int ncdf_pi::Init(void)
 	  m_bShowSalinity = false;
 	  m_bShowZos = false;
 	  m_bShowZosIso = false;
+	  m_bFeatClipMode = false;
+	  m_bFeatFront = false;
+	  m_bFeatEddy = false;
+	  m_bFeatJet = false;
+	  m_bFeatConverg = false;
+	  m_bFeatShear = false;
+	  m_iFeatSensitivity = 60;
+	  m_iFeatROIType = 0;
+	  m_featROILatMin = 15; m_featROILatMax = 45;
+	  m_featROILonMin = 100; m_featROILonMax = 135;
 	  // Per-type settings default to all off
 	  m_iParticleDensity = 5;
 
@@ -156,9 +166,19 @@ int ncdf_pi::Init(void)
            WANTS_CURSOR_LATLON       |
            WANTS_TOOLBAR_CALLBACK    |
            INSTALLS_TOOLBAR_TOOL     |
+           WANTS_MOUSE_EVENTS        |
            WANTS_CONFIG              
            //WANTS_PREFERENCES
             );
+}
+
+bool ncdf_pi::MouseEventHook(wxMouseEvent &event)
+{
+    if (event.LeftUp() || event.LeftDown())
+        ncdfLog("[mouse] MouseEventHook: %s at (%d,%d) dialog=%p\n",
+            event.LeftDown() ? "down" : "up", event.GetX(), event.GetY(), (void*)m_pncdfDialog);
+    if (m_pncdfDialog) return m_pncdfDialog->onCanvasMouse(event);
+    return false;
 }
 
 bool ncdf_pi::DeInit(void)
@@ -402,6 +422,18 @@ bool ncdf_pi::LoadConfig(void)
             pConf->Read ( _T( "SeaTempIso" ), &m_settingsSeaTemp.showIsoLines, 0 );
             pConf->Read ( _T( "SalinityIso" ), &m_settingsSalinity.showIsoLines, 0 );
             pConf->Read ( _T( "ZosAnimate" ), &m_settingsZos.animate, 0 );
+            pConf->Read ( _T( "FeatClipMode" ), &m_bFeatClipMode, 0 );
+            pConf->Read ( _T( "FeatFront" ), &m_bFeatFront, 0 );
+            pConf->Read ( _T( "FeatEddy" ), &m_bFeatEddy, 0 );
+            pConf->Read ( _T( "FeatJet" ), &m_bFeatJet, 0 );
+            pConf->Read ( _T( "FeatConverg" ), &m_bFeatConverg, 0 );
+            pConf->Read ( _T( "FeatShear" ), &m_bFeatShear, 0 );
+            pConf->Read ( _T( "FeatSensitivity" ), &m_iFeatSensitivity, 60 );
+            pConf->Read ( _T( "FeatROIType" ), &m_iFeatROIType, 0 );
+            pConf->Read ( _T( "FeatROILatMin" ), &m_featROILatMin, 15.0 );
+            pConf->Read ( _T( "FeatROILatMax" ), &m_featROILatMax, 45.0 );
+            pConf->Read ( _T( "FeatROILonMin" ), &m_featROILonMin, 100.0 );
+            pConf->Read ( _T( "FeatROILonMax" ), &m_featROILonMax, 135.0 );
             pConf->Read ( _T( "ParticleDensity" ), &m_iParticleDensity, 5 );
 
 
@@ -449,6 +481,18 @@ bool ncdf_pi::SaveConfig(void)
             pConf->Write ( _T ( "SeaTempIso" ), m_settingsSeaTemp.showIsoLines );
             pConf->Write ( _T ( "SalinityIso" ), m_settingsSalinity.showIsoLines );
             pConf->Write ( _T ( "ZosAnimate" ), m_settingsZos.animate );
+            pConf->Write ( _T ( "FeatClipMode" ), m_bFeatClipMode );
+            pConf->Write ( _T ( "FeatFront" ), m_bFeatFront );
+            pConf->Write ( _T ( "FeatEddy" ), m_bFeatEddy );
+            pConf->Write ( _T ( "FeatJet" ), m_bFeatJet );
+            pConf->Write ( _T ( "FeatConverg" ), m_bFeatConverg );
+            pConf->Write ( _T ( "FeatShear" ), m_bFeatShear );
+            pConf->Write ( _T ( "FeatSensitivity" ), m_iFeatSensitivity );
+            pConf->Write ( _T ( "FeatROIType" ), m_iFeatROIType );
+            pConf->Write ( _T ( "FeatROILatMin" ), m_featROILatMin );
+            pConf->Write ( _T ( "FeatROILatMax" ), m_featROILatMax );
+            pConf->Write ( _T ( "FeatROILonMin" ), m_featROILonMin );
+            pConf->Write ( _T ( "FeatROILonMax" ), m_featROILonMax );
             pConf->Write ( _T ( "ParticleDensity" ), m_iParticleDensity );
 
             pConf->Write ( _T ( "ncdfDialogSizeX" ),  m_ncdf_dialog_sx );

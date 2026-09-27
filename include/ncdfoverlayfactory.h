@@ -1,4 +1,4 @@
-/*
+﻿/*
     Copyright (c) 2011, Konni <email>
     All rights reserved.
 
@@ -49,6 +49,7 @@
 #include "ncdf_overlay_seatemp.h"
 #include "ncdf_overlay_salinity.h"
 #include "ncdf_overlay_zos.h"
+#include "ncdf_feature.h"
 
 using namespace std;
 
@@ -89,6 +90,7 @@ public:
 	 SeaTempOverlay m_seaTempOverlay;
 	 SalinityOverlay m_salinityOverlay;
 	 ZosOverlay m_zosOverlay;
+	 FeatureEngine m_featureEngine;   // ocean feature detection (plan docs/ocean-feature-detection-plan.md)
 	 GLuint m_glDispTexture;   // displacement map for animation
 	 bool m_bHasDispTexture;
 	 void DeleteDispTexture();
@@ -222,6 +224,12 @@ public:
                             GLuint *physicalTexID = NULL, bool *hasPhysicalTex = NULL);
 
      PlugIn_ViewPort 	*vp;
+     // Value copy of the last render viewport: OCPN builds the PlugIn_ViewPort
+     // per-paint; it dangles after the render callback returns. Mouse-time
+     // coordinate conversions MUST use this copy (root cause of dead hit
+     // testing and broken region pick).
+     PlugIn_ViewPort 	m_vpCopy;
+     bool               m_bHasVpCopy;
 	 bool 		m_bReadyToRender;
 	 bool		renderSelectionRectangle;
 

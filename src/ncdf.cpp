@@ -1,4 +1,4 @@
-/*********************************************************************
+﻿/*********************************************************************
  * Name:      	main.cpp
  * Purpose:   	Implements simple wxWidgets application with GUI
  * 				created using wxFormBuilder.
@@ -33,6 +33,7 @@
 #include "ncdfdata.h"
 #include "ncdf_pi.h"
 #include "ncdfoverlayfactory.h"
+#include "ncdf_feature_render.h"
 #include "ncdf_animate.h"
 #include <vector>
 #include <algorithm>
@@ -90,6 +91,9 @@ static void ncdfLogW(const wchar_t* format, ...) {
     }
 }
 
+// forward decl (used by MainDialog's feature-debounce timer lambda below)
+static void refreshFeatures(MainDialog *dlg, int waves);
+
 MainDialog::MainDialog(wxWindow *parent) : ncdfDialog( parent ), m_isTreeUpdating(false)
 {
 	ncdfLog("[ncdf] MainDialog constructor: started\n");
@@ -124,15 +128,31 @@ MainDialog::MainDialog(wxWindow *parent) : ncdfDialog( parent ), m_isTreeUpdatin
 
 	BuildHelpPage();
 
+	// Zone features (convergence/divergence/shear) visualization deferred by
+	// user decision (P1 test feedback): hide toggles, keep computation dormant.
+	m_checkBoxFeatConverg->Hide();
+	m_checkBoxFeatShear->Hide();
+
 	/* Ensure dialog and its contents can be resized */
 	this->SetWindowStyleFlag(this->GetWindowStyleFlag() | wxRESIZE_BORDER);
 	this->SetSizeHints(280, 460, -1, -1);
 	this->Layout();
+
+	// Feature recompute debounce timer (v1.1): coalesces slider/checkbox bursts
+	m_featDebounce.Bind(wxEVT_TIMER, [this](wxTimerEvent&) {
+		m_featDebounce.Stop();
+		if (m_featPendingWaves) {
+			int wv = m_featPendingWaves;
+			m_featPendingWaves = 0;
+			refreshFeatures(this, wv);
+		}
+	});
 }
 
 MainDialog::~MainDialog()
 {
 	ncdfLog("[ncdf] ~MainDialog: started\n");
+	if (m_featPopup) { m_featPopup->Destroy(); m_featPopup = nullptr; }
 
 	// Close persistent NetCDF file handle
 	if (m_openedNcid >= 0) {
@@ -184,6 +204,25 @@ void MainDialog::setPlugIn(ncdf_pi *p)
   m_checkBoxIsoSST->SetValue(pPlugIn->m_settingsSeaTemp.showIsoLines);
   m_checkBoxIsoSal->SetValue(pPlugIn->m_settingsSalinity.showIsoLines);
   m_checkBoxIsoZos->SetValue(pPlugIn->m_settingsZos.showIsoLines);
+  // Feature detection (识别 tab)
+  m_checkBoxFeatClip->SetValue(pPlugIn->m_bFeatClipMode);
+  m_checkBoxFeatFront->SetValue(pPlugIn->m_bFeatFront);
+  m_checkBoxFeatEddy->SetValue(pPlugIn->m_bFeatEddy);
+  m_checkBoxFeatJet->SetValue(pPlugIn->m_bFeatJet);
+  m_checkBoxFeatConverg->SetValue(pPlugIn->m_bFeatConverg);
+  m_checkBoxFeatShear->SetValue(pPlugIn->m_bFeatShear);
+  m_sliderFeatSens->SetValue(pPlugIn->m_iFeatSensitivity);
+  // Zone features deferred (P1 test feedback): force off regardless of config
+  pPlugIn->m_bFeatConverg = false;
+  pPlugIn->m_bFeatShear = false;
+  m_checkBoxFeatConverg->SetValue(false);
+  m_checkBoxFeatShear->SetValue(false);
+  m_choiceFeatROI->SetSelection(pPlugIn->m_iFeatROIType);
+  m_textFeatLatMin->SetValue(wxString::Format(_T("%.2f"), pPlugIn->m_featROILatMin));
+  m_textFeatLatMax->SetValue(wxString::Format(_T("%.2f"), pPlugIn->m_featROILatMax));
+  m_textFeatLonMin->SetValue(wxString::Format(_T("%.2f"), pPlugIn->m_featROILonMin));
+  m_textFeatLonMax->SetValue(wxString::Format(_T("%.2f"), pPlugIn->m_featROILonMax));
+  syncFeatureEngine();
 }
 
 void MainDialog::SetCursorLatLon(double lat, double lon)
@@ -255,6 +294,16 @@ void MainDialog::UpdateTrackingControls()
            m_textCtrlZos->SetValue(t);
        } else {
            m_textCtrlZos->SetValue(_T("--"));
+       }
+   }
+
+   // Feature hover readout (plan §4.3): hit test on detected features
+   if (pof) {
+       wxString featOut;
+       if (pof->m_featureEngine.hitTest(m_cursor_lon, m_cursor_lat, featOut)) {
+           m_textCtrlFeatReadout->SetValue(featOut);
+       } else {
+           m_textCtrlFeatReadout->Clear();
        }
    }
 }
@@ -1936,10 +1985,16 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 
 	// P2: Only read data types that are currently checked (visible).
 	// Unchecked types will be read on-demand when the user clicks the checkbox.
-	bool needCurrent = pPlugIn && pPlugIn->m_bShowCurrentForce;
-	bool needSST = pPlugIn && pPlugIn->m_bShowSeaTemp;
-	bool needSal = pPlugIn && pPlugIn->m_bShowSalinity;
-	bool needZos = pPlugIn && pPlugIn->m_bShowZos;
+	// Feature detection (识别) may additionally require fields (plan §1.2).
+	ncdfOverlayFactory *pofFeat = pPlugIn ? pPlugIn->GetncdfOverlayFactory() : NULL;
+	bool featUV = pofFeat && pofFeat->m_featureEngine.needUV();
+	bool featTS = pofFeat && pofFeat->m_featureEngine.needTS();
+	bool featZosNeed = pofFeat && pofFeat->m_featureEngine.needZos();
+	bool featSpot = pofFeat && pofFeat->m_featureEngine.spotPending();   // verification probe: load all
+	bool needCurrent = (pPlugIn && pPlugIn->m_bShowCurrentForce) || featUV || featSpot;
+	bool needSST = (pPlugIn && pPlugIn->m_bShowSeaTemp) || featTS || featSpot;
+	bool needSal = (pPlugIn && pPlugIn->m_bShowSalinity) || featTS || featSpot;
+	bool needZos = (pPlugIn && pPlugIn->m_bShowZos) || featZosNeed || featSpot;
 
 	if (hasUV && needCurrent) {
 		if (!readUVFromNC(ncid, u_varid, v_varid, dataMessage)) {
@@ -2034,6 +2089,7 @@ bool MainDialog::switchToFile(const wxString &fileName, const wxString &fn, int 
 			pof->m_seaTempOverlay.Cleanup();
 			pof->m_salinityOverlay.Cleanup();
 			pof->m_zosOverlay.Cleanup();
+			pof->m_featureEngine.resetFile();
 			pof->m_bReadyToRender = false;
 		}
 	}
@@ -2172,6 +2228,13 @@ bool MainDialog::switchToFile(const wxString &fileName, const wxString &fn, int 
 		pPlugIn->m_bShowZos = false;
 		m_checkBoxZos->SetValue(false);
 	}
+
+	// File extent hint for feature region input (plan §12)
+	m_staticFeatFileExtent->SetLabel(wxString::Format(_("文件覆盖: %.2f~%.2fN / %.2f~%.2fE"),
+		wxMin(meta.firstGridPointLat, meta.lastGridPointLat),
+		wxMax(meta.firstGridPointLat, meta.lastGridPointLat),
+		wxMin(meta.firstGridPointLong, meta.lastGridPointLong),
+		wxMax(meta.firstGridPointLong, meta.lastGridPointLong)));
 
 	return true;
 }
@@ -2391,7 +2454,10 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 
 			// Convert raw data to float grids for ALL available types
 			ncdfLog("[phase2] calling prepareAllGrids\n");
-			if (pof) pof->prepareAllGrids();
+			if (pof) {
+				pof->prepareAllGrids();
+				pof->m_featureEngine.computeAll(this);   // feature detection (data-update event)
+			}
 			m_gridsReady = true;
 			ncdfLog("[phase2] grids prepared, m_gridsReady=true\n");
 			ncdfLogMem(this, "phase2-grids-ready");
@@ -2684,6 +2750,391 @@ void MainDialog::onAnimateZosClick(wxCommandEvent& event)
 		pof->SetBicubicMode(true);
 	}
 	RequestRefresh(m_parent);
+}
+
+// Feature detection (识别 tab) — settings changed: sync engine and recompute.
+// Recompute runs only here (settings events) and at data-update events (plan §2.5).
+static void refreshFeatures(MainDialog *dlg, int waves)
+{
+	if (!dlg || !dlg->pPlugIn) return;
+	if (dlg->m_featPopup) { dlg->m_featPopup->Destroy(); dlg->m_featPopup = nullptr; }
+	ncdfOverlayFactory *pof = dlg->pPlugIn->GetncdfOverlayFactory();
+	if (!pof) return;
+	if (dlg->m_lastSelectedTimeIndex < 0) { RequestRefresh(dlg->m_parent); return; }
+	bool needUV = pof->m_featureEngine.needUV();
+	bool needTS = pof->m_featureEngine.needTS();
+	bool needZosF = pof->m_featureEngine.needZos();
+	bool have = (!needUV || dlg->myMessage.hasCurrent()) &&
+	            (!needTS || (dlg->myMessage.hasSSTData() || dlg->myMessage.hasSalData())) &&
+	            (!needZosF || dlg->myMessage.hasZosData());   // P2 fix: eddies need zos
+	if (!have) {
+		// feature inputs not loaded yet — load them (phase-3 pattern)
+		ncdfLog("[feat] refreshFeatures: loading missing input fields\n");
+		pof->m_bReadyToRender = false;
+		if (dlg->readTimeStepData(dlg->myMessage)) {
+			pof->setData(dlg, dlg->pPlugIn, dlg->myMessage,
+				dlg->myMessage.numberOfPoints,
+				dlg->myMessage.firstGridPointLat, dlg->myMessage.firstGridPointLong,
+				dlg->myMessage.lastGridPointLat, dlg->myMessage.lastGridPointLong);
+		}
+		pof->m_bReadyToRender = true;
+	}
+	pof->m_featureEngine.computeAll(dlg, waves);
+	RequestRefresh(dlg->m_parent);
+}
+
+void MainDialog::queueFeatureRefresh(int waves)
+{
+	m_featPendingWaves |= waves;
+	m_featDebounce.Start(200, wxTIMER_ONE_SHOT);   // debounce (v1.1): single recompute burst
+}
+
+void MainDialog::syncFeatureEngine()
+{
+	if (!pPlugIn) return;
+	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
+	if (!pof) return;
+	pof->m_featureEngine.setEnabled(FK_FRONT, pPlugIn->m_bFeatFront);
+	pof->m_featureEngine.setEnabled(FK_EDDY, pPlugIn->m_bFeatEddy);
+	pof->m_featureEngine.setEnabled(FK_JET, pPlugIn->m_bFeatJet);
+	pof->m_featureEngine.setEnabled(FK_CONVERG, pPlugIn->m_bFeatConverg);
+	pof->m_featureEngine.setEnabled(FK_DIVERG, pPlugIn->m_bFeatConverg);  // one toggle covers both signs
+	pof->m_featureEngine.setEnabled(FK_SHEAR, pPlugIn->m_bFeatShear);
+	// slider 0..100 -> threshold percentile 95..70 (higher slider = more detections)
+	pof->m_featureEngine.setSensitivity(95 - pPlugIn->m_iFeatSensitivity / 4);
+	pof->m_featureEngine.setRegion(pPlugIn->m_featROILatMin, pPlugIn->m_featROILatMax,
+	                               pPlugIn->m_featROILonMin, pPlugIn->m_featROILonMax);
+}
+
+void MainDialog::applyFeatureRegion()
+{
+	double la0 = wxAtof(m_textFeatLatMin->GetValue());
+	double la1 = wxAtof(m_textFeatLatMax->GetValue());
+	double lo0 = wxAtof(m_textFeatLonMin->GetValue());
+	double lo1 = wxAtof(m_textFeatLonMax->GetValue());
+	if (la0 > la1) { double t = la0; la0 = la1; la1 = t; }
+	if (lo0 > lo1) { double t = lo0; lo0 = lo1; lo1 = t; }
+
+	// Validate against file extent (plan §12): remind + block total miss, note
+	// partial overlap (engine intersects and processes only the overlap).
+	if (myMessage.latValues && myMessage.lonValues && myMessage.latLength > 1 && myMessage.lonLength > 1) {
+		double fla0 = wxMin(myMessage.latValues[0], myMessage.latValues[myMessage.latLength - 1]);
+		double fla1 = wxMax(myMessage.latValues[0], myMessage.latValues[myMessage.latLength - 1]);
+		double flo0 = wxMin(myMessage.lonValues[0], myMessage.lonValues[myMessage.lonLength - 1]);
+		double flo1 = wxMax(myMessage.lonValues[0], myMessage.lonValues[myMessage.lonLength - 1]);
+		double ovLa = wxMin(la1, fla1) - wxMax(la0, fla0);
+		double ovLo = -1;
+		for (int s = -1; s <= 1; s++) {
+			double a = lo0 + 360.0 * s, b = lo1 + 360.0 * s;
+			ovLo = wxMax(ovLo, wxMin(b, flo1) - wxMax(a, flo0));
+		}
+		if (ovLa <= 0 || ovLo <= 0) {
+			wxMessageBox(wxString::Format(_("输入范围与数据文件无重叠。\n文件覆盖: %.2f~%.2fN / %.2f~%.2fE"),
+				fla0, fla1, flo0, flo1), _("范围提示"), wxOK | wxICON_WARNING);
+			return;
+		}
+		if (ovLa < (la1 - la0) || ovLo < (lo1 - lo0)) {
+			wxMessageBox(wxString::Format(_("输入范围部分超出文件覆盖，将只处理重叠部分。\n文件覆盖: %.2f~%.2fN / %.2f~%.2fE"),
+				fla0, fla1, flo0, flo1), _("范围提示"), wxOK | wxICON_INFORMATION);
+		}
+	}
+
+	pPlugIn->m_featROILatMin = la0; pPlugIn->m_featROILatMax = la1;
+	pPlugIn->m_featROILonMin = lo0; pPlugIn->m_featROILonMax = lo1;
+	m_textFeatLatMin->SetValue(wxString::Format(_T("%.2f"), la0));
+	m_textFeatLatMax->SetValue(wxString::Format(_T("%.2f"), la1));
+	m_textFeatLonMin->SetValue(wxString::Format(_T("%.2f"), lo0));
+	m_textFeatLonMax->SetValue(wxString::Format(_T("%.2f"), lo1));
+	syncFeatureEngine();
+	refreshFeatures(this, 3);
+}
+
+void MainDialog::onFeatClipClick(wxCommandEvent& event)
+{
+	pPlugIn->m_bFeatClipMode = m_checkBoxFeatClip->GetValue();
+	RequestRefresh(m_parent);
+}
+
+void MainDialog::onFeatFrontClick(wxCommandEvent& event)
+{
+	pPlugIn->m_bFeatFront = m_checkBoxFeatFront->GetValue();
+	syncFeatureEngine();
+	queueFeatureRefresh(2);   // WAVE_RHO: fronts only
+}
+
+void MainDialog::onFeatEddyClick(wxCommandEvent& event)
+{
+	pPlugIn->m_bFeatEddy = m_checkBoxFeatEddy->GetValue();
+	syncFeatureEngine();
+	queueFeatureRefresh(4);   // WAVE_EDDY
+}
+
+void MainDialog::onFeatJetClick(wxCommandEvent& event)
+{
+	pPlugIn->m_bFeatJet = m_checkBoxFeatJet->GetValue();
+	syncFeatureEngine();
+	queueFeatureRefresh(8);   // WAVE_JET
+}
+
+void MainDialog::onFeatRegionPick(wxCommandEvent& event)
+{
+	return;   // quarantined: region-pick drag path crashes (2026-09-24)
+	m_regionPickMode = !m_regionPickMode;
+	m_rpDragging = false;
+	m_textCtrlFeatReadout->SetValue(m_regionPickMode
+		? wxString::FromUTF8("圈画模式：在海图上拖拽矩形选择处理范围（再次点击\u201c圈画\u201d取消）")
+		: wxString());
+}
+
+void MainDialog::onFeatConvergClick(wxCommandEvent& event)
+{
+	pPlugIn->m_bFeatConverg = m_checkBoxFeatConverg->GetValue();
+	syncFeatureEngine();
+	queueFeatureRefresh(1);   // WAVE_FLOW: zones only
+}
+
+void MainDialog::onFeatShearClick(wxCommandEvent& event)
+{
+	pPlugIn->m_bFeatShear = m_checkBoxFeatShear->GetValue();
+	syncFeatureEngine();
+	queueFeatureRefresh(1);   // WAVE_FLOW: zones only
+}
+
+void MainDialog::onFeatROIChoice(wxCommandEvent& event)
+{
+	int sel = m_choiceFeatROI->GetSelection();
+	pPlugIn->m_iFeatROIType = sel;
+	if (sel == 0) {          // 中国周边
+		m_textFeatLatMin->SetValue(_T("15")); m_textFeatLatMax->SetValue(_T("45"));
+		m_textFeatLonMin->SetValue(_T("100")); m_textFeatLonMax->SetValue(_T("135"));
+	} else if (sel == 1) {   // 亚洲海域
+		m_textFeatLatMin->SetValue(_T("0")); m_textFeatLatMax->SetValue(_T("55"));
+		m_textFeatLonMin->SetValue(_T("60")); m_textFeatLonMax->SetValue(_T("150"));
+	} else if (sel == 2) {   // 全球
+		m_textFeatLatMin->SetValue(_T("-90")); m_textFeatLatMax->SetValue(_T("90"));
+		m_textFeatLonMin->SetValue(_T("-180")); m_textFeatLonMax->SetValue(_T("180"));
+	} else {
+		return;   // 自定义: leave fields for user editing, apply via button
+	}
+	applyFeatureRegion();
+}
+
+void MainDialog::onFeatRegionApply(wxCommandEvent& event)
+{
+	pPlugIn->m_iFeatROIType = 3;
+	m_choiceFeatROI->SetSelection(3);
+	applyFeatureRegion();
+}
+
+void MainDialog::onFeatSensChanged(wxScrollEvent& event)
+{
+	pPlugIn->m_iFeatSensitivity = m_sliderFeatSens->GetValue();
+	syncFeatureEngine();
+	queueFeatureRefresh(3);   // WAVE_ALL: thresholds affect all kinds
+}
+
+// ---------------------------------------------------------------------------
+// Canvas mouse events (P2): region-pick drag + feature icon click panels.
+bool MainDialog::onCanvasMouse(wxMouseEvent& ev)
+{
+	ncdfOverlayFactory *pof = pPlugIn ? pPlugIn->GetncdfOverlayFactory() : NULL;
+	PlugIn_ViewPort *vpc = (pof && pof->m_bHasVpCopy) ? &pof->m_vpCopy : NULL;
+	if (!pof || !vpc) return false;
+
+	if (ev.LeftDown() && m_regionPickMode) {
+		m_rpDragging = true;
+		m_rpX0 = ev.GetX(); m_rpY0 = ev.GetY();
+		selectionRectangle.topLat = selectionRectangle.bottomLat = ncdf_NOTDEF;
+		return true;
+	}
+	if (ev.Dragging() && m_regionPickMode && m_rpDragging && ev.LeftIsDown()) {
+		GetCanvasLLPix(vpc, wxPoint(m_rpX0, m_rpY0), &selectionRectangle.topLat, &selectionRectangle.topLon);
+		GetCanvasLLPix(vpc, wxPoint(ev.GetX(), ev.GetY()), &selectionRectangle.bottomLat, &selectionRectangle.bottomLon);
+		pof->setSelectionRectangle(&selectionRectangle);
+		pof->renderSelectionRectangle = true;
+		RequestRefresh(m_parent);
+		return true;
+	}
+	if (ev.LeftUp()) {
+		if (m_regionPickMode && m_rpDragging) {
+			m_rpDragging = false;
+			m_regionPickMode = false;
+			pof->renderSelectionRectangle = false;
+			if (selectionRectangle.bottomLat != ncdf_NOTDEF) {
+				double la0 = wxMin(selectionRectangle.topLat, selectionRectangle.bottomLat);
+				double la1 = wxMax(selectionRectangle.topLat, selectionRectangle.bottomLat);
+				double lo0 = wxMin(selectionRectangle.topLon, selectionRectangle.bottomLon);
+				double lo1 = wxMax(selectionRectangle.topLon, selectionRectangle.bottomLon);
+				m_textFeatLatMin->SetValue(wxString::Format(_T("%.2f"), la0));
+				m_textFeatLatMax->SetValue(wxString::Format(_T("%.2f"), la1));
+				m_textFeatLonMin->SetValue(wxString::Format(_T("%.2f"), lo0));
+				m_textFeatLonMax->SetValue(wxString::Format(_T("%.2f"), lo1));
+				selectionRectangle.bottomLat = ncdf_NOTDEF;
+				applyFeatureRegion();
+			}
+			RequestRefresh(m_parent);
+			return true;
+		}
+		if (!m_regionPickMode) {
+			// any canvas click first dismisses an open popup
+			FeatureRender::clearPopup();
+			wxString panel;
+			bool hit = hitTestFeatureAt(ev.GetX(), ev.GetY(), panel);
+			{
+				ncdfOverlayFactory *pof2 = pPlugIn ? pPlugIn->GetncdfOverlayFactory() : NULL;
+				size_t nE = 0, nJ = 0, nF = 0;
+				double la2 = 0, lo2 = 0;
+				int rtx = -1, rty = -1, nx = -9999, ny = -9999;
+				double bestD2 = 1e18;
+				if (pof2 && pof2->m_bHasVpCopy) {
+					const FeatureSet &fs2 = pof2->m_featureEngine.features();
+					PlugIn_ViewPort *vc2 = &pof2->m_vpCopy;
+					nE = fs2.eddies.size(); nJ = fs2.jets.size(); nF = fs2.fronts.size();
+					GetCanvasLLPix(vc2, wxPoint(ev.GetX(), ev.GetY()), &la2, &lo2);
+					wxPoint rt;
+					GetCanvasPixLL(vc2, &rt, la2, lo2);
+					rtx = rt.x; rty = rt.y;
+					for (size_t e2 = 0; e2 < fs2.eddies.size(); e2++) {
+						wxPoint pt2;
+						GetCanvasPixLL(vc2, &pt2, fs2.eddies[e2].clat, fs2.eddies[e2].clon);
+						double ddx = (double)pt2.x - ev.GetX(), ddy = (double)pt2.y - ev.GetY();
+						double d2 = ddx * ddx + ddy * ddy;
+						if (d2 < bestD2) { bestD2 = d2; nx = pt2.x; ny = pt2.y; }
+					}
+				}
+				ncdfLog("[mouse] click at (%d,%d) hit=%d panelLen=%d feat(e=%zu j=%zu f=%zu) ll=(%.3f,%.3f) rt=(%d,%d) nearIcon=(%d,%d) d=%.0f\n",
+					ev.GetX(), ev.GetY(), (int)hit, (int)panel.length(),
+					nE, nJ, nF, la2, lo2, rtx, rty, nx, ny, sqrt(bestD2));
+			}
+			if (hit) {
+				m_textCtrlFeatReadout->SetValue(panel);   // keep readout in sync
+				showFeaturePopup(ev.GetX(), ev.GetY(), panel);
+				return true;   // consumed: click on a feature icon
+			}
+		}
+	}
+	return false;
+}
+
+// Popup panel anchored at the clicked icon (P3-prep UX fix): a small
+// stay-on-top mini frame showing the feature metric panel.
+void MainDialog::showFeaturePopup(int canvasX, int canvasY, const wxString &panel)
+{
+	// GL-drawn popup only (legend-style rendering path); the wx window
+	// approach is fully removed -- it double-popped alongside the GL box.
+	ncdfLog("[popup] show len=%d first=%.60s\n", (int)panel.length(), (const char*)panel.mb_str());
+	FeatureRender::setPopup(panel, m_selFeatLon, m_selFeatLat);
+	(void)canvasX; (void)canvasY;
+}
+
+// Reposition the popup to follow its feature anchor (called every render frame).
+void MainDialog::updateFeaturePopupPos(PlugIn_ViewPort *vp)
+{
+	if (!m_featPopup || !vp) return;
+	if (m_selFeatLon < -9000) return;
+	wxPoint pt;
+	GetCanvasPixLL(vp, &pt, m_selFeatLat, m_selFeatLon);
+	wxWindow *canvas = GetOCPNCanvasWindow();
+	if (!canvas) return;
+	wxSize cs = canvas->GetClientSize();
+	// hide when the anchor is far outside the canvas
+	if (pt.x < -200 || pt.y < -200 || pt.x > cs.x + 200 || pt.y > cs.y + 200) {
+		if (m_featPopup->IsShown()) m_featPopup->Hide();
+		return;
+	}
+	wxPoint sp = canvas->ClientToScreen(wxPoint(pt.x + 14, pt.y + 14));
+	if (!m_featPopup->IsShown()) m_featPopup->Show();
+	m_featPopup->Move(sp);
+}
+
+bool MainDialog::hitTestFeatureAt(int sx, int sy, wxString &panel)
+{
+	ncdfOverlayFactory *pof = pPlugIn ? pPlugIn->GetncdfOverlayFactory() : NULL;
+	PlugIn_ViewPort *vpc = (pof && pof->m_bHasVpCopy) ? &pof->m_vpCopy : NULL;
+	if (!pof || !vpc) return false;
+	const FeatureSet &fs = pof->m_featureEngine.features();
+	m_selFeatLon = -9999; m_selFeatLat = -9999;
+
+	// body hit: convert click -> lat/lon -> shared body test
+	double lat = 0, lon = 0;
+	GetCanvasLLPix(vpc, wxPoint(sx, sy), &lat, &lon);
+	int idx = -1;
+	int kind = pof->m_featureEngine.hitTestAt(lon, lat, idx);
+
+	// icon fallback: 15 px around anchors (precise icon clicks)
+	if (kind < 0) {
+		double best = 15.0 * 15.0;
+		wxPoint pt;
+		for (size_t e = 0; e < fs.eddies.size(); e++) {
+			GetCanvasPixLL(vpc, &pt, fs.eddies[e].clat, fs.eddies[e].clon);
+			double d2 = (pt.x - sx) * (pt.x - sx) + (pt.y - sy) * (pt.y - sy);
+			if (d2 < best) { best = d2; kind = 0; idx = (int)e; }
+		}
+		for (size_t t = 0; t < fs.jets.size(); t++) {
+			const JetFeature &jf = fs.jets[t];
+			if (jf.vCnt < 1) continue;
+			int k = jf.vCnt / 2;
+			GetCanvasPixLL(vpc, &pt, fs.arena[(size_t)(jf.vOff + 2 * k + 1)], fs.arena[(size_t)(jf.vOff + 2 * k)]);
+			double d2 = (pt.x - sx) * (pt.x - sx) + (pt.y - sy) * (pt.y - sy);
+			if (d2 < best) { best = d2; kind = 1; idx = (int)t; }
+		}
+		for (size_t f = 0; f < fs.fronts.size(); f++) {
+			const FrontFeature &ff = fs.fronts[f];
+			if (ff.vCnt < 1) continue;
+			int k = ff.vCnt / 2;
+			GetCanvasPixLL(vpc, &pt, fs.arena[(size_t)(ff.vOff + 2 * k + 1)], fs.arena[(size_t)(ff.vOff + 2 * k)]);
+			double d2 = (pt.x - sx) * (pt.x - sx) + (pt.y - sy) * (pt.y - sy);
+			if (d2 < best) { best = d2; kind = 2; idx = (int)f; }
+		}
+	}
+	if (kind < 0 || idx < 0) return false;
+
+	if (kind == 0) {
+		const EddyFeature &ef = fs.eddies[(size_t)idx];
+		m_selFeatLon = ef.clon; m_selFeatLat = ef.clat;
+		const char *nm = (ef.polarity > 0) ? "反气旋·暖芯" : "气旋·冷芯";
+		char buf[512];
+		snprintf(buf, sizeof(buf),
+			"【中尺度涡 | %s】\n半径 %.0f km   振幅 %.0f cm   置信度 %.0f%%\n"
+			"核温异常 %+.2f °C   核盐异常 %+.2f\n平均涡度 %.2e /s",
+			nm, (double)(ef.radius_m / 1000.0), (double)(ef.amplitude_m * 100.0),
+			(double)(ef.confidence * 100), (double)ef.coreTAnom, (double)ef.coreSAnom,
+			(double)ef.meanVort);
+		panel = wxString(buf);
+	} else if (kind == 1) {
+		const JetFeature &jf = fs.jets[(size_t)idx];
+		int k = jf.vCnt / 2;
+		m_selFeatLon = fs.arena[(size_t)(jf.vOff + 2 * k)];
+		m_selFeatLat = fs.arena[(size_t)(jf.vOff + 2 * k + 1)];
+		char buf[512];
+		snprintf(buf, sizeof(buf),
+			"【强流轴】\n平均流速 %.2f m/s   最大 %.2f m/s\n半高全宽 %.0f km",
+			(double)jf.meanSpeed, (double)jf.maxSpeed, (double)(jf.width_m / 1000.0));
+		panel = wxString(buf);
+	} else if (kind == 2) {
+		const FrontFeature &ff = fs.fronts[(size_t)idx];
+		int k = ff.vCnt / 2;
+		m_selFeatLon = fs.arena[(size_t)(ff.vOff + 2 * k)];
+		m_selFeatLat = fs.arena[(size_t)(ff.vOff + 2 * k + 1)];
+		const char *nm = (ff.cls == 0) ? "密度锋" : (ff.cls == 1) ? "温度锋(降级)" : "盐度锋(降级)";
+		char buf[512];
+		snprintf(buf, sizeof(buf),
+			"【%s】 强度 %.0f%%\nΔT %.2f °C   Δσ %.4f   梯度 %.4f /km\n"
+			"长度 %.0f km   跨锋流速差 %.2f m/s",
+			nm, (double)(ff.strength * 100), (double)ff.dTemp, (double)ff.dSigma,
+			(double)ff.gradPerKm, (double)ff.lengthKm, (double)ff.shearAcross);
+		panel = wxString(buf);
+	} else {
+		const ZoneFeature &zf = fs.zones[(size_t)idx];
+		const char *nm = (zf.kind == FK_CONVERG) ? "辐聚区" : (zf.kind == FK_DIVERG) ? "辐散区" : "剪切区";
+		char buf[512];
+		snprintf(buf, sizeof(buf),
+			"【%s】\n均值 %.2f  峰值 %.2f (1e-6/s)\n面积 %.0f km2   强度 %.0f%%",
+			nm, (double)zf.meanVal, (double)zf.peakVal,
+			(double)zf.areaKm2, (double)(zf.strength * 100));
+		panel = wxString(buf);
+	}
+	return true;
 }
 
 void MainDialog::fillDirTree(wxString path, bool start, wxTreeItemId id)

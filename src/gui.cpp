@@ -1,4 +1,4 @@
-///////////////////////////////////////////////////////////////////////////
+﻿///////////////////////////////////////////////////////////////////////////
 // C++ code generated with wxFormBuilder (version 4.2.1-0-g80c4cb6)
 // http://www.wxformbuilder.org/
 //
@@ -56,7 +56,7 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	wxBoxSizer* bSizer10;
 	bSizer10 = new wxBoxSizer( wxVERTICAL );
 
-	m_staticTextDateTime = new wxStaticText( m_panel1, wxID_ANY, _("date/time"), wxDefaultPosition, wxDefaultSize, 0 );
+	m_staticTextDateTime = new wxStaticText( m_panel1, wxID_ANY, _("日期/时间"), wxDefaultPosition, wxDefaultSize, 0 );
 	m_staticTextDateTime->Wrap( -1 );
 	bSizer10->Add( m_staticTextDateTime, 1, wxALIGN_CENTER_HORIZONTAL|wxALL, 5 );
 
@@ -99,7 +99,7 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	bSizerCurrent->Add( 24, 0, 0, wxEXPAND, 0 );
 	m_checkBoxBmpCurrentForce = new wxCheckBox( m_panel1, wxID_ANY, wxEmptyString );
 	bSizerCurrent->Add( m_checkBoxBmpCurrentForce, 0, wxALL|wxALIGN_CENTER_VERTICAL, 0 );
-	m_staticText40 = new wxStaticText( m_panel1, wxID_ANY, _("Current") );
+	m_staticText40 = new wxStaticText( m_panel1, wxID_ANY, _("海流") );
 	m_staticText40->SetMinSize( wxSize( 80,-1 ) );
 	bSizerCurrent->Add( m_staticText40, 0, wxALIGN_CENTER_VERTICAL|wxALL, 0 );
 	m_textCtrlCurrentForce = new wxTextCtrl( m_panel1, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize( 75,-1 ), wxTE_READONLY|wxTE_CENTRE );
@@ -115,7 +115,7 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	bSizerSeaTemp->Add( 24, 0, 0, wxEXPAND, 0 );
 	m_checkBoxSeaTemp = new wxCheckBox( m_panel1, wxID_ANY, wxEmptyString );
 	bSizerSeaTemp->Add( m_checkBoxSeaTemp, 0, wxALL|wxALIGN_CENTER_VERTICAL, 0 );
-	m_staticTextSeaTemp = new wxStaticText( m_panel1, wxID_ANY, _("Sea Temp") );
+	m_staticTextSeaTemp = new wxStaticText( m_panel1, wxID_ANY, _("海温") );
 	m_staticTextSeaTemp->SetMinSize( wxSize( 80,-1 ) );
 	bSizerSeaTemp->Add( m_staticTextSeaTemp, 0, wxALIGN_CENTER_VERTICAL|wxALL, 0 );
 	m_textCtrlSeaTemp = new wxTextCtrl( m_panel1, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize( 75,-1 ), wxTE_READONLY|wxTE_CENTRE );
@@ -131,7 +131,7 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	bSizerSalinity->Add( 24, 0, 0, wxEXPAND, 0 );
 	m_checkBoxSalinity = new wxCheckBox( m_panel1, wxID_ANY, wxEmptyString );
 	bSizerSalinity->Add( m_checkBoxSalinity, 0, wxALL|wxALIGN_CENTER_VERTICAL, 0 );
-	m_staticTextSalinity = new wxStaticText( m_panel1, wxID_ANY, _("Salinity") );
+	m_staticTextSalinity = new wxStaticText( m_panel1, wxID_ANY, _("盐度") );
 	m_staticTextSalinity->SetMinSize( wxSize( 80,-1 ) );
 	bSizerSalinity->Add( m_staticTextSalinity, 0, wxALIGN_CENTER_VERTICAL|wxALL, 0 );
 	m_textCtrlSalinity = new wxTextCtrl( m_panel1, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize( 75,-1 ), wxTE_READONLY|wxTE_CENTRE );
@@ -144,7 +144,7 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	bSizerZos->Add( 24, 0, 0, wxEXPAND, 0 );
 	m_checkBoxZos = new wxCheckBox( m_panel1, wxID_ANY, wxEmptyString );
 	bSizerZos->Add( m_checkBoxZos, 0, wxALL|wxALIGN_CENTER_VERTICAL, 0 );
-	m_staticTextZos = new wxStaticText( m_panel1, wxID_ANY, _("Zos") );
+	m_staticTextZos = new wxStaticText( m_panel1, wxID_ANY, _("海面高度") );
 	m_staticTextZos->SetMinSize( wxSize( 80,-1 ) );
 	bSizerZos->Add( m_staticTextZos, 0, wxALIGN_CENTER_VERTICAL|wxALL, 0 );
 	m_textCtrlZos = new wxTextCtrl( m_panel1, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize( 75,-1 ), wxTE_READONLY|wxTE_CENTRE );
@@ -156,7 +156,7 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 
 	// Numbers checkbox (hidden - feature removed)
 	m_checkBoxNumbers = new wxCheckBox( m_panel1, wxID_ANY, wxEmptyString );
-	m_staticTextNumbers = new wxStaticText( m_panel1, wxID_ANY, _("Numbers") );
+	m_staticTextNumbers = new wxStaticText( m_panel1, wxID_ANY, _("数值") );
 	m_checkBoxNumbers->Hide();
 	m_staticTextNumbers->Hide();
 
@@ -167,7 +167,7 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	m_panel1->SetSizer( fgSizer1 );
 	m_panel1->Layout();
 	fgSizer1->Fit( m_panel1 );
-	m_notebook1->AddPage( m_panel1, _("Data"), true );
+	m_notebook1->AddPage( m_panel1, _("数据"), true );
 
 	// Settings page with 3 sub-tabs (replaces Download)
 	m_panelSettings = new wxPanel( m_notebook1, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxTAB_TRAVERSAL );
@@ -182,61 +182,127 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	wxFlexGridSizer* sizerCurr = new wxFlexGridSizer( 0, 2, 5, 5 );
 	sizerCurr->AddGrowableCol( 1 );
 	sizerCurr->AddSpacer(0);
-	m_checkBoxAnimate = new wxCheckBox( m_panelCurrSettings, wxID_ANY, _("Flow animation") );
+	m_checkBoxAnimate = new wxCheckBox( m_panelCurrSettings, wxID_ANY, _("流动动画") );
 	sizerCurr->Add( m_checkBoxAnimate, 0, wxALL, 3 );
 	sizerCurr->AddSpacer(0);
 	// Arrow and particle checkboxes (moved from Data panel)
-	m_checkBoxDCurrent = new wxCheckBox( m_panelCurrSettings, wxID_ANY, _("Show direction arrows") );
+	m_checkBoxDCurrent = new wxCheckBox( m_panelCurrSettings, wxID_ANY, _("显示方向箭头") );
 	sizerCurr->Add( m_checkBoxDCurrent, 0, wxALL, 3 );
 	sizerCurr->AddSpacer(0);
-	m_checkBoxParticles = new wxCheckBox( m_panelCurrSettings, wxID_ANY, _("Show particles") );
+	m_checkBoxParticles = new wxCheckBox( m_panelCurrSettings, wxID_ANY, _("显示粒子") );
 	sizerCurr->Add( m_checkBoxParticles, 0, wxALL, 3 );
 	m_panelCurrSettings->SetSizer( sizerCurr );
-	m_notebookSettings->AddPage( m_panelCurrSettings, _("Current") );
+	m_notebookSettings->AddPage( m_panelCurrSettings, _("海流") );
 
 	// --- Sea Temp settings tab ---
 	m_panelSSTSettings = new wxPanel( m_notebookSettings );
 	wxFlexGridSizer* sizerSST = new wxFlexGridSizer( 0, 2, 5, 5 );
 	sizerSST->AddGrowableCol( 1 );
 	sizerSST->AddSpacer(0);
-	m_checkBoxIsoSST = new wxCheckBox( m_panelSSTSettings, wxID_ANY, _("Show isolines") );
+	m_checkBoxIsoSST = new wxCheckBox( m_panelSSTSettings, wxID_ANY, _("显示等值线") );
 	sizerSST->Add( m_checkBoxIsoSST, 0, wxALL, 3 );
 	sizerSST->AddSpacer(0);
-	m_checkBoxAnimateSST = new wxCheckBox( m_panelSSTSettings, wxID_ANY, _("Flow animation") );
+	m_checkBoxAnimateSST = new wxCheckBox( m_panelSSTSettings, wxID_ANY, _("流动动画") );
 	sizerSST->Add( m_checkBoxAnimateSST, 0, wxALL, 3 );
 	m_panelSSTSettings->SetSizer( sizerSST );
-	m_notebookSettings->AddPage( m_panelSSTSettings, _("Sea Temp") );
+	m_notebookSettings->AddPage( m_panelSSTSettings, _("海温") );
 
 	// --- Salinity settings tab ---
 	m_panelSalSettings = new wxPanel( m_notebookSettings );
 	wxFlexGridSizer* sizerSal = new wxFlexGridSizer( 0, 2, 5, 5 );
 	sizerSal->AddGrowableCol( 1 );
 	sizerSal->AddSpacer(0);
-	m_checkBoxIsoSal = new wxCheckBox( m_panelSalSettings, wxID_ANY, _("Show isolines") );
+	m_checkBoxIsoSal = new wxCheckBox( m_panelSalSettings, wxID_ANY, _("显示等值线") );
 	sizerSal->Add( m_checkBoxIsoSal, 0, wxALL, 3 );
 	sizerSal->AddSpacer(0);
-	m_checkBoxAnimateSal = new wxCheckBox( m_panelSalSettings, wxID_ANY, _("Flow animation") );
+	m_checkBoxAnimateSal = new wxCheckBox( m_panelSalSettings, wxID_ANY, _("流动动画") );
 	sizerSal->Add( m_checkBoxAnimateSal, 0, wxALL, 3 );
 	m_panelSalSettings->SetSizer( sizerSal );
-	m_notebookSettings->AddPage( m_panelSalSettings, _("Salinity") );
+	m_notebookSettings->AddPage( m_panelSalSettings, _("盐度") );
 
 	// --- Zos settings tab ---
 	m_panelZosSettings = new wxPanel( m_notebookSettings );
 	wxFlexGridSizer* sizerZos = new wxFlexGridSizer( 0, 2, 5, 5 );
 	sizerZos->AddGrowableCol( 1 );
 	sizerZos->AddSpacer(0);
-	m_checkBoxIsoZos = new wxCheckBox( m_panelZosSettings, wxID_ANY, _("Show isolines") );
+	m_checkBoxIsoZos = new wxCheckBox( m_panelZosSettings, wxID_ANY, _("显示等值线") );
 	sizerZos->Add( m_checkBoxIsoZos, 0, wxALL, 3 );
 	sizerZos->AddSpacer(0);
-	m_checkBoxAnimateZos = new wxCheckBox( m_panelZosSettings, wxID_ANY, _("Flow animation") );
+	m_checkBoxAnimateZos = new wxCheckBox( m_panelZosSettings, wxID_ANY, _("流动动画") );
 	sizerZos->Add( m_checkBoxAnimateZos, 0, wxALL, 3 );
 	m_panelZosSettings->SetSizer( sizerZos );
-	m_notebookSettings->AddPage( m_panelZosSettings, _("Zos") );
+	m_notebookSettings->AddPage( m_panelZosSettings, _("海面高度") );
+
+	// --- Feature detection settings tab (识别) ---
+	m_panelFeatSettings = new wxPanel( m_notebookSettings );
+	wxFlexGridSizer* sizerFeat = new wxFlexGridSizer( 0, 2, 5, 5 );
+	sizerFeat->AddGrowableCol( 1 );
+	// top-level clip mode
+	m_checkBoxFeatClip = new wxCheckBox( m_panelFeatSettings, wxID_ANY, _("数据图层仅在特征内显示") );
+	sizerFeat->Add( m_checkBoxFeatClip, 0, wxALL, 3 );
+	sizerFeat->AddSpacer(0);
+	// processing region
+	wxStaticText* lblRegion = new wxStaticText( m_panelFeatSettings, wxID_ANY, _("处理范围") );
+	sizerFeat->Add( lblRegion, 0, wxALIGN_CENTER_VERTICAL|wxALL, 3 );
+	wxBoxSizer* sizerRegion = new wxBoxSizer( wxHORIZONTAL );
+	m_choiceFeatROI = new wxChoice( m_panelFeatSettings, wxID_ANY );
+	m_choiceFeatROI->Append( _("中国周边 (15-45N/100-135E)") );
+	m_choiceFeatROI->Append( _("亚洲海域 (0-55N/60-150E)") );
+	m_choiceFeatROI->Append( _("全球") );
+	m_choiceFeatROI->Append( _("自定义") );
+	sizerRegion->Add( m_choiceFeatROI, 0, wxALIGN_CENTER_VERTICAL|wxRIGHT, 5 );
+	m_textFeatLatMin = new wxTextCtrl( m_panelFeatSettings, wxID_ANY, _("15"), wxDefaultPosition, wxSize( 46,-1 ) );
+	m_textFeatLatMax = new wxTextCtrl( m_panelFeatSettings, wxID_ANY, _("45"), wxDefaultPosition, wxSize( 46,-1 ) );
+	m_textFeatLonMin = new wxTextCtrl( m_panelFeatSettings, wxID_ANY, _("100"), wxDefaultPosition, wxSize( 46,-1 ) );
+	m_textFeatLonMax = new wxTextCtrl( m_panelFeatSettings, wxID_ANY, _("135"), wxDefaultPosition, wxSize( 46,-1 ) );
+	sizerRegion->Add( m_textFeatLatMin, 0, wxALIGN_CENTER_VERTICAL|wxRIGHT, 2 );
+	sizerRegion->Add( new wxStaticText( m_panelFeatSettings, wxID_ANY, _("~") ), 0, wxALIGN_CENTER_VERTICAL|wxRIGHT, 2 );
+	sizerRegion->Add( m_textFeatLatMax, 0, wxALIGN_CENTER_VERTICAL|wxRIGHT, 5 );
+	sizerRegion->Add( m_textFeatLonMin, 0, wxALIGN_CENTER_VERTICAL|wxRIGHT, 2 );
+	sizerRegion->Add( new wxStaticText( m_panelFeatSettings, wxID_ANY, _("~") ), 0, wxALIGN_CENTER_VERTICAL|wxRIGHT, 2 );
+	sizerRegion->Add( m_textFeatLonMax, 0, wxALIGN_CENTER_VERTICAL|wxRIGHT, 5 );
+	m_btnFeatRegionApply = new wxButton( m_panelFeatSettings, wxID_ANY, _("应用范围"), wxDefaultPosition, wxSize( 60,-1 ) );
+	sizerRegion->Add( m_btnFeatRegionApply, 0, wxALIGN_CENTER_VERTICAL, 0 );
+	m_btnFeatRegionPick = new wxButton( m_panelFeatSettings, wxID_ANY, _("圈画"), wxDefaultPosition, wxSize( 46,-1 ) );
+	sizerRegion->Add( m_btnFeatRegionPick, 0, wxALIGN_CENTER_VERTICAL, 0 );
+	m_btnFeatRegionPick->Hide();   // quarantined: crashes on drag (2026-09-24), re-enable when fixed
+	sizerFeat->Add( sizerRegion, 0, wxEXPAND, 0 );
+	m_staticFeatFileExtent = new wxStaticText( m_panelFeatSettings, wxID_ANY, _("文件覆盖: (未加载)") );
+	sizerFeat->AddSpacer(0);
+	sizerFeat->Add( m_staticFeatFileExtent, 0, wxALIGN_CENTER_VERTICAL|wxALL, 3 );
+	// feature type toggles (P1: fronts / convergence-divergence / shear)
+	m_checkBoxFeatFront = new wxCheckBox( m_panelFeatSettings, wxID_ANY, _("锋面 (密度锋)") );
+	sizerFeat->Add( m_checkBoxFeatFront, 0, wxALL, 3 );
+	sizerFeat->AddSpacer(0);
+	m_checkBoxFeatEddy = new wxCheckBox( m_panelFeatSettings, wxID_ANY, _("中尺度涡") );
+	sizerFeat->Add( m_checkBoxFeatEddy, 0, wxALL, 3 );
+	sizerFeat->AddSpacer(0);
+	m_checkBoxFeatJet = new wxCheckBox( m_panelFeatSettings, wxID_ANY, _("强流轴") );
+	sizerFeat->Add( m_checkBoxFeatJet, 0, wxALL, 3 );
+	sizerFeat->AddSpacer(0);
+	m_checkBoxFeatConverg = new wxCheckBox( m_panelFeatSettings, wxID_ANY, _("辐聚/辐散区") );
+	sizerFeat->Add( m_checkBoxFeatConverg, 0, wxALL, 3 );
+	sizerFeat->AddSpacer(0);
+	m_checkBoxFeatShear = new wxCheckBox( m_panelFeatSettings, wxID_ANY, _("流场剪切区") );
+	sizerFeat->Add( m_checkBoxFeatShear, 0, wxALL, 3 );
+	sizerFeat->AddSpacer(0);
+	// sensitivity
+	wxStaticText* lblSens = new wxStaticText( m_panelFeatSettings, wxID_ANY, _("灵敏度") );
+	sizerFeat->Add( lblSens, 0, wxALIGN_CENTER_VERTICAL|wxALL, 3 );
+	m_sliderFeatSens = new wxSlider( m_panelFeatSettings, wxID_ANY, 60, 0, 100, wxDefaultPosition, wxDefaultSize, wxSL_MIN_MAX_LABELS|wxSL_VALUE_LABEL );
+	sizerFeat->Add( m_sliderFeatSens, 0, wxEXPAND|wxALL, 3 );
+	// hover readout
+	wxStaticText* lblRead = new wxStaticText( m_panelFeatSettings, wxID_ANY, _("识别读数") );
+	sizerFeat->Add( lblRead, 0, wxALIGN_CENTER_VERTICAL|wxALL, 3 );
+	m_textCtrlFeatReadout = new wxTextCtrl( m_panelFeatSettings, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize( -1, 48 ), wxTE_READONLY|wxTE_MULTILINE );
+	sizerFeat->Add( m_textCtrlFeatReadout, 0, wxEXPAND|wxALL, 3 );
+	m_panelFeatSettings->SetSizer( sizerFeat );
+	m_notebookSettings->AddPage( m_panelFeatSettings, _("识别") );
 
 	sizerSettings->Add( m_notebookSettings, 1, wxEXPAND|wxALL, 5 );
 	m_panelSettings->SetSizer( sizerSettings );
 	m_panelSettings->Layout();
-	m_notebook1->AddPage( m_panelSettings, _("Settings"), false );
+	m_notebook1->AddPage( m_panelSettings, _("设置"), false );
 
 	fgSizer3->Add( m_notebook1, 1, wxEXPAND | wxALL, 5 );
 
@@ -264,6 +330,16 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	m_checkBoxZos->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onZosClick ), NULL, this );
 	m_checkBoxIsoZos->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onIsoZosClick ), NULL, this );
 	m_checkBoxAnimateZos->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onAnimateZosClick ), NULL, this );
+	m_checkBoxFeatClip->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onFeatClipClick ), NULL, this );
+	m_checkBoxFeatFront->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onFeatFrontClick ), NULL, this );
+	m_checkBoxFeatEddy->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onFeatEddyClick ), NULL, this );
+	m_checkBoxFeatJet->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onFeatJetClick ), NULL, this );
+	m_btnFeatRegionPick->Connect( wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler( ncdfDialog::onFeatRegionPick ), NULL, this );
+	m_checkBoxFeatConverg->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onFeatConvergClick ), NULL, this );
+	m_checkBoxFeatShear->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onFeatShearClick ), NULL, this );
+	m_choiceFeatROI->Connect( wxEVT_COMMAND_CHOICE_SELECTED, wxCommandEventHandler( ncdfDialog::onFeatROIChoice ), NULL, this );
+	m_btnFeatRegionApply->Connect( wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler( ncdfDialog::onFeatRegionApply ), NULL, this );
+	m_sliderFeatSens->Connect( wxEVT_SCROLL_CHANGED, wxScrollEventHandler( ncdfDialog::onFeatSensChanged ), NULL, this );
 	m_checkBoxAnimate->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onAnimateClick ), NULL, this );
 
 }
@@ -290,6 +366,16 @@ ncdfDialog::~ncdfDialog()
 	m_checkBoxZos->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onZosClick ), NULL, this );
 	m_checkBoxIsoZos->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onIsoZosClick ), NULL, this );
 	m_checkBoxAnimateZos->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onAnimateZosClick ), NULL, this );
+	m_checkBoxFeatClip->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onFeatClipClick ), NULL, this );
+	m_checkBoxFeatFront->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onFeatFrontClick ), NULL, this );
+	m_checkBoxFeatEddy->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onFeatEddyClick ), NULL, this );
+	m_checkBoxFeatJet->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onFeatJetClick ), NULL, this );
+	m_btnFeatRegionPick->Disconnect( wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler( ncdfDialog::onFeatRegionPick ), NULL, this );
+	m_checkBoxFeatConverg->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onFeatConvergClick ), NULL, this );
+	m_checkBoxFeatShear->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onFeatShearClick ), NULL, this );
+	m_choiceFeatROI->Disconnect( wxEVT_COMMAND_CHOICE_SELECTED, wxCommandEventHandler( ncdfDialog::onFeatROIChoice ), NULL, this );
+	m_btnFeatRegionApply->Disconnect( wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler( ncdfDialog::onFeatRegionApply ), NULL, this );
+	m_sliderFeatSens->Disconnect( wxEVT_SCROLL_CHANGED, wxScrollEventHandler( ncdfDialog::onFeatSensChanged ), NULL, this );
 	m_checkBoxAnimate->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onAnimateClick ), NULL, this );
 
 

@@ -1,4 +1,4 @@
-/*********************************************************************
+﻿/*********************************************************************
  * Name:      	main.h
  * Purpose:   	Declares simple wxWidgets application with GUI
  * 				created using wxFormBuilder.
@@ -193,6 +193,32 @@ protected:
 	virtual void onIsoSSTClick( wxCommandEvent& event );
 	virtual void onIsoSalClick( wxCommandEvent& event );
 	virtual void onIsoZosClick( wxCommandEvent& event );
+	// Feature detection (识别 tab)
+	virtual void onFeatClipClick( wxCommandEvent& event );
+	virtual void onFeatFrontClick( wxCommandEvent& event );
+	virtual void onFeatEddyClick( wxCommandEvent& event );
+	virtual void onFeatJetClick( wxCommandEvent& event );
+	virtual void onFeatRegionPick( wxCommandEvent& event );
+	virtual void onFeatConvergClick( wxCommandEvent& event );
+	virtual void onFeatShearClick( wxCommandEvent& event );
+	virtual void onFeatROIChoice( wxCommandEvent& event );
+	virtual void onFeatRegionApply( wxCommandEvent& event );
+	virtual void onFeatSensChanged( wxScrollEvent& event );
+public:
+	void applyFeatureRegion();          // parse UI fields -> engine region
+	void syncFeatureEngine();           // push plugin flags -> engine
+	bool onCanvasMouse(wxMouseEvent& event);   // MouseEventHook target (P2)
+	bool hitTestFeatureAt(int sx, int sy, wxString &panel);   // icon click hit test
+	bool m_regionPickMode = false;
+	bool m_rpDragging = false;
+	int  m_rpX0 = 0, m_rpY0 = 0;
+	double m_selFeatLon = -9999, m_selFeatLat = -9999;   // selected feature highlight
+	void showFeaturePopup(int canvasX, int canvasY, const wxString &panel);   // popup at icon
+	void updateFeaturePopupPos(PlugIn_ViewPort *vp);   // keep popup glued to its feature
+	wxWindow *m_featPopup = nullptr;
+	void queueFeatureRefresh(int waves); // debounced recompute (v1.1)
+	wxTimer m_featDebounce;
+	int m_featPendingWaves = 0;
 	void fillDirTree(wxString dir, bool start, wxTreeItemId id);
 	void addChildren(wxTreeItemId id, wxString s);
 	void readData(wxTreeItemId itemId);

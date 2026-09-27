@@ -1,4 +1,4 @@
-/******************************************************************************
+﻿/******************************************************************************
  * $Id: ncdf_pi.h,v 1.8 2010/06/21 01:54:37 bdbcat Exp $
  *
  * Project:  OpenCPN
@@ -94,6 +94,9 @@ public:
 
 	  bool b_showODAS;
 
+	  // Mouse events for feature icon clicks + region pick (P2)
+	  bool MouseEventHook(wxMouseEvent &event) override;
+
       bool              m_bShowCurrentDir;
       bool              m_bShowCurrentForce;
       bool              m_bShowIsoLines;
@@ -114,6 +117,17 @@ public:
       InterpSettings m_settingsSeaTemp;
       InterpSettings m_settingsSalinity;
       InterpSettings m_settingsZos;
+      // Feature detection (plan docs/ocean-feature-detection-plan.md)
+      bool              m_bFeatClipMode;    // data layers only inside features
+      bool              m_bFeatFront;
+      bool              m_bFeatEddy;
+      bool              m_bFeatJet;
+      bool              m_bFeatConverg;
+      bool              m_bFeatShear;
+      int               m_iFeatSensitivity; // 0..100 slider (higher = more detections)
+      int               m_iFeatROIType;     // 0=中国周边 1=亚洲海域 2=全球 3=自定义
+      double            m_featROILatMin, m_featROILatMax;
+      double            m_featROILonMin, m_featROILonMax;
       int               m_iOverlayTransparency;
       int               m_iArrowSpacing;
       int               m_iNumberSpacing;

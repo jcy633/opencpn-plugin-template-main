@@ -50,6 +50,9 @@ set(SRC
     src/ncdf_overlay_current.cpp
     src/ncdf_overlay_seatemp.cpp
     src/ncdf_overlay_salinity.cpp
+    src/ncdf_overlay_zos.cpp
+    src/ncdf_feature.cpp
+    src/ncdf_feature_render.cpp
     src/shader/ncdf_shader.cpp
     src/ncdf_legend.cpp
     src/ncdfanimate.cpp
@@ -70,6 +73,9 @@ set(HEADERS
     include/ncdf_overlay_current.h
     include/ncdf_overlay_seatemp.h
     include/ncdf_overlay_salinity.h
+    include/ncdf_overlay_zos.h
+    include/ncdf_feature.h
+    include/ncdf_feature_render.h
     include/shader/ncdf_shader.h
 )
 
