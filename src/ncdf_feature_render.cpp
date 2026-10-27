@@ -21,6 +21,7 @@
 #include "ocpn_plugin.h"
 #include "ncdf_feature.h"
 #include "ncdf_feature_render.h"
+#include "ncdf_kuroshio.h"
 #include "ncdfoverlayfactory.h"
 
 extern void ncdfLog(const char* format, ...);
@@ -604,6 +605,94 @@ void FeatureRender::drawAll(const FeatureSet &fs, PlugIn_ViewPort *vp,
     if (showLegend) drawFeatureLegend(fs, (int)vp->pix_width);
 
     // restore GL state (project convention)
+    glDisable(GL_LINE_SMOOTH);
+    glDisable(GL_BLEND);
+    glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+// ---------------------------------------------------------------------------
+// 黑潮主轴 / 左右边界绘制（流线约束最大流速法）
+// 主轴：深色描边 + 黄色主线 + 流向人字标；左右边界：蓝 / 红细线（NaN 处断开）。
+static void drawLatLonPolyline(PlugIn_ViewPort *vp, const std::vector<double> &xy,
+                               float r, float g, float b, float a, float width,
+                               bool brokenAtNaN)
+{
+    size_t n = xy.size() / 2;
+    if (n < 2) return;
+    glColor4f(r, g, b, a);
+    glLineWidth(width);
+    glBegin(GL_LINE_STRIP);
+    bool run = false;
+    for (size_t k = 0; k < n; k++) {
+        double lon = xy[2 * k], lat = xy[2 * k + 1];
+        bool bad = !(lon == lon) || !(lat == lat);   // NaN
+        if (bad || !visPoint(vp, lon, lat)) {
+            if (run) { glEnd(); glBegin(GL_LINE_STRIP); run = false; }
+            continue;
+        }
+        if (brokenAtNaN && k > 0) {
+            double plon = xy[2 * (k - 1)], plat = xy[2 * (k - 1) + 1];
+            if (!(plon == plon) || !(plat == plat)) {
+                glEnd(); glBegin(GL_LINE_STRIP); run = false;
+            }
+        }
+        int sx, sy;
+        if (projectPoint(vp, (float)lon, (float)lat, sx, sy)) { glVertex2i(sx, sy); run = true; }
+    }
+    glEnd();
+    glLineWidth(1.0f);
+}
+
+void FeatureRender::drawKuroshioAxis(const KuroshioAxisResult &k, PlugIn_ViewPort *vp,
+                                     bool showAxis, bool showBoundaries)
+{
+    if (!vp) return;
+    if (!k.ok || k.axis.size() < 4) return;
+    if (!showAxis && !showBoundaries) return;
+
+    glDisable(GL_TEXTURE_2D);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glEnable(GL_LINE_SMOOTH);
+    glHint(GL_LINE_SMOOTH_HINT, GL_NICEST);
+
+    // 左右边界先画（在主轴下面）
+    if (showBoundaries && k.left.size() >= 4 && k.right.size() >= 4) {
+        drawLatLonPolyline(vp, k.left,  0.25f, 0.55f, 0.95f, 0.85f, 1.6f, true);
+        drawLatLonPolyline(vp, k.right, 0.92f, 0.30f, 0.25f, 0.85f, 1.6f, true);
+    }
+
+    if (showAxis) {
+        // 深色描边提高在彩色流场上的对比度
+        drawLatLonPolyline(vp, k.axis, 0.10f, 0.10f, 0.10f, 0.55f, 6.0f, false);
+        drawLatLonPolyline(vp, k.axis, 1.00f, 0.88f, 0.20f, 0.95f, 3.0f, false);
+
+        // 流向人字标（沿主轴方向）
+        size_t n = k.axis.size() / 2;
+        size_t stride = (n > 60) ? (n / 24) : 3;
+        if (stride < 2) stride = 2;
+        glColor4f(0.85f, 0.45f, 0.05f, 0.95f);
+        glLineWidth(1.8f);
+        glBegin(GL_LINES);
+        for (size_t i = stride; i + stride < n; i += stride) {
+            int sx0, sy0, sx1, sy1, sx2, sy2;
+            if (!projectPoint(vp, (float)k.axis[2 * (i - stride)], (float)k.axis[2 * (i - stride) + 1], sx0, sy0)) continue;
+            if (!projectPoint(vp, (float)k.axis[2 * i], (float)k.axis[2 * i + 1], sx1, sy1)) continue;
+            if (!projectPoint(vp, (float)k.axis[2 * (i + stride)], (float)k.axis[2 * (i + stride) + 1], sx2, sy2)) continue;
+            if (!visPoint(vp, k.axis[2 * i], k.axis[2 * i + 1])) continue;
+            double dx = (double)(sx2 - sx0), dy = (double)(sy2 - sy0);
+            double L = std::sqrt(dx * dx + dy * dy);
+            if (L < 1e-3) continue;
+            dx /= L; dy /= L;
+            double bx = sx1 - dx * 6, by = sy1 - dy * 6;
+            double px = -dy, py = dx;
+            glVertex2i(sx1, sy1); glVertex2i((int)(bx + px * 4), (int)(by + py * 4));
+            glVertex2i(sx1, sy1); glVertex2i((int)(bx - px * 4), (int)(by - py * 4));
+        }
+        glEnd();
+        glLineWidth(1.0f);
+    }
+
     glDisable(GL_LINE_SMOOTH);
     glDisable(GL_BLEND);
     glBindTexture(GL_TEXTURE_2D, 0);

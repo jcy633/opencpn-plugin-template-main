@@ -25,6 +25,11 @@
 #include <wx/utils.h>
 #include <wx/log.h>
 #include <wx/stdpaths.h>
+#include <wx/file.h>
+#include <wx/filedlg.h>
+#include <wx/filename.h>
+#include <wx/busyinfo.h>
+#include <cmath>
 
 #include "folder.xpm"
 
@@ -218,10 +223,15 @@ void MainDialog::setPlugIn(ncdf_pi *p)
   m_checkBoxFeatConverg->SetValue(false);
   m_checkBoxFeatShear->SetValue(false);
   m_choiceFeatROI->SetSelection(pPlugIn->m_iFeatROIType);
+  m_checkBoxKuroshioShow->SetValue(pPlugIn->m_bShowKuroshio);
+  m_checkBoxKuroshioBdy->SetValue(pPlugIn->m_bShowKuroshioBdy);
   m_textFeatLatMin->SetValue(wxString::Format(_T("%.2f"), pPlugIn->m_featROILatMin));
   m_textFeatLatMax->SetValue(wxString::Format(_T("%.2f"), pPlugIn->m_featROILatMax));
   m_textFeatLonMin->SetValue(wxString::Format(_T("%.2f"), pPlugIn->m_featROILonMin));
   m_textFeatLonMax->SetValue(wxString::Format(_T("%.2f"), pPlugIn->m_featROILonMax));
+  // 陆海掩膜自动加载：插件启动时已载入，这里再兜一次并刷新状态
+  if (pPlugIn) pPlugIn->loadLandMaskFiles(false);
+  updateLandMaskStatus();
   syncFeatureEngine();
 }
 
@@ -461,6 +471,9 @@ void MainDialog::readData(wxTreeItemId itemId) {
     }
 	
 	m_lastSelectedTimeIndex = idx;
+	m_kuroshioResult.clear();   // 黑潮主轴针对特定时间步，切换后作废
+	// 掩膜按"当前文件覆盖 ∩ 黑潮流区"按需载入（不重复读已覆盖的范围）
+	ensureLandMaskForCurrentFile(myDataVector[idx]);
 
 	if (logFile) {
         fwprintf(logFile, L"[ncdf] readData: updated m_lastSelectedTimeIndex=%d\n", m_lastSelectedTimeIndex);
@@ -1562,14 +1575,27 @@ static bool readUVFromNC(int ncid, int u_varid, int v_varid, ncdfDataMessage& da
 
 	ncdfLog("[ncdf] readUVFromNC: data read successfully, allocating output arrays\n");
 
-	dataMessage.ucurr.resize(nbr_uv, ncdf_NOTDEF);
-	dataMessage.vcurr.resize(nbr_uv, ncdf_NOTDEF);
+	// assign() 而非 resize()：同尺寸时 resize 是空操作，会让上一时间步的旧值
+	// 在缺测格点上残留（时间步切换的隐性脏数据）。
+	dataMessage.ucurr.assign(nbr_uv, ncdf_NOTDEF);
+	dataMessage.vcurr.assign(nbr_uv, ncdf_NOTDEF);
+
+	// 缺测判定：_FillValue 可能是 NaN（CMEMS GLO12 即如此）。旧写法 `x != fill`
+	// 在 fill=NaN 时恒为真，陆点会以 NaN 写入并破坏 getInterpolatedUV 的角点
+	// 有效性统计（近岸双线性插值失效）。
+	// 规则：数据为 NaN 一律缺测；fill 非 NaN 时再比对相等。
+	auto isMissing = [](float val, float fill) {
+		if (!(val == val)) return true;
+		if (fill == fill && val == fill) return true;
+		return false;
+	};
 
 	size_t count_records = 0;
 	if (dims.lat_before_lon) {
 		for (size_t j = 0; j < dataMessage.latLength; j++) {
 			for (size_t k = 0; k < dataMessage.lonLength; k++) {
-				if (u_vals[count_records] != fill_value_u && v_vals[count_records] != fill_value_v) {
+				if (!isMissing(u_vals[count_records], fill_value_u) &&
+				    !isMissing(v_vals[count_records], fill_value_v)) {
 					dataMessage.ucurr[count_records] = (double)u_vals[count_records];
 					dataMessage.vcurr[count_records] = (double)v_vals[count_records];
 				}
@@ -1579,7 +1605,8 @@ static bool readUVFromNC(int ncid, int u_varid, int v_varid, ncdfDataMessage& da
 	} else {
 		for (size_t k = 0; k < dataMessage.lonLength; k++) {
 			for (size_t j = 0; j < dataMessage.latLength; j++) {
-				if (u_vals[count_records] != fill_value_u && v_vals[count_records] != fill_value_v) {
+				if (!isMissing(u_vals[count_records], fill_value_u) &&
+				    !isMissing(v_vals[count_records], fill_value_v)) {
 					dataMessage.ucurr[count_records] = (double)u_vals[count_records];
 					dataMessage.vcurr[count_records] = (double)v_vals[count_records];
 				}
@@ -1991,7 +2018,7 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 	bool featTS = pofFeat && pofFeat->m_featureEngine.needTS();
 	bool featZosNeed = pofFeat && pofFeat->m_featureEngine.needZos();
 	bool featSpot = pofFeat && pofFeat->m_featureEngine.spotPending();   // verification probe: load all
-	bool needCurrent = (pPlugIn && pPlugIn->m_bShowCurrentForce) || featUV || featSpot;
+	bool needCurrent = (pPlugIn && pPlugIn->m_bShowCurrentForce) || featUV || featSpot || m_kuroshioNeedUV;
 	bool needSST = (pPlugIn && pPlugIn->m_bShowSeaTemp) || featTS || featSpot;
 	bool needSal = (pPlugIn && pPlugIn->m_bShowSalinity) || featTS || featSpot;
 	bool needZos = (pPlugIn && pPlugIn->m_bShowZos) || featZosNeed || featSpot;
@@ -2931,6 +2958,204 @@ void MainDialog::onFeatSensChanged(wxScrollEvent& event)
 	pPlugIn->m_iFeatSensitivity = m_sliderFeatSens->GetValue();
 	syncFeatureEngine();
 	queueFeatureRefresh(3);   // WAVE_ALL: thresholds affect all kinds
+}
+
+// ---------------------------------------------------------------------------
+// 高分辨率陆海掩膜（ETOPO 2022，论文 Methods 的陆海掩膜来源）
+//
+// 算法侧在非格点位置查询陆海（平滑窗 / ±70 km 垂断面 / 法向边界搜索），
+// 9 km 的数据掩膜回答不了；显示侧用它给纹理 B 通道写亚格点陆地比例，
+// 海岸线位置因此准到亚格点。未载入时两者都退回数据自身的无效值掩膜。
+// ---------------------------------------------------------------------------
+// 掩膜在插件启动时一次性载入（位打包 + .bin 缓存），切换文件零开销。
+// 这里只负责刷新界面状态。
+void MainDialog::ensureLandMaskForCurrentFile(const ncdfDataMessage &m)
+{
+	updateLandMaskStatus();
+}
+
+// 面板显示时载入掩膜并刷新状态（幂等：已在内存则不重复读）
+bool MainDialog::ensureLandMaskVisible()
+{
+	bool ok = pPlugIn ? pPlugIn->loadLandMaskFiles(false) : false;
+	updateLandMaskStatus();
+	return ok;
+}
+
+void MainDialog::updateLandMaskStatus()
+{
+	if (!m_staticEtopoStatus) return;
+	const NcdfLandMask *m = (pPlugIn && pPlugIn->m_landMask.valid()) ? &pPlugIn->m_landMask : NULL;
+	if (!m) {
+		m_staticEtopoStatus->SetLabel(wxString::FromUTF8("(未载入：用数据自身掩膜)"));
+		return;
+	}
+	wxString s = wxString::Format(_T("%dx%d %.1f'"), m->nlat(), m->nlon(), m->dLat() * 60.0);
+	if (pPlugIn->m_landMaskCoarse.valid())
+		s += wxString::Format(_T(" + 全球 %.1f'"), pPlugIn->m_landMaskCoarse.dLat() * 60.0);
+	m_staticEtopoStatus->SetLabel(s);
+}
+
+bool MainDialog::loadLandMask(bool verbose)
+{
+	bool ok = pPlugIn ? pPlugIn->loadLandMaskFiles(true) : false;
+	updateLandMaskStatus();
+	if (verbose && !ok)
+		wxMessageBox(wxString::FromUTF8("陆海掩膜未载入，已回退到数据自身的无效值掩膜。"),
+		             wxString::FromUTF8("ETOPO 陆海掩膜"), wxOK | wxICON_INFORMATION, this);
+	return ok;
+}
+
+
+// ---------------------------------------------------------------------------
+// 黑潮主轴提取（流线约束最大流速法，Wang2026）
+// ---------------------------------------------------------------------------
+void MainDialog::onKuroshioExtractClick(wxCommandEvent& event)
+{
+	runKuroshioExtract();
+}
+
+void MainDialog::onKuroshioShowClick(wxCommandEvent& event)
+{
+	pPlugIn->m_bShowKuroshio = m_checkBoxKuroshioShow->GetValue();
+	RequestRefresh(m_parent);
+}
+
+void MainDialog::onKuroshioBdyClick(wxCommandEvent& event)
+{
+	pPlugIn->m_bShowKuroshioBdy = m_checkBoxKuroshioBdy->GetValue();
+	RequestRefresh(m_parent);
+}
+
+void MainDialog::onKuroshioExportClick(wxCommandEvent& event)
+{
+	exportKuroshioCsv();
+}
+
+bool MainDialog::runKuroshioExtract()
+{
+	ncdfLog("[kuro] runKuroshioExtract: start\n");
+	if (m_isLoading) {
+		m_textCtrlFeatReadout->SetValue(wxString::FromUTF8("正在加载数据，请稍候再提取"));
+		return false;
+	}
+
+	// 提取必须有 U/V：置标志让 readTimeStepData 无论如何都读入流场
+	// （否则“显示流速”未勾选时 ucurr 为空，提取会误报无数据）
+	m_kuroshioNeedUV = true;
+
+	// 需要当前时间步的 U/V；缺失时按特征刷新的 phase-3 模式补读
+	if (!myMessage.hasCurrent()) {
+		if (m_lastSelectedTimeIndex < 0) {
+			m_textCtrlFeatReadout->SetValue(wxString::FromUTF8("请先在左侧目录树选择一个时间步"));
+			return false;
+		}
+		ncdfOverlayFactory *pof = pPlugIn ? pPlugIn->GetncdfOverlayFactory() : NULL;
+		if (pof) pof->m_bReadyToRender = false;
+		bool rd = readTimeStepData(myMessage);
+		if (pof && rd) {
+			pof->setData(this, pPlugIn, myMessage, myMessage.numberOfPoints,
+			             myMessage.firstGridPointLat, myMessage.firstGridPointLong,
+			             myMessage.lastGridPointLat, myMessage.lastGridPointLong);
+		}
+		if (pof) pof->m_bReadyToRender = true;
+		if (!rd || !myMessage.hasCurrent()) {
+			m_textCtrlFeatReadout->SetValue(wxString::FromUTF8("当前文件/时间步没有可用的 U/V 流场"));
+			return false;
+		}
+	}
+
+	m_kuroshio.wantBoundaries = true;
+	m_kuroshio.setLandMask((pPlugIn && pPlugIn->m_landMask.valid()) ? &pPlugIn->m_landMask : NULL);
+
+	// 先算进局部结果，算完再整体替换：提取耗时数秒，
+	// 若一开始就把 m_kuroshioResult 清空，期间的重绘会看到空结果。
+	KuroshioAxisResult fresh;
+	{
+		wxBusyCursor busy;
+		wxBusyInfo info(wxString::FromUTF8("正在提取黑潮主轴（流线约束最大流速法）…"));
+		m_kuroshio.extract(myMessage, fresh);
+	}
+	m_kuroshioResult = fresh;
+
+	m_textCtrlFeatReadout->SetValue(m_kuroshioResult.message);
+	ncdfLog("[kuro] runKuroshioExtract: ok=%d %s\n", (int)m_kuroshioResult.ok,
+	        (const char*)m_kuroshioResult.message.mb_str(wxConvUTF8));
+	RequestRefresh(m_parent);
+	return m_kuroshioResult.ok;
+}
+
+bool MainDialog::exportKuroshioCsv()
+{
+	if (!m_kuroshioResult.ok || m_kuroshioResult.axis.empty()) {
+		wxMessageBox(wxString::FromUTF8("尚无提取结果，请先点击“提取主轴”。"),
+		             wxString::FromUTF8("导出黑潮主轴"), wxOK | wxICON_INFORMATION, this);
+		return false;
+	}
+
+	wxString defName = wxString::Format(_T("kuroshio_axis_%s.csv"),
+		(myMessage.dataDateTime.IsValid()
+			? myMessage.dataDateTime.Format(_T("%Y%m%d_%H%M"))
+			: wxString::Format(_T("t%d"), myMessage.timeIndex)));
+	wxFileDialog dlg(this, wxString::FromUTF8("导出黑潮主轴结果"),
+	                 wxEmptyString, defName, _T("CSV files (*.csv)|*.csv|All files (*.*)|*.*"),
+	                 wxFD_SAVE | wxFD_OVERWRITE_PROMPT);
+	if (dlg.ShowModal() != wxID_OK) return false;
+
+	wxFile fout(dlg.GetPath(), wxFile::write);
+	if (!fout.IsOpened()) {
+		wxMessageBox(wxString::FromUTF8("无法写入文件：") + dlg.GetPath(),
+		             wxString::FromUTF8("导出黑潮主轴"), wxOK | wxICON_ERROR, this);
+		return false;
+	}
+
+	size_t N = m_kuroshioResult.axis.size() / 2;
+	wxString head;
+	head += _T("# Kuroshio axis and boundaries -- streamline-constrained maximum velocity method\n");
+	head += _T("# Wang et al. (2026, Scientific Data) algorithm, ncdf_pi extraction\n");
+	head += _T("# source_file,") + myMessage.fileName + _T("\n");
+	head += wxString::Format(_T("# time,%s\n"),
+		(myMessage.dataDateTime.IsValid()
+			? myMessage.dataDateTime.Format(_T("%Y-%m-%d %H:%M:%S"))
+			: wxString::Format(_T("index %d"), myMessage.timeIndex)));
+	head += wxString::Format(_T("# n_axis,%d  length_km,%.2f  mean_speed_ms,%.3f  max_speed_ms,%.3f\n"),
+		m_kuroshioResult.nAxis, m_kuroshioResult.lengthKm,
+		m_kuroshioResult.meanSpeed, m_kuroshioResult.maxSpeed);
+	head += _T("# segments_ABCDE,");
+	for (int s = 0; s < 5; s++)
+		head += wxString::Format(_T("%s%d"), s ? _T(" ") : _T(""), m_kuroshioResult.segFound[s]);
+	head += _T("\n");
+	head += _T("idx,lon,lat,left_lon,left_lat,right_lon,right_lat\n");
+	fout.Write(head);
+
+	bool hasB = (m_kuroshioResult.left.size() >= N * 2 &&
+	             m_kuroshioResult.right.size() >= N * 2);
+	for (size_t i = 0; i < N; i++) {
+		wxString line = wxString::Format(_T("%d,%.6f,%.6f"), (int)i,
+			m_kuroshioResult.axis[2 * i], m_kuroshioResult.axis[2 * i + 1]);
+		if (hasB) {
+			// 用字符串拼接而非 Format("%s", wxString)：可变参 %s 传 wxString 未定义
+			double llon = m_kuroshioResult.left[2 * i], llat = m_kuroshioResult.left[2 * i + 1];
+			double rlon = m_kuroshioResult.right[2 * i], rlat = m_kuroshioResult.right[2 * i + 1];
+			line += _T(",");
+			line += std::isfinite(llon) ? wxString::Format(_T("%.6f"), llon) : wxString();
+			line += _T(",");
+			line += std::isfinite(llat) ? wxString::Format(_T("%.6f"), llat) : wxString();
+			line += _T(",");
+			line += std::isfinite(rlon) ? wxString::Format(_T("%.6f"), rlon) : wxString();
+			line += _T(",");
+			line += std::isfinite(rlat) ? wxString::Format(_T("%.6f"), rlat) : wxString();
+		} else {
+			line += _T(",,,,,");
+		}
+		line += _T("\n");
+		fout.Write(line);
+	}
+	fout.Close();
+
+	m_textCtrlFeatReadout->SetValue(
+		wxString::FromUTF8("已导出 ") << (int)N << wxString::FromUTF8(" 点到\n") << dlg.GetPath());
+	return true;
 }
 
 // ---------------------------------------------------------------------------

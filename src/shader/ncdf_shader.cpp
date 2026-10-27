@@ -7,7 +7,10 @@
 #include <cstdio>
 #include <cstring>
 #include <cmath>
+#include <string>
 #include <wx/log.h>
+
+extern void ncdfLog(const char* format, ...);
 
 #ifdef _WIN32
 #include <windows.h>
@@ -168,6 +171,7 @@ static const char* s_frag =
     "uniform float physMax;\n"
     "uniform float physMinV;\n"
     "uniform float physMaxV;\n"
+    "uniform int landMode;\n"
     "varying vec2 vUV;\n"
     "\n"
     "float bspline(float t) {\n"
@@ -203,12 +207,22 @@ static const char* s_frag =
     "        // ca==0: border/outside -> fully transparent\n"
     "        gl_FragColor = vec4(0.0, 0.0, 0.0, 0.0);\n"
     "        return;\n"
-    "    } else if (ca < 0.01) {\n"
-    "        // 0<ca<0.01: land (a=1/255) -> opaque green (170,175,80)\n"
-    "        gl_FragColor = vec4(0.667, 0.686, 0.314, 1.0);\n"
+    "    }\n"
+    "    vec3 landCol = vec3(0.667, 0.686, 0.314);\n"
+    "    // landMode == 2: dedicated high-resolution land pass. dataTex is bound\n"
+    "    // to the land mask texture here (1 byte per mask cell, GL_NEAREST), so\n"
+    "    // each fragment is judged AGAINST A MASK CELL -- the coastline is as\n"
+    "    // fine as the mask, not as coarse as the data grid.\n"
+    "    if (landMode == 2) {\n"
+    "        float lf = texture2D(dataTex, vUV).r;\n"
+    "        gl_FragColor = (lf > 0.5) ? vec4(landCol, 1.0) : vec4(0.0, 0.0, 0.0, 0.0);\n"
     "        return;\n"
     "    }\n"
     "\n"
+    "    // ================= Stage 1: sea colours =================\n"
+    "    // Decided PER DATA GRID CELL only (the A channel = does this cell have\n"
+    "    // data). The land mask plays NO part here, so green can never leak into\n"
+    "    // the colour field -- that was what made land appear inside the sea.\n"
     "    float rSum=0.0, gSum=0.0, wSum=0.0;\n"
     "    bool usedBSpline = false;\n"
     "\n"
@@ -219,6 +233,23 @@ static const char* s_frag =
     "    vec4 s11=texture2D(dataTex, (tc+vec2(1.5,1.5))*ts);\n"
     "    bool h00=s00.a>0.01, h10=s10.a>0.01, h01=s01.a>0.01, h11=s11.a>0.01;\n"
     "    int land2x2 = (h00?0:1)+(h10?0:1)+(h01?0:1)+(h11?0:1);\n"
+    "\n"
+    "    // ============ Stage 2: land fallback (B channel) ============\n"
+    "    // Only used where the dedicated high-res land texture does not cover.\n"
+    "    // landFrac is the per-cell land fraction interpolated so the contour is\n"
+    "    // smooth instead of a cell staircase. The test is a SELECTION, not a\n"
+    "    // mix: a fragment is fully land or fully sea, never in between.\n"
+    "    float l00=s00.b, l10=s10.b, l01=s01.b, l11=s11.b;\n"
+    "    float landFrac = l00*(1.0-f.x)*(1.0-f.y) + l10*f.x*(1.0-f.y)\n"
+    "                   + l01*(1.0-f.x)*f.y       + l11*f.x*f.y;\n"
+    "    // landMode 0/1: no high-res land layer covering this area, so decide\n"
+    "    // here from the per-cell flag (1 = also paint land, 0 = hide it).\n"
+    "    // landMode 3: the land layers cover the land, so draw the colour\n"
+    "    // everywhere and let them paint over it -- no pollution, no holes.\n"
+    "    if ((landMode == 0 || landMode == 1) && landFrac > 0.5) {\n"
+    "        gl_FragColor = (landMode == 1) ? vec4(landCol, 1.0) : vec4(0.0, 0.0, 0.0, 0.0);\n"
+    "        return;\n"
+    "    }\n"
     "\n"
     "    if(land2x2 == 0) {\n"
     "        // 2x2 clean: check if 4x4 is also clean\n"
@@ -248,8 +279,11 @@ static const char* s_frag =
     "            gSum=p00.g*(1.0-f.x)*(1.0-f.y)+p10.g*f.x*(1.0-f.y)+p01.g*(1.0-f.x)*f.y+p11.g*f.x*f.y;\n"
     "            wSum=1.0;\n"
     "        }\n"
-    "    } else if(land2x2 == 1) {\n"
-    "        // Case 3: 1 land, 3 ocean -> bilinear (skip land)\n"
+    "    } else {\n"
+    "        // 2x2 has land: bilinear on physical values, skipping land texels\n"
+    "        // (merges old Case 3/4/5/6/7). Even with 2+ land texels we still\n"
+    "        // Mixed land/ocean in the 2x2: land-skipping bilinear on physical values\n"
+    "        // blend below -- a hard land cut is what made the edge a staircase.\n"
     "        vec2 p00=readPhysical((tc+vec2(0.5,0.5))*ts);\n"
     "        vec2 p10=readPhysical((tc+vec2(1.5,0.5))*ts);\n"
     "        vec2 p01=readPhysical((tc+vec2(0.5,1.5))*ts);\n"
@@ -262,15 +296,10 @@ static const char* s_frag =
     "        rSum=p00.r*w0+p10.r*w1+p01.r*w2+p11.r*w3;\n"
     "        gSum=p00.g*w0+p10.g*w1+p01.g*w2+p11.g*w3;\n"
     "        wSum=w0+w1+w2+w3;\n"
-    "    } else if(land2x2 == 2) {\n"
-    "        // Case 4/5: 2 land -> land color\n"
-    "        gl_FragColor = vec4(0.667, 0.686, 0.314, 1.0); return;\n"
-    "    } else {\n"
-    "        // Case 6/7: 3 or 4 land -> land color\n"
-    "        gl_FragColor = vec4(0.667, 0.686, 0.314, 1.0); return;\n"
     "    }\n"
     "\n"
-    "    if(wSum<=0.0) { gl_FragColor = vec4(0.667, 0.686, 0.314, 1.0); return; }\n"
+    "    // Sea side but no model data here -> leave transparent (chart shows).\n"
+    "    if(wSum<=0.0) { gl_FragColor = vec4(0.0, 0.0, 0.0, 0.0); return; }\n"
     "\n"
     "    float coefRange = dataMax - dataMin;\n"
     "    float coefRangeV = dataMaxV - dataMinV;\n"
@@ -299,7 +328,8 @@ static const char* s_frag =
     "        result = (lutRange > 0.0001) ? clamp((physical - lutMin) / lutRange, 0.0, 1.0) : 0.0;\n"
     "    }\n"
     "\n"
-    "    gl_FragColor = vec4(texture2D(colorLUT, vec2(result, 0.5)).rgb, 1.0);\n"
+    "    vec3 oceanCol = texture2D(colorLUT, vec2(result, 0.5)).rgb;\n"
+    "    gl_FragColor = vec4(oceanCol, 1.0);\n"
     "}\n";
 
 //===================================================================
@@ -308,7 +338,17 @@ static const char* s_frag =
 static GLuint compile_shader_gl(GLenum type, const char* src) {
     GLuint s = fpCreateShader(type);
     if (!s) return 0;
-    fpShaderSource(s, 1, &src, NULL);
+    // GLSL 源字符集只允许 ASCII（GLSL 1.20 §1.1）。本工程源码用中文注释，
+    // 一旦非 ASCII 字节混进着色器字符串，NVIDIA 编译器会解析错乱并报
+    // "undefined variable"（2026-10-26：颜色图整体不显示）。这里做兜底消毒：
+    // 每个 >=0x80 的字节换成空格，语义只可能出现在注释里，换成空格无害。
+    std::string clean;
+    clean.reserve(strlen(src));
+    for (const unsigned char *p = (const unsigned char *)src; *p; ++p)
+        clean.push_back(*p < 0x80 ? (char)*p : ' ');
+    const char *psrc = clean.c_str();
+
+    fpShaderSource(s, 1, &psrc, NULL);
     fpCompileShader(s);
     GLint st;
     fpGetShaderiv(s, GL_COMPILE_STATUS, &st);
@@ -317,6 +357,7 @@ static GLuint compile_shader_gl(GLenum type, const char* src) {
         fpGetShaderInfoLog(s, sizeof(log), NULL, log);
         fprintf(stderr, "[shader] compile error: %s\n", log);
         wxLogMessage(_T("[shader] compile error: %s"), wxString(log, wxConvUTF8));
+        ncdfLog("[shader] compile error: %s\n", log);
         fpDeleteShader(s);
         return 0;
     }
@@ -414,6 +455,7 @@ bool ncdf_shader_init() {
     s_uniforms.physMax = fpGetUniformLocation(s_program, "physMax");
     s_uniforms.physMinV = fpGetUniformLocation(s_program, "physMinV");
     s_uniforms.physMaxV = fpGetUniformLocation(s_program, "physMaxV");
+    s_uniforms.landMode = fpGetUniformLocation(s_program, "landMode");
 
     s_initialized = true;
     wxLogMessage(_T("[shader] init OK program=%u"), s_program);

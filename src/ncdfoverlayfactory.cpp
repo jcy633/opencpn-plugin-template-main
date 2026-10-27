@@ -483,6 +483,12 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
     FeatureRender::drawAll(fset, vp, this, m_featureEngine.anyEnabled(),
         gui ? gui->m_selFeatLon : -9999.0, gui ? gui->m_selFeatLat : -9999.0);
 
+    // ---- 黑潮主轴与左右边界（流线约束最大流速法，Wang2026）----
+    // 跟随面板显示：面板关着时不画
+    if (gui && gui->IsShown() && plugin && (plugin->m_bShowKuroshio || plugin->m_bShowKuroshioBdy))
+        FeatureRender::drawKuroshioAxis(gui->m_kuroshioResult, vp,
+                                        plugin->m_bShowKuroshio, plugin->m_bShowKuroshioBdy);
+
     if (renderSelectionRectangle && rect) RenderSelectionRectangle();
 
     if (gui) gui->updateFeaturePopupPos(vp);   // popup follows its feature anchor

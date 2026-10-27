@@ -35,6 +35,7 @@ struct NcdfShaderUniforms {
     int physMax;      // float: physical value max for U (or scalar)
     int physMinV;     // float: physical value min for V (vector only)
     int physMaxV;     // float: physical value max for V (vector only)
+    int landMode;     // int: 1 = draw GSHHG land, 0 = hide it (follows plugin panel)
 };
 NcdfShaderUniforms ncdf_shader_get_uniforms();
 

@@ -154,6 +154,17 @@ class ncdfDialog : public wxDialog
 		wxStaticText* m_staticFeatFileExtent;
 		wxSlider* m_sliderFeatSens;
 		virtual void onFeatSensChanged( wxScrollEvent& event ) { event.Skip(); }
+		// 黑潮主轴提取（流线约束最大流速法，Wang2026）
+		wxButton* m_btnKuroshioExtract;
+		virtual void onKuroshioExtractClick( wxCommandEvent& event ) { event.Skip(); }
+		wxButton* m_btnKuroshioExport;
+		virtual void onKuroshioExportClick( wxCommandEvent& event ) { event.Skip(); }
+		wxCheckBox* m_checkBoxKuroshioShow;
+		virtual void onKuroshioShowClick( wxCommandEvent& event ) { event.Skip(); }
+		wxCheckBox* m_checkBoxKuroshioBdy;
+		virtual void onKuroshioBdyClick( wxCommandEvent& event ) { event.Skip(); }
+		// 高分辨率陆海掩膜（自动加载，无需手动选择）
+		wxStaticText* m_staticEtopoStatus;
 		wxTextCtrl* m_textCtrlFeatReadout;
 
 		ncdfDialog( wxWindow* parent, wxWindowID id = wxID_ANY, const wxString& title = _("ncdf Dialog"), const wxPoint& pos = wxDefaultPosition, const wxSize& size = wxSize( 280,460 ), long style = wxDEFAULT_DIALOG_STYLE|wxRESIZE_BORDER );

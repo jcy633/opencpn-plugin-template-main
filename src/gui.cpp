@@ -291,6 +291,31 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	sizerFeat->Add( lblSens, 0, wxALIGN_CENTER_VERTICAL|wxALL, 3 );
 	m_sliderFeatSens = new wxSlider( m_panelFeatSettings, wxID_ANY, 60, 0, 100, wxDefaultPosition, wxDefaultSize, wxSL_MIN_MAX_LABELS|wxSL_VALUE_LABEL );
 	sizerFeat->Add( m_sliderFeatSens, 0, wxEXPAND|wxALL, 3 );
+	// --- 黑潮主轴提取（流线约束最大流速法，Wang2026） ---
+	{
+		wxStaticLine* lineKur = new wxStaticLine( m_panelFeatSettings );
+		sizerFeat->Add( lineKur, 0, wxEXPAND|wxALL, 3 );
+		sizerFeat->AddSpacer(0);
+		wxStaticText* lblKur = new wxStaticText( m_panelFeatSettings, wxID_ANY, _("黑潮主轴") );
+		sizerFeat->Add( lblKur, 0, wxALIGN_CENTER_VERTICAL|wxALL, 3 );
+		wxBoxSizer* sizerKur = new wxBoxSizer( wxHORIZONTAL );
+		m_btnKuroshioExtract = new wxButton( m_panelFeatSettings, wxID_ANY, _("提取主轴"), wxDefaultPosition, wxSize( 64,-1 ) );
+		sizerKur->Add( m_btnKuroshioExtract, 0, wxALIGN_CENTER_VERTICAL|wxRIGHT, 5 );
+		m_btnKuroshioExport = new wxButton( m_panelFeatSettings, wxID_ANY, _("导出CSV"), wxDefaultPosition, wxSize( 64,-1 ) );
+		sizerKur->Add( m_btnKuroshioExport, 0, wxALIGN_CENTER_VERTICAL|wxRIGHT, 5 );
+		sizerFeat->Add( sizerKur, 0, wxALIGN_CENTER_VERTICAL, 0 );
+		m_checkBoxKuroshioShow = new wxCheckBox( m_panelFeatSettings, wxID_ANY, _("显示主轴 (黄色粗线)") );
+		sizerFeat->Add( m_checkBoxKuroshioShow, 0, wxALL, 3 );
+		sizerFeat->AddSpacer(0);
+		m_checkBoxKuroshioBdy = new wxCheckBox( m_panelFeatSettings, wxID_ANY, _("显示左右边界 (蓝/红细线)") );
+		sizerFeat->Add( m_checkBoxKuroshioBdy, 0, wxALL, 3 );
+		sizerFeat->AddSpacer(0);
+		// 高分辨率陆海掩膜（自动加载，仅显示状态）
+		wxStaticText* lblMask = new wxStaticText( m_panelFeatSettings, wxID_ANY, _("陆海掩膜") );
+		sizerFeat->Add( lblMask, 0, wxALIGN_CENTER_VERTICAL|wxALL, 3 );
+		m_staticEtopoStatus = new wxStaticText( m_panelFeatSettings, wxID_ANY, _("(自动加载中…)") );
+		sizerFeat->Add( m_staticEtopoStatus, 0, wxALIGN_CENTER_VERTICAL, 0 );
+	}
 	// hover readout
 	wxStaticText* lblRead = new wxStaticText( m_panelFeatSettings, wxID_ANY, _("识别读数") );
 	sizerFeat->Add( lblRead, 0, wxALIGN_CENTER_VERTICAL|wxALL, 3 );
@@ -340,6 +365,10 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	m_choiceFeatROI->Connect( wxEVT_COMMAND_CHOICE_SELECTED, wxCommandEventHandler( ncdfDialog::onFeatROIChoice ), NULL, this );
 	m_btnFeatRegionApply->Connect( wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler( ncdfDialog::onFeatRegionApply ), NULL, this );
 	m_sliderFeatSens->Connect( wxEVT_SCROLL_CHANGED, wxScrollEventHandler( ncdfDialog::onFeatSensChanged ), NULL, this );
+	m_btnKuroshioExtract->Connect( wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler( ncdfDialog::onKuroshioExtractClick ), NULL, this );
+	m_btnKuroshioExport->Connect( wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler( ncdfDialog::onKuroshioExportClick ), NULL, this );
+	m_checkBoxKuroshioShow->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onKuroshioShowClick ), NULL, this );
+	m_checkBoxKuroshioBdy->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onKuroshioBdyClick ), NULL, this );
 	m_checkBoxAnimate->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onAnimateClick ), NULL, this );
 
 }
@@ -376,6 +405,10 @@ ncdfDialog::~ncdfDialog()
 	m_choiceFeatROI->Disconnect( wxEVT_COMMAND_CHOICE_SELECTED, wxCommandEventHandler( ncdfDialog::onFeatROIChoice ), NULL, this );
 	m_btnFeatRegionApply->Disconnect( wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler( ncdfDialog::onFeatRegionApply ), NULL, this );
 	m_sliderFeatSens->Disconnect( wxEVT_SCROLL_CHANGED, wxScrollEventHandler( ncdfDialog::onFeatSensChanged ), NULL, this );
+	m_btnKuroshioExtract->Disconnect( wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler( ncdfDialog::onKuroshioExtractClick ), NULL, this );
+	m_btnKuroshioExport->Disconnect( wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler( ncdfDialog::onKuroshioExportClick ), NULL, this );
+	m_checkBoxKuroshioShow->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onKuroshioShowClick ), NULL, this );
+	m_checkBoxKuroshioBdy->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onKuroshioBdyClick ), NULL, this );
 	m_checkBoxAnimate->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onAnimateClick ), NULL, this );
 
 

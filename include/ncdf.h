@@ -21,6 +21,8 @@
 
 #include "gui.h"
 #include "ncdf_reader.h"
+#include "ncdf_kuroshio.h"
+#include "ncdf_landmask.h"
 #include "wx/wfstream.h"
 #include <wx/datetime.h>
 #include <vector>
@@ -204,7 +206,23 @@ protected:
 	virtual void onFeatROIChoice( wxCommandEvent& event );
 	virtual void onFeatRegionApply( wxCommandEvent& event );
 	virtual void onFeatSensChanged( wxScrollEvent& event );
+	// 黑潮主轴提取（流线约束最大流速法，Wang2026）
+	virtual void onKuroshioExtractClick( wxCommandEvent& event );
+	virtual void onKuroshioExportClick( wxCommandEvent& event );
+	virtual void onKuroshioShowClick( wxCommandEvent& event );
+	virtual void onKuroshioBdyClick( wxCommandEvent& event );
 public:
+	// 黑潮主轴提取结果（每次提取覆盖；渲染线程只读）
+	KuroshioExtractor m_kuroshio;
+	KuroshioAxisResult m_kuroshioResult;
+	bool m_kuroshioNeedUV = false;      // 为提取主轴强制读入 U/V（不依赖“显示流速”勾选）
+	// 陆海掩膜实体在 ncdf_pi::m_landMask（含粗层回退），跟随面板显示加载
+	bool loadLandMask(bool verbose);
+	bool ensureLandMaskVisible();   // 面板打开时调用：载入并刷新状态
+	void updateLandMaskStatus();
+	void ensureLandMaskForCurrentFile(const ncdfDataMessage &m);
+	bool runKuroshioExtract();          // 需已加载当前时间步 U/V；失败时给出原因
+	bool exportKuroshioCsv();           // 导出 主轴/左/右 边界 CSV
 	void applyFeatureRegion();          // parse UI fields -> engine region
 	void syncFeatureEngine();           // push plugin flags -> engine
 	bool onCanvasMouse(wxMouseEvent& event);   // MouseEventHook target (P2)

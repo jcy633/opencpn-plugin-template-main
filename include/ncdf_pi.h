@@ -44,6 +44,7 @@
 #include "ocpn_plugin.h"
 
 #include "ncdfoverlayfactory.h"
+#include "ncdf_landmask.h"
 
 //----------------------------------------------------------------------------------------------------------
 //    The PlugIn Class Definition
@@ -124,6 +125,16 @@ public:
       bool              m_bFeatJet;
       bool              m_bFeatConverg;
       bool              m_bFeatShear;
+      // 黑潮主轴（流线约束最大流速法）
+      bool              m_bShowKuroshio;    // 显示主轴
+      bool              m_bShowKuroshioBdy; // 显示左右边界
+      wxString          m_etopoPath;        // ETOPO 2022 高分辨率陆海掩膜 (NetCDF)
+      // 陆海掩膜：主层（精细，通常 30"/15"）+ 回退层（粗，通常全球 1'）。
+      // 一律位打包，全球 1' 约 29 MB；首次从 NetCDF 建好后写 .bin 缓存，
+      // 之后启动直接读缓存，切换文件零开销。
+      NcdfLandMask      m_landMask;
+      NcdfLandMask      m_landMaskCoarse;
+      bool              loadLandMaskFiles(bool force = false);
       int               m_iFeatSensitivity; // 0..100 slider (higher = more detections)
       int               m_iFeatROIType;     // 0=中国周边 1=亚洲海域 2=全球 3=自定义
       double            m_featROILatMin, m_featROILatMax;

@@ -37,6 +37,9 @@
 #include <wx/treectrl.h>
 #include <wx/fileconf.h>
 #include <wx/stdpaths.h>
+#include <wx/filename.h>
+#include <wx/dir.h>
+#include <chrono>
 
 #include "ncdf_pi.h"
 #include "ncdf.h"
@@ -128,6 +131,8 @@ int ncdf_pi::Init(void)
 	  m_bFeatJet = false;
 	  m_bFeatConverg = false;
 	  m_bFeatShear = false;
+	  m_bShowKuroshio = true;
+	  m_bShowKuroshioBdy = true;
 	  m_iFeatSensitivity = 60;
 	  m_iFeatROIType = 0;
 	  m_featROILatMin = 15; m_featROILatMax = 45;
@@ -140,6 +145,7 @@ int ncdf_pi::Init(void)
 
       //    And load the configuration items
       LoadConfig();
+      // Land mask is not loaded here: it follows the panel being shown.
 
       // Get a pointer to the opencpn display canvas, to use as a parent for the ncdf dialog
       m_parent_window = GetOCPNCanvasWindow();
@@ -282,6 +288,14 @@ void ncdf_pi::OnToolbarToolCallback(int id)
         m_pncdfDialog = new MainDialog(m_parent_window);
 	    m_pncdfDialog->setPlugIn(this);
       }
+      // Land mask follows panel visibility: opened -> load (idempotent).
+      {
+          auto t0 = std::chrono::steady_clock::now();
+          bool ok = m_pncdfDialog->ensureLandMaskVisible();
+          long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - t0).count();
+          ncdfLog("[landmask] panel show -> %s in %lld ms\n", ok ? "loaded" : "not available", ms);
+      }
       m_pncdfDialog->Show();                        // Show modeless, so it stays on the screen
 	  
 }
@@ -401,6 +415,111 @@ void ncdf_pi::SetCursorLatLon(double lat, double lon)
 }
 
 
+// ---------------------------------------------------------------------------
+// ETOPO 2022 高分辨率陆海掩膜（论文 Methods："Land masking was applied using
+// the Earth Topography 2022 (ETOPO 2022) global DEM dataset at a 30-arc-second
+// resolution."）
+//
+// 掩膜文件放在 <userDataDir>/etopo/ 下（文件名含 etopo），最多两个：
+//   精细层：30"/15"（黑潮算法用；流区显示也用它）
+//   粗层  ：全球 1'（流区之外的显示回退）
+// 都是一次性读入 + 位打包 + .bin 缓存，之后切文件零开销。
+// ---------------------------------------------------------------------------
+static bool loadLayerWithCache(NcdfLandMask &m, const wxString &ncPath, bool force)
+{
+    // 直接给到 .bin（预建缓存）时跳过 NetCDF
+    if (ncPath.Lower().EndsWith(_T(".bin")))
+        return m.loadCache(ncPath);
+    wxString cache = ncPath + _T(".landmask.bin");
+    if (!force && m.loadCache(cache)) return true;
+    if (!m.load(ncPath, -90.0, 90.0, -180.0, 180.0)) return false;
+    if (m.saveCache(cache))
+        ncdfLog("[landmask] cache written: %s\n", (const char*)cache.mb_str());
+    return true;
+}
+
+bool ncdf_pi::loadLandMaskFiles(bool force)
+{
+    if (!force && m_landMask.valid()) return true;
+
+    wxArrayString cands;
+    wxString sep = wxFileName::GetPathSeparator();
+    // OpenCPN 的数据分散在几个地方（ProgramData / Local / Roaming），都搜一遍
+    wxArrayString roots;
+    {
+        wxString e;
+        if (wxGetEnv(_T("LOCALAPPDATA"), &e) && !e.IsEmpty()) roots.Add(e + sep + _T("opencpn"));
+        if (wxGetEnv(_T("APPDATA"), &e) && !e.IsEmpty())       roots.Add(e + sep + _T("opencpn"));
+        if (wxGetEnv(_T("PROGRAMDATA"), &e) && !e.IsEmpty())   roots.Add(e + sep + _T("opencpn"));
+        roots.Add(wxStandardPathsBase::Get().GetUserDataDir());
+        roots.Add(wxStandardPathsBase::Get().GetConfigDir());
+    }
+    for (size_t r = 0; r < roots.GetCount(); r++) {
+        // 优先插件自己的数据目录（与其他插件资源放在一起），其次 etopo 子目录
+        wxString dirs[4] = {
+            roots[r] + sep + _T("plugins") + sep + _T("ncdf_pi") + sep + _T("data"),
+            roots[r] + sep + _T("etopo"),
+            roots[r] + sep + _T("plugins") + sep + _T("ncdf_pi"),
+            roots[r]
+        };
+        for (int d = 0; d < 4; d++) {
+            if (dirs[d].IsEmpty() || !wxDirExists(dirs[d])) continue;
+            wxDir::GetAllFiles(dirs[d], &cands, _T("*etopo*.nc"), wxDIR_FILES);
+            wxDir::GetAllFiles(dirs[d], &cands, _T("*etopo*.nc4"), wxDIR_FILES);
+            wxDir::GetAllFiles(dirs[d], &cands, _T("*etopo*.bin"), wxDIR_FILES);
+        }
+    }
+    if (cands.GetCount() == 0) {
+        ncdfLog("[landmask] no ETOPO file found; using data validity as land mask\n");
+        return false;
+    }
+
+    // 名字含 30s/15s 的排前面当精细层；含 60s/1min 的当粗层
+    auto rank = [](const wxString &p) {
+        wxString n = p.Lower();
+        if (n.Find(_T("15s")) != wxNOT_FOUND || n.Find(_T("30s")) != wxNOT_FOUND ||
+            n.Find(_T("15sec")) != wxNOT_FOUND) return 0;
+        if (n.Find(_T("60s")) != wxNOT_FOUND || n.Find(_T("1min")) != wxNOT_FOUND) return 2;
+        return 1;
+    };
+    for (size_t a = 0; a + 1 < cands.GetCount(); a++)
+        for (size_t b = a + 1; b < cands.GetCount(); b++)
+            if (rank(cands[b]) < rank(cands[a])) { wxString t = cands[a]; cands[a] = cands[b]; cands[b] = t; }
+
+    // 去重（不同搜索目录可能命中同一个文件，或同一份数据被复制到多处）
+    for (size_t a = 0; a < cands.GetCount(); a++)
+        for (size_t b = a + 1; b < cands.GetCount(); ) {
+            wxString fa = cands[a], fb = cands[b];
+            bool same = (fa == fb);
+            if (!same && wxFileName::FileExists(fa) && wxFileName::FileExists(fb))
+                same = (wxFileName::GetSize(fa) == wxFileName::GetSize(fb)) &&
+                       (fa.AfterLast(sep[0]) == fb.AfterLast(sep[0]));
+            if (same) cands.RemoveAt(b); else b++;
+        }
+
+    m_landMask.clear();
+    m_landMaskCoarse.clear();
+
+    bool ok = loadLayerWithCache(m_landMask, cands[0], force);
+    if (cands.GetCount() > 1)
+        loadLayerWithCache(m_landMaskCoarse, cands[1], force);
+
+    m_landMask.setFallback(m_landMaskCoarse.valid() ? &m_landMaskCoarse : NULL);
+    m_etopoPath = cands[0];
+
+    if (ok) {
+        ncdfLog("[landmask] primary : %dx%d  %.1f'  lat %.2f..%.2f lon %.2f..%.2f\n",
+                m_landMask.nlat(), m_landMask.nlon(), m_landMask.dLat() * 60.0,
+                m_landMask.latMin(), m_landMask.latMax(), m_landMask.lonMin(), m_landMask.lonMax());
+        if (m_landMaskCoarse.valid())
+            ncdfLog("[landmask] fallback: %dx%d  %.1f'  lat %.2f..%.2f lon %.2f..%.2f\n",
+                    m_landMaskCoarse.nlat(), m_landMaskCoarse.nlon(), m_landMaskCoarse.dLat() * 60.0,
+                    m_landMaskCoarse.latMin(), m_landMaskCoarse.latMax(),
+                    m_landMaskCoarse.lonMin(), m_landMaskCoarse.lonMax());
+    }
+    return ok;
+}
+
 bool ncdf_pi::LoadConfig(void)
 {
       wxFileConfig *pConf = (wxFileConfig *)m_pconfig;
@@ -428,6 +547,8 @@ bool ncdf_pi::LoadConfig(void)
             pConf->Read ( _T( "FeatJet" ), &m_bFeatJet, 0 );
             pConf->Read ( _T( "FeatConverg" ), &m_bFeatConverg, 0 );
             pConf->Read ( _T( "FeatShear" ), &m_bFeatShear, 0 );
+            pConf->Read ( _T( "ShowKuroshio" ), &m_bShowKuroshio, 1 );
+            pConf->Read ( _T( "ShowKuroshioBdy" ), &m_bShowKuroshioBdy, 1 );
             pConf->Read ( _T( "FeatSensitivity" ), &m_iFeatSensitivity, 60 );
             pConf->Read ( _T( "FeatROIType" ), &m_iFeatROIType, 0 );
             pConf->Read ( _T( "FeatROILatMin" ), &m_featROILatMin, 15.0 );
@@ -487,6 +608,8 @@ bool ncdf_pi::SaveConfig(void)
             pConf->Write ( _T ( "FeatJet" ), m_bFeatJet );
             pConf->Write ( _T ( "FeatConverg" ), m_bFeatConverg );
             pConf->Write ( _T ( "FeatShear" ), m_bFeatShear );
+            pConf->Write ( _T ( "ShowKuroshio" ), m_bShowKuroshio );
+            pConf->Write ( _T ( "ShowKuroshioBdy" ), m_bShowKuroshioBdy );
             pConf->Write ( _T ( "FeatSensitivity" ), m_iFeatSensitivity );
             pConf->Write ( _T ( "FeatROIType" ), m_iFeatROIType );
             pConf->Write ( _T ( "FeatROILatMin" ), m_featROILatMin );

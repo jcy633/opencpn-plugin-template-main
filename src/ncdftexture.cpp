@@ -1,4 +1,4 @@
-//===================================================================
+﻿//===================================================================
 // Auto-split from ncdfoverlayfactory.cpp
 //===================================================================
 
@@ -660,8 +660,71 @@ static void ApplyTextureBorders(TexBuildContext &ctx)
 }
 
 //===================================================================
-// (f) Texture upload (create or update)
+// (e2) B 通道 = 亚格点陆地覆盖比例（0..255）
+//
+// 着色器用 B 做双线性覆盖度来决定海岸线位置。若载入了高分辨率陆海掩膜
+// （ETOPO 2022），这里写入该 1/12° 格内被陆地覆盖的**比例**，海岸线位置
+// 因此准到亚格点；否则退回二值（数据自身陆标号）。
+// 数据本身没值的格点强制写成陆，避免在无数据处画出假的海色。
 //===================================================================
+static void FillLandFractionChannel(TexBuildContext &ctx)
+{
+    MainDialog *gui = ctx.gui;
+    if (!gui || !ctx.texData) return;
+
+    int ni = ctx.ni, nj = ctx.nj, tw = ctx.tw, th = ctx.th, borderH = ctx.borderH;
+    unsigned char *texData = ctx.texData;
+    const ncdfDataMessage &msg = gui->myMessage;
+    // GSHHG 岸线跟随面板显示：面板关着时退回数据自身陆标号，不画高分辨率岸线
+    const NcdfLandMask *lm = (gui->IsShown() && gui->pPlugIn && gui->pPlugIn->m_landMask.valid())
+                             ? &gui->pPlugIn->m_landMask : NULL;
+
+    const double *latArr = msg.latValues;
+    const double *lonArr = msg.lonValues;
+    double dLat = fabs(msg.jDirectionIncr);
+    double dLon = fabs(msg.iDirectionIncr);
+    if (!(dLat > 0.0) || dLat > 10.0) dLat = 0.0833;
+    if (!(dLon > 0.0) || dLon > 10.0) dLon = 0.0833;
+
+    unsigned int dbgZero = 0, dbgFull = 0, dbgMid = 0, dbgN = 0;
+
+    for (int j = 0; j < nj; j++) {
+        int texRow = (msg.jDirectionIncr >= 0) ? j : (nj - 1 - j);
+        int y = texRow + 1;
+        if (y >= th - 1) continue;
+        double lat = latArr ? latArr[j] : 0.0;
+        for (int i = 0; i < ni; i++) {
+            int x = i + borderH;
+            if (x >= tw - 1) continue;
+            int off = 4 * (y * tw + x);
+            unsigned char a = texData[off + 3];
+            unsigned char frac;
+            if (a == 0) {
+                frac = 0;                      // 纹理边界：透明
+            } else if (lm && lm->covers(lat, lonArr ? lonArr[i] : 0.0)) {
+                // Per-cell O(1) test. The fine coastline comes from the land
+                // LAYER textures, not from here -- this only decides where the
+                // colour pass is allowed to draw, so a cheap binary test is
+                // enough. (landFracInBox here cost 3.5 G ops and made the
+                // colour map take seconds to appear.)
+                double lon = lonArr ? lonArr[i] : 0.0;
+                frac = lm->isLand(lat, lon) ? 255 : 0;
+            } else {
+                frac = (a == 1) ? 255 : 0;     // 无掩膜时退回数据自身陆标号
+            }
+            texData[off + 2] = frac;
+            if (dbgN < (1u << 22)) {
+                if (frac == 0) dbgZero++; else if (frac == 255) dbgFull++; else dbgMid++;
+            }
+            dbgN++;
+        }
+    }
+    ncdfLog("[landfrac] texels=%u  B=0:%u (%.1f%%)  B=255:%u (%.1f%%)  mid:%u | lm=%s\n",
+            dbgN, dbgZero, dbgN ? 100.0 * dbgZero / dbgN : 0.0,
+            dbgFull, dbgN ? 100.0 * dbgFull / dbgN : 0.0, dbgMid,
+            lm ? "yes" : "no");
+}
+
 static void UploadCoeffTexture(GLuint &texID, bool &hasTex, int tw, int th,
                                bool repeat, int dataDim[2], int glDim[2],
                                unsigned char *texData)
@@ -927,14 +990,247 @@ static void DrawShaderTile(const TileQuad &q, void *userData) {
     ncdf_shader_disable_attrib(1);
 }
 
+// Fill gaps in the data texture by nearest-neighbour propagation, so the
+// ocean colour field is continuous over the file's lon/lat extent instead of
+// being riddled with holes where the model has no value (coastal cells etc).
+// Land is painted on top afterwards, so filling everything is safe.
+static void FillTextureGaps(unsigned char *texData, int tw, int th, int borderH)
+{
+    std::vector<int> src((size_t)tw * th, -1);
+    for (int y = 1; y < th - 1; y++)
+        for (int x = 0; x < tw; x++) {
+            size_t k = (size_t)y * tw + x;
+            if (texData[4 * k + 3] == 255) src[k] = (int)k;
+        }
+    const int DX[4] = {1, -1, 0, 0}, DY[4] = {0, 0, 1, -1};
+    for (int pass = 0; pass < 6; pass++) {
+        bool changed = false;
+        for (int y = 1; y < th - 1; y++)
+            for (int x = borderH; x < tw - borderH; x++) {
+                size_t k = (size_t)y * tw + x;
+                if (src[k] >= 0 || texData[4 * k + 3] == 0) continue;
+                for (int d = 0; d < 4; d++) {
+                    int nx = x + DX[d], ny = y + DY[d];
+                    if (nx < 0 || nx >= tw || ny < 0 || ny >= th) continue;
+                    size_t nk = (size_t)ny * tw + nx;
+                    if (src[nk] >= 0) {
+                        size_t s = (size_t)src[nk];
+                        texData[4 * k]     = texData[4 * s];
+                        texData[4 * k + 1] = texData[4 * s + 1];
+                        texData[4 * k + 2] = texData[4 * s + 2];
+                        texData[4 * k + 3] = 255;
+                        src[k] = src[nk];
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+        if (!changed) break;
+    }
+}
+
+
+//
+// Drawn as its own texture/pass, ONE BYTE PER MASK CELL with GL_NEAREST, so
+// each screen pixel is judged against a mask cell rather than against the
+// coarse data grid. The source data only supplies the colours; the coastline
+// shape comes entirely from the mask. That is what keeps it from looking
+// like a mosaic.
+// ===========================================================================
+struct LandLayer {
+    GLuint texID;
+    bool   hasTex;
+    int    tw, th;
+    double lonMin, latMin, lonStep, latStep;
+    double latMax, lonMax;   // exact data extent (the texture has one cell of padding)
+    LandLayer() : texID(0), hasTex(false), tw(0), th(0),
+                  lonMin(0), latMin(0), lonStep(0), latStep(0), latMax(0), lonMax(0) {}
+};
+
+// Build a land texture from the mask over [latMin..latMax]x[lonMin..lonMax],
+// one byte per texel, hard land/sea decision per texel.
+static bool BuildLandLayer(NcdfLandMask &m,
+                           double latMin, double latMax,
+                           double lonMin, double lonMax,
+                           LandLayer &out,
+                           double exLat0 = 1e30, double exLat1 = -1e30,
+                           double exLon0 = 1e30, double exLon1 = -1e30)
+{
+    double a0 = wxMax(latMin, m.latMin()), a1 = wxMin(latMax, m.latMax());
+    double o0 = wxMax(lonMin, m.lonMin()), o1 = wxMin(lonMax, m.lonMax());
+    if (a1 - a0 < 1e-6 || o1 - o0 < 1e-6) return false;
+
+    int maxTex = 4096;
+    GLint mv = 0;
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &mv);
+    if (mv > 512) maxTex = mv;
+
+    // Use the mask's own cell size; only coarsen if the texture would not fit.
+    double step = m.dLat();
+    if (!(step > 0.0)) step = 1.0 / 120.0;
+    int th = (int)((a1 - a0) / step) + 1;
+    int tw = (int)((o1 - o0) / step) + 1;
+    const long long kMaxCells = 134217728LL;   // 128 MB at 1 byte/texel
+    while (tw > maxTex || th > maxTex || (long long)tw * th > kMaxCells) {
+        step *= 2.0;
+        th = (int)((a1 - a0) / step) + 1;
+        tw = (int)((o1 - o0) / step) + 1;
+        if (tw <= 1 || th <= 1) return false;
+    }
+
+    std::vector<unsigned char> px((size_t)(tw + 2) * (th + 2), 0);   // 1-texel sea pad
+    for (int j = 0; j < th; j++) {
+        double la = a0 + step * j;
+        for (int i = 0; i < tw; i++) {
+            double lo = o0 + step * i;
+            // A finer layer drawn on top owns this cell -- keep this layer clear.
+            if (la >= exLat0 && la <= exLat1 && lo >= exLon0 && lo <= exLon1) {
+                px[(j + 1) * (tw + 2) + (i + 1)] = 0;
+                continue;
+            }
+            // Per-texel hard decision from the fine mask.
+            double lf = m.landFracInBox(la - 0.5 * step, la + 0.5 * step,
+                                        lo - 0.5 * step, lo + 0.5 * step);
+            px[((size_t)j + 1) * (tw + 2) + i + 1] = (lf > 0.5) ? 255 : 0;
+        }
+    }
+
+    if (!out.hasTex) glGenTextures(1, &out.texID);
+    glBindTexture(GL_TEXTURE_2D, out.texID);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);   // per-cell judgement
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    // GL_UNPACK_ALIGNMENT defaults to 4, but GL_LUMINANCE is 1 byte/texel and
+    // the widths (5761 / 10801) are not multiples of 4. Without this the driver
+    // pads every row and the whole texture comes out sheared into stripes.
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, tw + 2, th + 2, 0,
+                 GL_LUMINANCE, GL_UNSIGNED_BYTE, &px[0]);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    out.hasTex = true;
+    out.tw = tw + 2; out.th = th + 2;
+    out.latMax = a0 + step * (th - 1);
+    out.lonMax = o0 + step * (tw - 1);
+    out.lonMin = o0; out.latMin = a0;
+    out.lonStep = step; out.latStep = step;
+    ncdfLog("[landlayer] built %dx%d over lat %.2f..%.2f lon %.2f..%.2f  step=%.3f' (%.2f km)\n",
+            tw, th, a0, a1, o0, o1, step * 60.0, step * 111.0);
+    return true;
+}
+
+// Screen tiles -> land-texture UVs (borderless grid, CLAMP_TO_EDGE).
+static void ComputeLandUVs(PlugIn_ViewPort *vp, const LandLayer &L, TileGrid &tg)
+{
+    memset(&tg, 0, sizeof(tg));
+    tg.repeat = false;
+    tg.xs = 0; tg.ys = 0;
+    double pw = vp->view_scale_ppm * 1e6 / pow(2, fabs(vp->clat) / 25);
+    if (pw < 20) pw = 20;
+    tg.xs = (int)ceil(vp->pix_width / pw);
+    tg.ys = (int)ceil(vp->pix_height / pw);
+    if (vp->rotation == 0) tg.xs = 1;
+    if (tg.xs < 2) tg.xs = 2; if (tg.ys < 2) tg.ys = 2;
+    if (tg.xs > 16) tg.xs = 16; if (tg.ys > 16) tg.ys = 16;
+    tg.gridW = tg.xs + 1; tg.gridH = tg.ys + 1;
+    tg.lva = new(std::nothrow) double[tg.gridW * tg.gridH * 2];
+    if (!tg.lva) return;
+
+    double clon = 0.5 * (L.lonMin + (L.lonMin + L.lonStep * (L.tw - 1)));
+    for (int i = 0; i < tg.gridW; i++) {
+        double px = vp->pix_width / (double)tg.xs * i;
+        for (int j = 0; j < tg.gridH; j++) {
+            double py = vp->pix_height / (double)tg.ys * j;
+            double lat, lon;
+            wxPoint pt((int)px, (int)py);
+            GetCanvasLLPix(vp, pt, &lat, &lon);
+            if (clon - lon > 180) lon += 360;
+            else if (lon - clon > 180) lon -= 360;
+            int idx = (i * tg.gridH + j) * 2;
+            // +1.5: one texel of transparent sea padding around the grid
+            tg.lva[idx]     = ((lon - L.lonMin) / L.lonStep + 1.5) / L.tw;
+            tg.lva[idx + 1] = ((lat - L.latMin) / L.latStep + 1.5) / L.th;
+        }
+    }
+}
+
+// Draw the land layer: dataTex bound to the land texture, landMode = 2.
+static void DrawLandLayer(PlugIn_ViewPort *vp, const LandLayer &L)
+{
+    if (!L.hasTex) return;
+    TileGrid tg;
+    ComputeLandUVs(vp, L, tg);
+    if (!tg.lva) return;
+
+    ncdf_shader_use_program(ncdf_shader_get_grid_program());
+    NcdfShaderUniforms u = ncdf_shader_get_uniforms();
+    if (u.landMode >= 0) ncdf_shader_uniform_1i(u.landMode, 2);
+    if (u.dataTex >= 0) {
+        ncdf_shader_active_texture(0x84C0);
+        glBindTexture(GL_TEXTURE_2D, L.texID);
+        ncdf_shader_uniform_1i(u.dataTex, 0);
+    }
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    ForEachTile(vp, tg, DrawShaderTile, NULL);
+    glDisable(GL_BLEND);
+    ncdf_shader_active_texture(0x84C0);
+    ncdf_shader_use_program(0);
+    delete[] tg.lva;
+}
+
+// ---- Two land layers: a coarse one over the whole data extent, and a fine
+// ---- one over the region where the high-res mask lives. The coarse layer is
+// ---- built with the fine region cut out so the two never overlap.
+static LandLayer s_landFine, s_landCoarse;
+static bool s_landBuilt = false;
+
+bool LandLayersActive() { return s_landBuilt && (s_landFine.hasTex || s_landCoarse.hasTex); }
+
+static void BuildLandLayers(NcdfLandMask &fine, NcdfLandMask *coarse,
+                            double tlat, double tlon, double blat, double blon)
+{
+    if (s_landBuilt) return;
+    double latMin = wxMin(tlat, blat), latMax = wxMax(tlat, blat);
+    double lonMin = wxMin(tlon, blon), lonMax = wxMax(tlon, blon);
+
+    // Fine layer: only where the fine mask actually covers.
+    bool hasFine = false;
+    if (fine.valid() && fine.nlat() > 0) {
+        hasFine = BuildLandLayer(fine, latMin, latMax, lonMin, lonMax, s_landFine);
+    }
+    // Coarse layer: everywhere else.
+    if (coarse && coarse->valid()) {
+        if (hasFine)
+            BuildLandLayer(*coarse, latMin, latMax, lonMin, lonMax, s_landCoarse,
+                           s_landFine.latMin, s_landFine.latMax,
+                           s_landFine.lonMin, s_landFine.lonMax);
+        else
+            BuildLandLayer(*coarse, latMin, latMax, lonMin, lonMax, s_landCoarse);
+    }
+    s_landBuilt = true;
+    ncdfLog("[landlayer] active=%d fine=%d coarse=%d\n",
+            (int)LandLayersActive(), (int)s_landFine.hasTex, (int)s_landCoarse.hasTex);
+}
+
+static void DrawLandLayers(PlugIn_ViewPort *vp)
+{
+    if (!LandLayersActive()) return;
+    DrawLandLayer(vp, s_landCoarse);
+    DrawLandLayer(vp, s_landFine);
+}
+
 static void DrawShaderPath(PlugIn_ViewPort *vp,
                            ncdfOverlayFactory::RenderSettings &settings,
                            GLuint texID, GLuint lutID, bool hasLUT,
                            GLuint *physicalTexID, bool *hasPhysicalTex,
-                           TileGrid &tg, int tw, int th)
+                           TileGrid &tg, int tw, int th, int landMode)
 {
     ncdf_shader_use_program(ncdf_shader_get_grid_program());
     NcdfShaderUniforms u = ncdf_shader_get_uniforms();
+    if (u.landMode >= 0) ncdf_shader_uniform_1i(u.landMode, landMode);
     if (u.texSize >= 0) ncdf_shader_uniform_2f(u.texSize, (float)tw, (float)th);
     if (u.vectorMode >= 0) ncdf_shader_uniform_1i(u.vectorMode, settings.vectorMode ? 1 : 0);
     if (u.dataMin >= 0) ncdf_shader_uniform_1f(u.dataMin, settings.dataMin);
@@ -1044,6 +1340,8 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
             BuildLUTTex(colorFunc, settings, lutID, hasLUT);
 
             ApplyTextureBorders(ctx);
+            FillTextureGaps(texData, tw, th, borderH);   // 近邻插值填补数据空洞
+            FillLandFractionChannel(ctx);   // B 通道 = 亚格点陆地比例
             ncdfLog("[render] RenderGridOverlay: UploadCoeffTexture\n");
             UploadCoeffTexture(texID, hasTex, tw, th, repeat, dataDim, glDim, texData);
             free(texData);  // Release texture buffer after GPU upload
@@ -1052,7 +1350,13 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
             needsRebuild = false;  // Always clear after successful upload
         }  // end if (!hasTex || dataChanged)
 
-        // --- Draw tiled texture (GRIB pattern) ---
+        // GSHHG 高分辨率陆地图层：数据只上色，海岸线由掩膜纹理逐像素画出
+    if (gui && gui->pPlugIn)
+        BuildLandLayers(gui->pPlugIn->m_landMask,
+                        gui->pPlugIn->m_landMaskCoarse.valid() ? &gui->pPlugIn->m_landMaskCoarse : NULL,
+                        tlat, tlon, blat, blon);
+
+    // --- Draw tiled texture (GRIB pattern) ---
         if (hasTex && texID) {
             // Reuse tlon/tlat/blon/blat from class members for draw context
             TexBuildContext drawCtx = { gui, ni, nj, glDim[0], glDim[1], 0, false,
@@ -1061,9 +1365,18 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
             if (!tg.lva) return;
 
             if (ncdf_shader_initialized() && ncdf_shader_get_grid_program() > 0) {
+                // landMode: 3 = land layers cover the land (draw colours everywhere)
+                //           1 = no layers, decide per cell and paint land here
+                //           0 = no layers and panel closed -> hide land
+                // landMode 0: the data pass CLIPS ITSELF to the sea and leaves
+                // land transparent, so ocean can never pollute a land pixel even
+                // if the land layer has a gap. The land layer paints the fine
+                // coastline on top; if there is no mask it paints from the B flag.
+                int landMode = LandLayersActive() ? 0 : (gui->IsShown() ? 1 : 0);
                 DrawShaderPath(vp, settings, texID, lutID, hasLUT,
                                physicalTexID, hasPhysicalTex,
-                               tg, glDim[0], glDim[1]);
+                               tg, glDim[0], glDim[1], landMode);
+                if (gui->IsShown()) DrawLandLayers(vp);   // GSHHG follows the plugin panel
             }
             delete[] tg.lva;
         }
