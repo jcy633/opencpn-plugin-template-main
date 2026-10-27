@@ -76,6 +76,7 @@ typedef GLint (APIENTRY *PFN_GETUNIFORMLOCATION)(GLuint, const GLchar*);
 typedef void (APIENTRY *PFN_UNIFORM1I)(GLint, GLint);
 typedef void (APIENTRY *PFN_UNIFORM1F)(GLint, GLfloat);
 typedef void (APIENTRY *PFN_UNIFORM2F)(GLint, GLfloat, GLfloat);
+typedef void (APIENTRY *PFN_UNIFORM4F)(GLint, GLfloat, GLfloat, GLfloat, GLfloat);
 typedef void (APIENTRY *PFN_BINDATTRIBLOCATION)(GLuint, GLuint, const GLchar*);
 typedef void (APIENTRY *PFN_ACTIVETEXTURE)(GLenum);
 typedef void (APIENTRY *PFN_ENABLEVERTEXATTRIBARRAY)(GLuint);
@@ -100,6 +101,7 @@ static PFN_GETUNIFORMLOCATION fpGetUniformLocation = NULL;
 static PFN_UNIFORM1I fpUniform1i = NULL;
 static PFN_UNIFORM1F fpUniform1f = NULL;
 static PFN_UNIFORM2F fpUniform2f = NULL;
+static PFN_UNIFORM4F fpUniform4f = NULL;
 static PFN_BINDATTRIBLOCATION fpBindAttribLocation = NULL;
 static PFN_ACTIVETEXTURE fpActiveTexture = NULL;
 static PFN_ENABLEVERTEXATTRIBARRAY fpEnableVertexAttribArray = NULL;
@@ -124,6 +126,7 @@ static bool load_gl_extensions() {
     fpUniform1i = (PFN_UNIFORM1I)load_gl("glUniform1i");
     fpUniform1f = (PFN_UNIFORM1F)load_gl("glUniform1f");
     fpUniform2f = (PFN_UNIFORM2F)load_gl("glUniform2f");
+    fpUniform4f = (PFN_UNIFORM4F)load_gl("glUniform4f");
     fpBindAttribLocation = (PFN_BINDATTRIBLOCATION)load_gl("glBindAttribLocation");
     fpActiveTexture = (PFN_ACTIVETEXTURE)load_gl("glActiveTexture");
     fpEnableVertexAttribArray = (PFN_ENABLEVERTEXATTRIBARRAY)load_gl("glEnableVertexAttribArray");
@@ -172,6 +175,12 @@ static const char* s_frag =
     "uniform float physMinV;\n"
     "uniform float physMaxV;\n"
     "uniform int landMode;\n"
+    "uniform sampler2D landMaskTex;\n"
+    "uniform sampler2D landMaskTex2;\n"
+    "uniform vec4 dataGeo;\n"
+    "uniform vec4 landGeoC;\n"
+    "uniform vec4 landGeoF;\n"
+    "uniform float dbgFill;\n"
     "varying vec2 vUV;\n"
     "\n"
     "float bspline(float t) {\n"
@@ -242,6 +251,55 @@ static const char* s_frag =
     "    float l00=s00.b, l10=s10.b, l01=s01.b, l11=s11.b;\n"
     "    float landFrac = l00*(1.0-f.x)*(1.0-f.y) + l10*f.x*(1.0-f.y)\n"
     "                   + l01*(1.0-f.x)*f.y       + l11*f.x*f.y;\n"
+    "\n"
+    "    // ===== landMode == 4: sub-cell gap fill =====\n"
+    "    // The ocean model is coarse, GSHHG is fine, so a blank band always sits\n"
+    "    // between the drawn coastline and the edge of the colour field. This pass\n"
+    "    // colours that band with the colour of the NEAREST sea point -- a plain\n"
+    "    // point sample, never a blend across land. It paints exactly where the\n"
+    "    // sea-colour pass above left a hole. It is drawn AFTER the GSHHG land\n"
+    "    // layers; land is drawn once more afterwards so it can never be covered.\n"
+    "    if (landMode == 4) {\n"
+    "        bool seaPainted = (land2x2 == 0) && (landFrac <= 0.5);\n"
+    "        if (seaPainted) { gl_FragColor = vec4(0.0, 0.0, 0.0, 0.0); return; }\n"
+    "        // Never paint where GSHHG says land. The fill must not rely on the\n"
+    "        // land pass covering it afterwards -- if that coverage is ever short,\n"
+    "        // sea colour is pushed out past the coastline as an extra ring.\n"
+    "        // Land test via LON/LAT, not via a data-UV affine. The data texture is\n"
+    "        // GL_REPEAT for global sets, so vUV.x wraps 1->0 at the antimeridian;\n"
+    "        // an affine straight off vUV is NOT periodic in u and therefore jumps by\n"
+    "        // a whole mask width there, flipping the land test along a hard vertical\n"
+    "        // edge at the date line (and reporting deep land as sea). Going through\n"
+    "        // longitude and normalising it to [-180,180) removes the wrap entirely.\n"
+    "        float dLon = dataGeo.x * vUV.x + dataGeo.y;\n"
+    "        float dLat = dataGeo.z * vUV.y + dataGeo.w;\n"
+    "        dLon = -180.0 + mod(dLon + 180.0, 360.0);\n"
+    "        vec2 mUvC = vec2(dLon * landGeoC.x + landGeoC.y,\n"
+    "                         dLat * landGeoC.z + landGeoC.w);\n"
+    "        vec2 mUvF = vec2(dLon * landGeoF.x + landGeoF.y,\n"
+    "                         dLat * landGeoF.z + landGeoF.w);\n"
+    "        if (texture2D(landMaskTex,  mUvC).r > 0.5 ||\n"
+    "            texture2D(landMaskTex2, mUvF).r > 0.5) {\n"
+    "            gl_FragColor = vec4(0.0, 0.0, 0.0, 0.0); return;\n"
+    "        }\n"
+    "        vec4 t = texture2D(physicalTex, (tc+vec2(0.5,0.5))*ts);\n"
+    "        // a = this texel has its own data, b = nearest-propagated value.\n"
+    "        // Neither -> no source sea colour anywhere near: leave the pixel\n"
+    "        // transparent (inland water the model never covered). Painting a\n"
+    "        // colour here would be inventing data that does not exist.\n"
+    "        if (t.a <= 0.003 && t.b <= 0.003) { gl_FragColor = vec4(0.0, 0.0, 0.0, 0.0); return; }\n"
+    "        // dbgFill: show where the fill really WOULD paint (after the source\n"
+    "        // check above, so inland no-data water is not falsely shown as filled).\n"
+    "        if (dbgFill > 0.5) { gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0); return; }\n"
+    "        float fu = physMin + t.r * (physMax - physMin);\n"
+    "        float fv = physMinV + t.g * (physMaxV - physMinV);\n"
+    "        float shown = (vectorMode == 1) ? sqrt(fu*fu + fv*fv) : fu;\n"
+    "        float lrng = lutMax - lutMin;\n"
+    "        float fres = (lrng > 0.0001) ? clamp((shown - lutMin) / lrng, 0.0, 1.0) : 0.0;\n"
+    "        gl_FragColor = vec4(texture2D(colorLUT, vec2(fres, 0.5)).rgb, 1.0);\n"
+    "        return;\n"
+    "    }\n"
+    "\n"
     "    // landMode 0/1: no high-res land layer covering this area, so decide\n"
     "    // here from the per-cell flag (1 = also paint land, 0 = hide it).\n"
     "    // landMode 3: the land layers cover the land, so draw the colour\n"
@@ -280,22 +338,13 @@ static const char* s_frag =
     "            wSum=1.0;\n"
     "        }\n"
     "    } else {\n"
-    "        // 2x2 has land: bilinear on physical values, skipping land texels\n"
-    "        // (merges old Case 3/4/5/6/7). Even with 2+ land texels we still\n"
-    "        // Mixed land/ocean in the 2x2: land-skipping bilinear on physical values\n"
-    "        // blend below -- a hard land cut is what made the edge a staircase.\n"
-    "        vec2 p00=readPhysical((tc+vec2(0.5,0.5))*ts);\n"
-    "        vec2 p10=readPhysical((tc+vec2(1.5,0.5))*ts);\n"
-    "        vec2 p01=readPhysical((tc+vec2(0.5,1.5))*ts);\n"
-    "        vec2 p11=readPhysical((tc+vec2(1.5,1.5))*ts);\n"
-    "        float w0=0.0,w1=0.0,w2=0.0,w3=0.0;\n"
-    "        if(h00) w0=(1.0-f.x)*(1.0-f.y);\n"
-    "        if(h10) w1=f.x*(1.0-f.y);\n"
-    "        if(h01) w2=(1.0-f.x)*f.y;\n"
-    "        if(h11) w3=f.x*f.y;\n"
-    "        rSum=p00.r*w0+p10.r*w1+p01.r*w2+p11.r*w3;\n"
-    "        gSum=p00.g*w0+p10.g*w1+p01.g*w2+p11.g*w3;\n"
-    "        wSum=w0+w1+w2+w3;\n"
+    "        // 2x2 has land: SKIP this fragment (2026-10-27).\n"
+    "        // Requirement: if ANY texel of the 2x2 neighbourhood is land, produce\n"
+    "        // no value here at all. No bilinear blend (it mixes values across the\n"
+    "        // shoreline) and no nearest-neighbour substitute either -- just leave\n"
+    "        // the pixel transparent so the chart shows through.\n"
+    "        gl_FragColor = vec4(0.0, 0.0, 0.0, 0.0);\n"
+    "        return;\n"
     "    }\n"
     "\n"
     "    // Sea side but no model data here -> leave transparent (chart shows).\n"
@@ -456,6 +505,12 @@ bool ncdf_shader_init() {
     s_uniforms.physMinV = fpGetUniformLocation(s_program, "physMinV");
     s_uniforms.physMaxV = fpGetUniformLocation(s_program, "physMaxV");
     s_uniforms.landMode = fpGetUniformLocation(s_program, "landMode");
+    s_uniforms.landMaskTex = fpGetUniformLocation(s_program, "landMaskTex");
+    s_uniforms.landMaskTex2 = fpGetUniformLocation(s_program, "landMaskTex2");
+    s_uniforms.dataGeo = fpGetUniformLocation(s_program, "dataGeo");
+    s_uniforms.landGeoC = fpGetUniformLocation(s_program, "landGeoC");
+    s_uniforms.landGeoF = fpGetUniformLocation(s_program, "landGeoF");
+    s_uniforms.dbgFill = fpGetUniformLocation(s_program, "dbgFill");
 
     s_initialized = true;
     wxLogMessage(_T("[shader] init OK program=%u"), s_program);
@@ -486,6 +541,9 @@ void ncdf_shader_uniform_1f(int loc, float v) {
 }
 void ncdf_shader_uniform_2f(int loc, float x, float y) {
     if (fpUniform2f && loc >= 0) fpUniform2f(loc, x, y);
+}
+void ncdf_shader_uniform_4f(int loc, float x, float y, float z, float w) {
+    if (fpUniform4f && loc >= 0) fpUniform4f(loc, x, y, z, w);
 }
 void ncdf_shader_active_texture(unsigned int t) {
     if (fpActiveTexture) fpActiveTexture(t);

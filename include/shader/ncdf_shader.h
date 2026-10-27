@@ -36,6 +36,12 @@ struct NcdfShaderUniforms {
     int physMinV;     // float: physical value min for V (vector only)
     int physMaxV;     // float: physical value max for V (vector only)
     int landMode;     // int: 1 = draw GSHHG land, 0 = hide it (follows plugin panel)
+    int landMaskTex;  // sampler2D: GSHHG land mask, coarse layer (r>0.5 = land)
+    int landMaskTex2; // sampler2D: GSHHG land mask, fine layer
+    int dataGeo;      // vec4: (kU, cU, kV, cV) with lon = kU*u + cU, lat = kV*v + cV
+    int landGeoC;     // vec4: coarse mask UV = (aL*lon+bL, aT*lat+bT)
+    int landGeoF;     // vec4: fine mask UV, same form
+    int dbgFill;      // float: >0.5 -> paint the gap-fill region solid red
 };
 NcdfShaderUniforms ncdf_shader_get_uniforms();
 
@@ -44,6 +50,7 @@ void ncdf_shader_use_program(unsigned int prog);
 void ncdf_shader_uniform_1i(int loc, int val);
 void ncdf_shader_uniform_1f(int loc, float val);
 void ncdf_shader_uniform_2f(int loc, float x, float y);
+void ncdf_shader_uniform_4f(int loc, float x, float y, float z, float w);
 void ncdf_shader_active_texture(unsigned int tex);
 void ncdf_shader_enable_attrib(unsigned int idx);
 void ncdf_shader_disable_attrib(unsigned int idx);

@@ -439,6 +439,12 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
     }
     if (clipActive) FeatureRender::clipMaskEnd();
 
+    // ---- GSHHG 陆地收尾 ----
+    // 每个数据层内部已经是 海色 → GSHHG → 填补 的顺序，填补会盖在该层刚画的
+    // 陆地上；这里在**所有**图层画完后再画一次 GSHHG 把陆地夺回来。这也是
+    // 「陆地不会被海洋像素覆盖」的最终保证——陆地永远是最后一笔。
+    if (gui && gui->IsShown()) DrawLandLayers(vp);
+
     // Color legend
     {
         static const ColorStop tempStops[] = {

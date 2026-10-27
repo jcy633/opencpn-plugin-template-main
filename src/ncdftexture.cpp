@@ -827,6 +827,58 @@ static void BuildPhysicalTex(TexBuildContext &ctx,
                 }
             }
 
+            // ---- 最近邻传播：只为亚网格空白带供色 ----
+            // 海洋模式分辨率低、GSHHG 分辨率高，海岸线附近有一条亚网格空白带
+            // （海色 pass 因 2x2 有陆地而整点跳过的像素）。landMode==4 取「最近的
+            // 海的点」的颜色来填这条带，这里的传播就是给它准备那个值。
+            //   a=255 -> 本格自己有数据；b=255 -> 最近邻传播值；两者都 0 -> 无值。
+            // 轮数刻意压到 2：只扩散到紧邻数据的那一两圈，够亚网格带取色即可。
+            // 大范围无数据区（陆地内部、远处空洞）**不填**——陆地交给 GSHHG 层，
+            // 那里用不到最近邻。传播只从有效海格点出发、只写无数据格点，既不用
+            // 陆地值污染海色，也不改写有效格点，所以插值逻辑完全不受影响。
+            {
+                std::vector<int> src((size_t)tw * th, -1);
+                for (int y = 1; y < th - 1; y++)
+                    for (int x = borderH; x < tw - borderH; x++) {
+                        size_t k = (size_t)y * tw + x;
+                        if (physData[4 * k + 3] == 255) src[k] = (int)k;
+                    }
+                const int DX[4] = {1, -1, 0, 0}, DY[4] = {0, 0, 1, -1};
+                const int kMaxFillPasses = 2;
+                unsigned int filled = 0;
+                for (int pass = 0; pass < kMaxFillPasses; pass++) {
+                    // 必须用快照判源：直接改 src 的话，一趟内刚填好的格点会立刻
+                    // 成为新源，值就顺着扫描方向（向右、向下）一路传出去，画面上
+                    // 就是成片的长横线/长竖线，根本不是最近邻。快照保证一趟只扩一格。
+                    const std::vector<int> srcBefore(src);
+                    bool changed = false;
+                    for (int y = 1; y < th - 1; y++)
+                        for (int x = borderH; x < tw - borderH; x++) {
+                            size_t k = (size_t)y * tw + x;
+                            if (src[k] >= 0) continue;
+                            for (int d = 0; d < 4; d++) {
+                                int nx = x + DX[d], ny = y + DY[d];
+                                if (nx < 0 || nx >= tw || ny < 0 || ny >= th) continue;
+                                size_t nk = (size_t)ny * tw + nx;
+                                if (srcBefore[nk] >= 0) {
+                                    size_t s = (size_t)srcBefore[nk];
+                                    physData[4 * k]     = physData[4 * s];
+                                    physData[4 * k + 1] = physData[4 * s + 1];
+                                    physData[4 * k + 2] = 255;      // 标记：传播值
+                                    // a 保持 0：本格依然没有自己的数据
+                                    src[k] = srcBefore[nk];
+                                    changed = true;
+                                    filled++;
+                                    break;
+                                }
+                            }
+                        }
+                    if (!changed) break;
+                }
+                ncdfLog("[physfill] nearest-propagated %u cells (%d passes max) of %d\n",
+                        filled, kMaxFillPasses, tw * th);
+            }
+
             // Upload physical texture
             if (!(*hasPhysicalTex)) {
                 // Delete stale texture from previous time step (Invalidate set hasPhysicalTex=false)
@@ -854,6 +906,57 @@ static void BuildPhysicalTex(TexBuildContext &ctx,
 
 //===================================================================
 // (h) Tile UV computation
+//===================================================================
+
+//===================================================================
+// 诊断开关 —— 定位「屏幕中间那条隐形线」用
+//
+// 文件：C:\ProgramData\opencpn\ncdf_flags.txt
+//   sea=0     不画海色
+//   land=0    不画 GSHHG 陆地
+//   fill=0    不画补空白
+//   tileX=N   强制横向分块数（0 = 自动）
+//   tileY=N   强制纵向分块数（0 = 自动）
+//   dbgFill=1 把补空白要画的区域涂成纯红，直接看它的边界形状
+//
+// 文件不存在或键缺失时全部走默认（三 pass 全开、自动分块），
+// 所以平时完全不影响任何行为。每 30 次渲染重读一次，改完存盘即可生效。
+//===================================================================
+struct NcdfDbgFlags {
+    bool sea, land, fill;
+    int  tileX, tileY;
+    bool dbgFill;
+};
+static NcdfDbgFlags s_dbg = { true, true, true, 0, 0, false };
+
+static void LoadDbgFlags()
+{
+    static int s_tick = 0;
+    if ((s_tick++ % 30) != 0) return;
+
+    s_dbg.sea = true; s_dbg.land = true; s_dbg.fill = true;
+    s_dbg.tileX = 0;  s_dbg.tileY = 0;  s_dbg.dbgFill = false;
+
+    FILE *fp = fopen("C:\\ProgramData\\opencpn\\ncdf_flags.txt", "r");
+    if (!fp) return;
+    char line[128];
+    while (fgets(line, sizeof(line), fp)) {
+        int v = 0;
+        if (sscanf(line, "sea=%d", &v) == 1)      s_dbg.sea = (v != 0);
+        else if (sscanf(line, "land=%d", &v) == 1) s_dbg.land = (v != 0);
+        else if (sscanf(line, "fill=%d", &v) == 1) s_dbg.fill = (v != 0);
+        else if (sscanf(line, "tileX=%d", &v) == 1) s_dbg.tileX = v;
+        else if (sscanf(line, "tileY=%d", &v) == 1) s_dbg.tileY = v;
+        else if (sscanf(line, "dbgFill=%d", &v) == 1) s_dbg.dbgFill = (v != 0);
+    }
+    fclose(fp);
+}
+
+// 分块被跳过的原因统计 —— 如果隐形线来自某个分块被误剔，
+// 这里会直接显示出来（ForEachTile 的 q.u1<=q.u0 判据在日期变更线/旋转
+// 海图下会误跳分块，交接文档记过这个坑）。
+static unsigned int s_tileDrawn = 0, s_tileSkipUV = 0, s_tileSkipU = 0;
+
 //===================================================================
 struct TileGrid {
     double *lva;
@@ -888,10 +991,15 @@ static TileGrid ComputeTileUVs(PlugIn_ViewPort *vp, TexBuildContext &ctx,
     tg.xs = (int)ceil(vp->pix_width / pw);
     tg.ys = (int)ceil(vp->pix_height / pw);
     if (vp->rotation == 0) tg.xs = 1;
-    if (tg.xs < 2) tg.xs = 2; if (tg.ys < 2) tg.ys = 2;
+    // 分块数下限必须和 ComputeLandUVs 完全一致：两边在屏幕上的分块边界要重合，
+    // 否则 GSHHG 海岸线和海色场各自的分段线性 UV 逼近误差不一样，海岸线会被
+    // 错开一圈，肉眼看到的就是「屏幕中间一条隐形线」，越过它海域外围变大一圈。
+    if (tg.xs < 4) tg.xs = 4; if (tg.ys < 4) tg.ys = 4;
     // Global data needs more tiles to avoid degenerate texture coords
     if (tg.repeat && tg.xs < 4) tg.xs = 4;
     if (tg.xs > 16) tg.xs = 16; if (tg.ys > 16) tg.ys = 16;
+    if (s_dbg.tileX > 0) tg.xs = s_dbg.tileX;
+    if (s_dbg.tileY > 0) tg.ys = s_dbg.tileY;
     tg.gridW = tg.xs + 1; tg.gridH = tg.ys + 1;
 
     tg.lva = new(std::nothrow) double[tg.gridW * tg.gridH * 2];
@@ -961,8 +1069,12 @@ static void ForEachTile(PlugIn_ViewPort *vp, TileGrid &tg,
 
             if (!((repeat ||
                    ((q.u0>=0||q.u1>=0||q.u2>=0||q.u3>=0)&&(q.u0<=1||q.u1<=1||q.u2<=1||q.u3<=1))) &&
-                  (q.v0>=0||q.v1>=0||q.v2>=0||q.v3>=0)&&(q.v0<=1||q.v1<=1||q.v2<=1||q.v3<=1))) continue;
-            if (q.u1 <= q.u0) continue;
+                  (q.v0>=0||q.v1>=0||q.v2>=0||q.v3>=0)&&(q.v0<=1||q.v1<=1||q.v2<=1||q.v3<=1))) {
+                s_tileSkipUV++;
+                continue;
+            }
+            if (q.u1 <= q.u0) { s_tileSkipU++; continue; }
+            s_tileDrawn++;
 
             q.x = (float)(xS * i);
             q.y = (float)(yS * j);
@@ -1132,8 +1244,11 @@ static void ComputeLandUVs(PlugIn_ViewPort *vp, const LandLayer &L, TileGrid &tg
     tg.xs = (int)ceil(vp->pix_width / pw);
     tg.ys = (int)ceil(vp->pix_height / pw);
     if (vp->rotation == 0) tg.xs = 1;
-    if (tg.xs < 2) tg.xs = 2; if (tg.ys < 2) tg.ys = 2;
+    // 分块下限与 ComputeTileUVs 保持一致（见那边的说明）。
+    if (tg.xs < 4) tg.xs = 4; if (tg.ys < 4) tg.ys = 4;
     if (tg.xs > 16) tg.xs = 16; if (tg.ys > 16) tg.ys = 16;
+    if (s_dbg.tileX > 0) tg.xs = s_dbg.tileX;
+    if (s_dbg.tileY > 0) tg.ys = s_dbg.tileY;
     tg.gridW = tg.xs + 1; tg.gridH = tg.ys + 1;
     tg.lva = new(std::nothrow) double[tg.gridW * tg.gridH * 2];
     if (!tg.lva) return;
@@ -1215,22 +1330,30 @@ static void BuildLandLayers(NcdfLandMask &fine, NcdfLandMask *coarse,
             (int)LandLayersActive(), (int)s_landFine.hasTex, (int)s_landCoarse.hasTex);
 }
 
-static void DrawLandLayers(PlugIn_ViewPort *vp)
+void DrawLandLayers(PlugIn_ViewPort *vp)
 {
     if (!LandLayersActive()) return;
+    if (!s_dbg.land) return;          // 诊断开关
     DrawLandLayer(vp, s_landCoarse);
     DrawLandLayer(vp, s_landFine);
 }
 
+// dataGeo: data-UV -> 经纬度；landGeoC/landGeoF: 经纬度 -> 掩膜 UV。
+// 补空白 pass 用它们查 GSHHG 陆海掩膜（必须绕道经纬度，见 MakeDataGeo 说明）。
 static void DrawShaderPath(PlugIn_ViewPort *vp,
                            ncdfOverlayFactory::RenderSettings &settings,
                            GLuint texID, GLuint lutID, bool hasLUT,
                            GLuint *physicalTexID, bool *hasPhysicalTex,
-                           TileGrid &tg, int tw, int th, int landMode)
+                           TileGrid &tg, int tw, int th, int landMode,
+                           GLuint landTexC = 0, GLuint landTexF = 0,
+                           const float *dataGeo = NULL,
+                           const float *landGeoC = NULL, const float *landGeoF = NULL)
 {
     ncdf_shader_use_program(ncdf_shader_get_grid_program());
     NcdfShaderUniforms u = ncdf_shader_get_uniforms();
     if (u.landMode >= 0) ncdf_shader_uniform_1i(u.landMode, landMode);
+    if (u.dbgFill >= 0) ncdf_shader_uniform_1f(u.dbgFill,
+        (s_dbg.dbgFill && landMode == 4) ? 1.0f : 0.0f);
     if (u.texSize >= 0) ncdf_shader_uniform_2f(u.texSize, (float)tw, (float)th);
     if (u.vectorMode >= 0) ncdf_shader_uniform_1i(u.vectorMode, settings.vectorMode ? 1 : 0);
     if (u.dataMin >= 0) ncdf_shader_uniform_1f(u.dataMin, settings.dataMin);
@@ -1253,11 +1376,38 @@ static void DrawShaderPath(PlugIn_ViewPort *vp,
         glBindTexture(GL_TEXTURE_2D, lutID);
         ncdf_shader_uniform_1i(u.colorLUT, 1);
     }
-    // Bind physical texture for vector mode (scalar uses dataTex.g)
-    if (u.physicalTex >= 0 && settings.vectorMode && hasPhysicalTex && *hasPhysicalTex) {
+    // physicalTex: vector mode 的 readPhysical 要用，补空白 pass（landMode==4）
+    // 两种模式都直接从它取最近海点的值，所以这里不能只在 vectorMode 时绑定。
+    if (u.physicalTex >= 0 &&
+        (settings.vectorMode || landMode == 4) && hasPhysicalTex && *hasPhysicalTex) {
         ncdf_shader_active_texture(0x84C2);
         glBindTexture(GL_TEXTURE_2D, *physicalTexID);
         ncdf_shader_uniform_1i(u.physicalTex, 2);
+    }
+    // GSHHG 陆海掩膜（补空白 pass 用来避开陆地）
+    if (u.landMaskTex >= 0) {
+        ncdf_shader_active_texture(0x84C3);
+        glBindTexture(GL_TEXTURE_2D, landTexC ? landTexC : landTexF);
+        ncdf_shader_uniform_1i(u.landMaskTex, 3);
+    }
+    if (u.landMaskTex2 >= 0) {
+        ncdf_shader_active_texture(0x84C4);
+        glBindTexture(GL_TEXTURE_2D, landTexF ? landTexF : landTexC);
+        ncdf_shader_uniform_1i(u.landMaskTex2, 4);
+    }
+    if (u.dataGeo >= 0) {
+        if (dataGeo) ncdf_shader_uniform_4f(u.dataGeo, dataGeo[0], dataGeo[1], dataGeo[2], dataGeo[3]);
+        else         ncdf_shader_uniform_4f(u.dataGeo, 0, 0, 0, 0);
+    }
+    if (u.landGeoC >= 0) {
+        const float *x = landGeoC ? landGeoC : landGeoF;
+        if (x) ncdf_shader_uniform_4f(u.landGeoC, x[0], x[1], x[2], x[3]);
+        else   ncdf_shader_uniform_4f(u.landGeoC, 0, 0, 0, 0);
+    }
+    if (u.landGeoF >= 0) {
+        const float *x = landGeoF ? landGeoF : landGeoC;
+        if (x) ncdf_shader_uniform_4f(u.landGeoF, x[0], x[1], x[2], x[3]);
+        else   ncdf_shader_uniform_4f(u.landGeoF, 0, 0, 0, 0);
     }
 
     glEnable(GL_BLEND);
@@ -1269,6 +1419,48 @@ static void DrawShaderPath(PlugIn_ViewPort *vp,
     ncdf_shader_use_program(0);
     ncdf_shader_active_texture(0x84C0);
     glDisable(GL_BLEND);
+}
+
+//===================================================================
+// 两个坐标映射，补空白 pass 查 GSHHG 掩膜用
+//
+// dataGeo : data-UV -> 经纬度
+//   ComputeTileUVs: u = ((lon-lon_min)/lonstep - repeat + 1.5)/tw * potNormX
+//   反解  lon = kU*u + cU,  lat = kV*v + cV
+// landGeo : 经纬度 -> 掩膜 UV
+//   ComputeLandUVs: uL = ((lon-L.lonMin)/L.lonStep + 1.5)/L.tw
+//   =>  uL = aL*lon + bL
+//
+// 为什么绕道经纬度：全世界数据的 dataTex 是 GL_REPEAT，vUV.x 在日期变更线
+// 会 1->0 绕回。若直接用 dataUV 的仿射去查掩膜，那个映射对 u 不是周期的，
+// 绕回处掩膜 UV 会平移一整格宽度，陆地判定跟着翻转，画面上就是日期变更线
+// 处一条硬竖边，而且深处陆地会被误判成海。经度规范化到 [-180,180) 后就没有
+// 绕回这回事了。
+//===================================================================
+static void MakeDataGeo(const TileGrid &tg, int tw, int th,
+                        int dataDim0, int dataDim1, float out[4])
+{
+    double potNormX = (double)dataDim0 / (double)tw;
+    double potNormY = (double)dataDim1 / (double)th;
+    if (potNormX < 1e-9) potNormX = 1.0;
+    if (potNormY < 1e-9) potNormY = 1.0;
+    out[0] = (float)((double)tw / potNormX * tg.lonstep);                 // kU
+    out[1] = (float)(tg.lon_min + ((double)tg.repeat - 1.5) * tg.lonstep); // cU
+    out[2] = (float)((double)th / potNormY * tg.latstep);                 // kV
+    out[3] = (float)(tg.lat_min - 1.5 * tg.latstep);                      // cV
+}
+
+static void MakeLandGeo(const LandLayer &L, float out[4])
+{
+    if (fabs(L.lonStep) < 1e-12 || fabs(L.latStep) < 1e-12 ||
+        L.tw <= 0 || L.th <= 0) {
+        out[0] = out[1] = out[2] = out[3] = 0.0f;
+        return;
+    }
+    out[0] = (float)(1.0 / (L.lonStep * (double)L.tw));
+    out[1] = (float)((1.5 - L.lonMin / L.lonStep) / (double)L.tw);
+    out[2] = (float)(1.0 / (L.latStep * (double)L.th));
+    out[3] = (float)((1.5 - L.latMin / L.latStep) / (double)L.th);
 }
 
 //===================================================================
@@ -1340,7 +1532,10 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
             BuildLUTTex(colorFunc, settings, lutID, hasLUT);
 
             ApplyTextureBorders(ctx);
-            FillTextureGaps(texData, tw, th, borderH);   // 近邻插值填补数据空洞
+            // 注意：不再对 texData 做 FillTextureGaps。它会把无数据格点（陆地）
+            // 填成海洋值并把 alpha 改写成 255，既毁掉 FillLandFractionChannel 的
+            // `a == 1` 陆地标记，也让着色器的 2x2 判陆彻底失效。空白带改由
+            // BuildPhysicalTex 的最近邻传播 + landMode==4 的 gap-fill pass 处理。
             FillLandFractionChannel(ctx);   // B 通道 = 亚格点陆地比例
             ncdfLog("[render] RenderGridOverlay: UploadCoeffTexture\n");
             UploadCoeffTexture(texID, hasTex, tw, th, repeat, dataDim, glDim, texData);
@@ -1373,10 +1568,45 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
                 // if the land layer has a gap. The land layer paints the fine
                 // coastline on top; if there is no mask it paints from the B flag.
                 int landMode = LandLayersActive() ? 0 : (gui->IsShown() ? 1 : 0);
-                DrawShaderPath(vp, settings, texID, lutID, hasLUT,
-                               physicalTexID, hasPhysicalTex,
-                               tg, glDim[0], glDim[1], landMode);
-                if (gui->IsShown()) DrawLandLayers(vp);   // GSHHG follows the plugin panel
+                LoadDbgFlags();
+                if (s_dbg.sea)
+                    DrawShaderPath(vp, settings, texID, lutID, hasLUT,
+                                   physicalTexID, hasPhysicalTex,
+                                   tg, glDim[0], glDim[1], landMode);
+
+                // ---- 第 3 层：GSHHG 陆地，画在海色之后 ----
+                if (gui->IsShown()) DrawLandLayers(vp);
+
+                // ---- 填补 GSHHG 与海色之间的空白带 ----
+                // 取色 = 最近的海的点的颜色，纯点取色、不跨陆地插值。
+                // 关键：本 pass 自己查 GSHHG 陆海掩膜，**绝不在陆地上画**，
+                // 不依赖陆地层事后去盖。一旦靠事后盖，哪一侧的覆盖差一点，
+                // 海色就被顶到海岸线外面去，表现为「海域外围多出一圈」。
+                if (s_dbg.fill && physicalTexID && hasPhysicalTex && *hasPhysicalTex) {
+                    float dGeo[4], gC[4], gF[4];
+                    MakeDataGeo(tg, glDim[0], glDim[1], dataDim[0], dataDim[1], dGeo);
+                    MakeLandGeo(s_landCoarse, gC);
+                    MakeLandGeo(s_landFine, gF);
+                    DrawShaderPath(vp, settings, texID, lutID, hasLUT,
+                                   physicalTexID, hasPhysicalTex,
+                                   tg, glDim[0], glDim[1], 4,
+                                   s_landCoarse.hasTex ? s_landCoarse.texID : 0,
+                                   s_landFine.hasTex ? s_landFine.texID : 0,
+                                   dGeo,
+                                   s_landCoarse.hasTex ? gC : NULL,
+                                   s_landFine.hasTex ? gF : NULL);
+                }
+
+                // 分块统计：如果隐形线来自某个分块被误剔，这里会直接显示出来
+                {
+                    static unsigned int s_logTick = 0;
+                    if ((s_logTick++ % 120) == 0)
+                        ncdfLog("[tiles] xs=%d ys=%d drawn=%u skipUV=%u skipU1<=U0=%u "
+                                "| flags sea=%d land=%d fill=%d tileX=%d tileY=%d\n",
+                                tg.xs, tg.ys, s_tileDrawn, s_tileSkipUV, s_tileSkipU,
+                                (int)s_dbg.sea, (int)s_dbg.land, (int)s_dbg.fill,
+                                s_dbg.tileX, s_dbg.tileY);
+                }
             }
             delete[] tg.lva;
         }

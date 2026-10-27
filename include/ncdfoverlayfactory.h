@@ -59,6 +59,13 @@ OVERLAP Intersect(PlugIn_ViewPort *vp,
        double lat_min, double lat_max, double lon_min, double lon_max, double Marge);
 bool PointInLLBox(PlugIn_ViewPort *vp, double x, double y);
 
+// GSHHG 高分辨率陆地图层（定义在 ncdftexture.cpp）。
+// 必须在**所有**数据图层的海色画完之后调用一次，不能放在 RenderGridOverlay
+// 内部：那里是每数据层调一次，顺序会变成 海→陆→海→陆，后一层的海色直接盖掉
+// 前一层刚画好的陆地。
+bool LandLayersActive();
+void DrawLandLayers(PlugIn_ViewPort *vp);
+
 // Isoline segment (shared between class and free rendering function)
 struct ncdfIsoSeg { double lat1, lon1, lat2, lon2, value; };
 
