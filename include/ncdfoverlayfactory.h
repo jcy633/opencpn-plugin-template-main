@@ -66,6 +66,8 @@ bool PointInLLBox(PlugIn_ViewPort *vp, double x, double y);
 // 前一层刚画好的陆地。
 bool LandLayersActive();
 void DrawLandLayers(PlugIn_ViewPort *vp);
+// 数据范围 / 掩膜变化后调用：让陆地图层按新范围重建
+void InvalidateLandLayers();
 
 // Isoline segment (shared between class and free rendering function)
 struct ncdfIsoSeg { double lat1, lon1, lat2, lon2, value; };
@@ -76,7 +78,9 @@ public:
             ncdfOverlayFactory();
             ~ncdfOverlayFactory();
 
-			void setData(MainDialog *gui, ncdf_pi *plugin, const ncdfDataMessage& g2data, int numberOfPoints, wxDouble tlat, wxDouble tlon, wxDouble blat, wxDouble blon);
+			// dataChanged=false 时跳过破坏性清理（切颜色图层时数据其实没变，没必要把四层
+// 纹理/系数/陆地图层全毁掉再重建 —— 那是切换卡顿的根源）
+			void setData(MainDialog *gui, ncdf_pi *plugin, const ncdfDataMessage& g2data, int numberOfPoints, wxDouble tlat, wxDouble tlon, wxDouble blat, wxDouble blon, bool dataChanged = true);
 			bool isInitialized() const { return gui != NULL; }
      void reset();
      void prepareAllOverlays();  // Precompute grids + B-spline coefficients for all data types

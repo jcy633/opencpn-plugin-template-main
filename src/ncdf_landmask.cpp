@@ -66,6 +66,43 @@ double NcdfLandMask::indexF(double lat, double lon, int &j, int &i) const
     return fj;
 }
 
+// ---- 位段统计：一次读取一个 uint64 并 popcount，代替逐 bit 访问 ----
+static inline unsigned popcnt64(uint64_t x)
+{
+    // Kernighan 位清零法；我们的位段很窄（4~5 bit），循环次数极少
+    unsigned n = 0;
+    while (x) { x &= x - 1; n++; }
+    return n;
+}
+
+size_t NcdfLandMask::countLandRange(int j, int i0, int i1) const
+{
+    if (!m_valid || i1 < i0 || j < 0 || j >= (int)m_nlat) return 0;
+    if (i0 < 0) i0 = 0;
+    if (i1 > m_nlon - 1) i1 = m_nlon - 1;
+    if (i1 < i0) return 0;
+
+    const size_t base = (size_t)j * (size_t)m_nlon;
+    const size_t lo = base + (size_t)i0;
+    const size_t hi = base + (size_t)i1;
+    const size_t w0 = lo >> 6, w1 = hi >> 6;
+
+    if (w0 == w1) {
+        const int sh = (int)(lo & 63);
+        const int span = (int)(hi - lo + 1);
+        uint64_t m = (span >= 64) ? ~0ULL : (((1ULL << span) - 1ULL) << sh);
+        return (size_t)popcnt64(m_bits[w0] & m);
+    }
+    size_t n = 0;
+    // 首个不完整字
+    n += (size_t)popcnt64(m_bits[w0] & (~0ULL << (lo & 63)));
+    // 中间整字
+    for (size_t w = w0 + 1; w < w1; w++) n += (size_t)popcnt64(m_bits[w]);
+    // 末个不完整字
+    n += (size_t)popcnt64(m_bits[w1] & ((1ULL << ((hi & 63) + 1)) - 1ULL));
+    return n;
+}
+
 bool NcdfLandMask::isLand(double lat, double lon) const
 {
     int j, i;
@@ -125,6 +162,82 @@ double NcdfLandMask::landFracInBox(double lat0, double lat1,
             if (bitAt((size_t)j * m_nlon + i)) land++;
         }
     return (total > 0) ? (double)land / (double)total : 0.0;
+}
+
+// ---------------------------------------------------------------------------
+// 逐行批量判定：结果与逐格 landFracInBox(latC±h, lo±h) > 0.5 完全一致。
+// 优化点：掩膜行号 j0/j1 整行只算一次；列向浮点下标随 i 增量推进
+// （step/m_lonStep 是双精度，**不要求整数比**），省掉每格的除法和函数调用。
+// 陆地格距由 nc 文件范围自适应决定（30″/1′/2′…），这里不做整数比假设。
+// 任何裁剪/越界/取整都按 landFracInBox 原语义复刻；覆盖不到的格退回通用路径。
+// ---------------------------------------------------------------------------
+void NcdfLandMask::landMaskRow(double latC, double lon0, double step,
+                               int tw, unsigned char *out) const
+{
+    const double half = 0.5 * step;
+
+    auto fallbackCell = [&](int i) {
+        double lo = lon0 + step * i;
+        out[i] = (landFracInBox(latC - half, latC + half, lo - half, lo + half) > 0.5) ? 255 : 0;
+    };
+
+    if (!m_valid || m_nlat < 1 || m_nlon < 1 || m_latStep == 0.0 || m_lonStep == 0.0) {
+        for (int i = 0; i < tw; i++) fallbackCell(i);
+        return;
+    }
+
+    // ---- 行方向：整行固定，只算一次 ----
+    double a0 = latC - half, a1 = latC + half;
+    if (a0 > a1) { double t = a0; a0 = a1; a1 = t; }
+    a0 = std::max(a0, m_lat0); a1 = std::min(a1, m_lat1);
+    if (a1 <= a0) { memset(out, 0, (size_t)tw); return; }
+
+    double fja = (a0 - m_latFirst) / m_latStep;
+    double fjb = (a1 - m_latFirst) / m_latStep;
+    if (fja < -0.5 || fja > m_nlat - 0.5 || fjb < -0.5 || fjb > m_nlat - 0.5) {
+        for (int i = 0; i < tw; i++) fallbackCell(i);
+        return;
+    }
+    if (fja < 0) fja = 0; if (fja > m_nlat - 1) fja = m_nlat - 1;
+    if (fjb < 0) fjb = 0; if (fjb > m_nlat - 1) fjb = m_nlat - 1;
+    int j0 = (int)(fja + 0.5), j1 = (int)(fjb + 0.5);
+    if (j0 > j1) { int t = j0; j0 = j1; j1 = t; }
+
+    // ---- 列方向：浮点下标增量推进 ----
+    const double ratio = step / m_lonStep;
+    double fo0 = ((lon0 - half) - m_lonFirst) / m_lonStep;
+    double fo1 = ((lon0 + half) - m_lonFirst) / m_lonStep;
+
+    for (int i = 0; i < tw; i++, fo0 += ratio, fo1 += ratio) {
+        const double lo = lon0 + step * i;
+        double o0 = lo - half, o1 = lo + half;
+        if (o0 > o1) { double t = o0; o0 = o1; o1 = t; }
+
+        // landFracInBox 会先看盒中心是否在本层覆盖内，不在就交给 fallback
+        if (!coversSelf(latC, 0.5 * (o0 + o1))) { fallbackCell(i); continue; }
+
+        const bool unclipped = (o0 >= m_lon0 && o1 <= m_lon1);
+        o0 = std::max(o0, m_lon0); o1 = std::min(o1, m_lon1);
+        if (o1 <= o0) { out[i] = 0; continue; }
+
+        // 裁剪会改变下标，故只有未被裁到的格才用增量值
+        double fi0 = unclipped ? fo0 : (o0 - m_lonFirst) / m_lonStep;
+        double fi1 = unclipped ? fo1 : (o1 - m_lonFirst) / m_lonStep;
+
+        if (fi0 < -0.5 || fi0 > m_nlon - 0.5 || fi1 < -0.5 || fi1 > m_nlon - 0.5) {
+            out[i] = 0; continue;
+        }
+        if (fi0 < 0) fi0 = 0; if (fi0 > m_nlon - 1) fi0 = m_nlon - 1;
+        if (fi1 < 0) fi1 = 0; if (fi1 > m_nlon - 1) fi1 = m_nlon - 1;
+        int i0 = (int)(fi0 + 0.5), i1 = (int)(fi1 + 0.5);
+        if (i0 > i1) { int t = i0; i0 = i1; i1 = t; }
+
+        // 逐 bit 统计换成按位段 popcount：每行 1 次内存读取代替 i1-i0+1 次
+        size_t land = 0;
+        const size_t total = (size_t)(j1 - j0 + 1) * (size_t)(i1 - i0 + 1);
+        for (int j = j0; j <= j1; j++) land += countLandRange(j, i0, i1);
+        out[i] = (total > 0 && (double)land / (double)total > 0.5) ? 255 : 0;
+    }
 }
 
 // ---------------------------------------------------------------------------

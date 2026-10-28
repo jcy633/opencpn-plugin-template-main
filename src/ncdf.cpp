@@ -41,20 +41,46 @@
 #include "ncdf_feature_render.h"
 #include "ncdf_animate.h"
 #include <vector>
+#include <thread>
+#include <exception>
+#include <mutex>
 #include <algorithm>
 
 using namespace std;
 
-void ncdfLog(const char* format, ...) {
-    FILE *logFile = fopen("C:\\ProgramData\\opencpn\\ncdf_debug.log", "a");
-    if (logFile) {
-        va_list args;
-        va_start(args, format);
-        vfprintf(logFile, format, args);
-        va_end(args);
-        fflush(logFile);
-        fclose(logFile);
+// [排查第2步] 日志锁用 POD 自旋锁，不用 std::mutex。
+// std::mutex 是非平凡类型，其函数内 static 要走 MSVC 的线程安全初始化
+// （guard + TLS）；ncdfLog 在插件加载期就会被调用，那套机制尚未就绪会直接挂死
+// ——实测「加载插件卡死」就是它。volatile LONG 是 POD，无动态初始化，安全。
+static volatile LONG s_logLock = 0;
+static void ncdfLogLock() {
+    while (InterlockedCompareExchange(&s_logLock, 1, 0) != 0) Sleep(0);
+}
+static void ncdfLogUnlock() { InterlockedExchange(&s_logLock, 0); }
+
+// 常驻日志句柄：原来每次调用都 fopen+fclose，prepareData 里密集调用，
+// 纯 I/O 浪费。改为函数内 static 懒加载。保留 fflush —— 崩溃后取证要用。
+// 取句柄必须在持有 ncdfLogMutex() 的情况下调用。
+static FILE *ncdfLogFileLocked() {
+    static FILE *s_logFile = NULL;
+    static bool  s_failed  = false;
+    if (!s_logFile && !s_failed) {
+        s_logFile = fopen("C:\\ProgramData\\opencpn\\ncdf_debug.log", "a");
+        if (!s_logFile) s_failed = true;
     }
+    return s_logFile;
+}
+
+void ncdfLog(const char* format, ...) {
+    ncdfLogLock();
+    FILE *logFile = ncdfLogFileLocked();
+    if (!logFile) { ncdfLogUnlock(); return; }   // 必须释放锁，否则死锁
+    va_list args;
+    va_start(args, format);
+    vfprintf(logFile, format, args);
+    va_end(args);
+    fflush(logFile);
+    ncdfLogUnlock();
 }
 
 // Memory tracker: log estimated memory usage from vector/overlay sizes
@@ -85,15 +111,15 @@ static void ncdfLogMem(MainDialog *dlg, const char* tag) {
 }
 
 static void ncdfLogW(const wchar_t* format, ...) {
-    FILE *logFile = fopen("C:\\ProgramData\\opencpn\\ncdf_debug.log", "a");
-    if (logFile) {
-        va_list args;
-        va_start(args, format);
-        vfwprintf(logFile, format, args);
-        va_end(args);
-        fflush(logFile);
-        fclose(logFile);
-    }
+    ncdfLogLock();
+    FILE *logFile = ncdfLogFileLocked();
+    if (!logFile) { ncdfLogUnlock(); return; }   // 必须释放锁，否则死锁
+    va_list args;
+    va_start(args, format);
+    vfwprintf(logFile, format, args);
+    va_end(args);
+    fflush(logFile);
+    ncdfLogUnlock();
 }
 
 // forward decl (used by MainDialog's feature-debounce timer lambda below)
@@ -2483,7 +2509,12 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 			ncdfLog("[phase2] calling prepareAllGrids\n");
 			if (pof) {
 				pof->prepareAllGrids();
-				pof->m_featureEngine.computeAll(this);   // feature detection (data-update event)
+				{
+					ULONGLONG tFeat0 = ::GetTickCount64();
+					pof->m_featureEngine.computeAll(this);   // feature detection (data-update event)
+					ncdfLog("[perf] feature computeAll %llu ms\n",
+							(unsigned long long)(::GetTickCount64() - tFeat0));
+				}
 			}
 			m_gridsReady = true;
 			ncdfLog("[phase2] grids prepared, m_gridsReady=true\n");
@@ -2498,23 +2529,39 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 			ncdfLogMem(this, "phase2-raw-released");
 
 			// If a checkbox is already checked, compute coefficients for it (Phase 3)
+			// [排查第3步] 三层并行：各写各的 overlay，Prefilter* 是 static 且只用局部缓冲。
 			if (pof) {
+				std::vector<std::thread> coeffWorkers;
+				auto spawnCoeff = [&](bool run, const char *name, auto &&fn) {
+					if (!run) return;
+					coeffWorkers.emplace_back([name, fn]() {
+						ncdfLog("[phase2->3] %s coeff START\n", name);
+						try { fn(); }
+						catch (const std::exception &e) { ncdfLog("[phase2->3] %s FAILED: %s\n", name, e.what()); }
+						catch (...) { ncdfLog("[phase2->3] %s FAILED: unknown\n", name); }
+						ncdfLog("[phase2->3] %s coeff DONE\n", name);
+					});
+				};
 				bool anyChecked = false;
 				if (pPlugIn->m_bShowCurrentForce && pof->m_currentOverlay.cachedU) {
-					ncdfLog("[phase2→3] auto-computing current coefficients\n");
-					pof->m_currentOverlay.prepareCoeff(pof);
+					spawnCoeff(true, "current", [&]{ pof->m_currentOverlay.prepareCoeff(pof); });
 					anyChecked = true;
 				}
 				if (pPlugIn->m_bShowSeaTemp && pof->m_seaTempOverlay.cachedBaseGrid) {
-					ncdfLog("[ncdf] Phase 2→3: auto-computing SST coefficients\n");
-					pof->m_seaTempOverlay.prepareCoeff(pof);
+					spawnCoeff(true, "sst", [&]{ pof->m_seaTempOverlay.prepareCoeff(pof); });
 					anyChecked = true;
 				}
 				if (pPlugIn->m_bShowSalinity && pof->m_salinityOverlay.cachedBaseGrid) {
-					ncdfLog("[ncdf] Phase 2→3: auto-computing salinity coefficients\n");
-					pof->m_salinityOverlay.prepareCoeff(pof);
+					spawnCoeff(true, "sal", [&]{ pof->m_salinityOverlay.prepareCoeff(pof); });
 					anyChecked = true;
 				}
+				// [修复] 海高(zos)原先漏在这里：勾选 zos 时加载后不算系数，
+				// 导致该图层要等下一次勾选切换才出图。与其它三层对齐。
+				if (pPlugIn->m_bShowZos && pof->m_zosOverlay.cachedBaseGrid) {
+					spawnCoeff(true, "zos", [&]{ pof->m_zosOverlay.prepareCoeff(pof); });
+					anyChecked = true;
+				}
+				for (auto &t : coeffWorkers) t.join();
 				if (anyChecked) {
 					pof->m_bReadyToRender = true;
 					RequestRefresh(m_parent);
@@ -2581,7 +2628,7 @@ void MainDialog::onBmpCurrentForceClick(wxCommandEvent& event)
 					pof->setData(this, pPlugIn, this->myMessage,
 						this->myMessage.numberOfPoints,
 						this->myMessage.firstGridPointLat, this->myMessage.firstGridPointLong,
-						this->myMessage.lastGridPointLat, this->myMessage.lastGridPointLong);
+						this->myMessage.lastGridPointLat, this->myMessage.lastGridPointLong, false);
 					if (!pof->m_currentOverlay.gridReady) pof->m_currentOverlay.prepareGrid(this);
 					pof->m_currentOverlay.prepareCoeff(pof);
 				}
@@ -2630,7 +2677,7 @@ void MainDialog::onSeaTempClick(wxCommandEvent& event)
 					pof->setData(this, pPlugIn, this->myMessage,
 						this->myMessage.numberOfPoints,
 						this->myMessage.firstGridPointLat, this->myMessage.firstGridPointLong,
-						this->myMessage.lastGridPointLat, this->myMessage.lastGridPointLong);
+						this->myMessage.lastGridPointLat, this->myMessage.lastGridPointLong, false);
 					if (!pof->m_seaTempOverlay.gridReady) pof->m_seaTempOverlay.prepareGrid(this);
 					pof->m_seaTempOverlay.prepareCoeff(pof);
 				}
@@ -2689,7 +2736,7 @@ void MainDialog::onSalinityClick(wxCommandEvent& event)
 					pof->setData(this, pPlugIn, this->myMessage,
 						this->myMessage.numberOfPoints,
 						this->myMessage.firstGridPointLat, this->myMessage.firstGridPointLong,
-						this->myMessage.lastGridPointLat, this->myMessage.lastGridPointLong);
+						this->myMessage.lastGridPointLat, this->myMessage.lastGridPointLong, false);
 					if (!pof->m_salinityOverlay.gridReady) pof->m_salinityOverlay.prepareGrid(this);
 					pof->m_salinityOverlay.prepareCoeff(pof);
 				}
@@ -2732,7 +2779,7 @@ void MainDialog::onZosClick(wxCommandEvent& event)
 					pof->setData(this, pPlugIn, this->myMessage,
 						this->myMessage.numberOfPoints,
 						this->myMessage.firstGridPointLat, this->myMessage.firstGridPointLong,
-						this->myMessage.lastGridPointLat, this->myMessage.lastGridPointLong);
+						this->myMessage.lastGridPointLat, this->myMessage.lastGridPointLong, false);
 					if (!pof->m_zosOverlay.gridReady) pof->m_zosOverlay.prepareGrid(this);
 					pof->m_zosOverlay.prepareCoeff(pof);
 				}

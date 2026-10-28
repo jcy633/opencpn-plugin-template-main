@@ -54,6 +54,14 @@ public:
     double landFrac(double lat, double lon) const;
     // 区域内地陆地比例 0..1
     double landFracInBox(double lat0, double lat1, double lon0, double lon1) const;
+
+    // 逐行批量判定（供规则网格建陆地图层用）：
+    //   out[i] = 255 当 landFracInBox(latC±0.5*step, lon0+i*step±0.5*step) > 0.5
+    // 与逐格调 landFracInBox 结果一致，但下标换算用增量步进，省掉每格的除法。
+    // step 可与掩膜格距成**任意**比值（陆地格距由 nc 文件范围自适应决定，
+    // 可能是 30″/1′/2′…），这里不做任何整数比假设。
+    void landMaskRow(double latC, double lon0, double step,
+                     int tw, unsigned char *out) const;
     // 是否能回答该点（含回退层）
     bool covers(double lat, double lon) const;
 
@@ -82,6 +90,8 @@ private:
     inline bool bitAt(size_t k) const {
         return (m_bits[k >> 6] >> (k & 63)) & 1ULL;
     }
+    // 统计第 j 行 [i0,i1] 列的陆地格数（按位段一次统计，避免逐 bit 访问）
+    size_t countLandRange(int j, int i0, int i1) const;
     inline void setBit(size_t k) { m_bits[k >> 6] |= 1ULL << (k & 63); }
 
     // 坐标 -> 浮点下标（越界返回 <0）

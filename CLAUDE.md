@@ -99,6 +99,9 @@
 ### 性能（硬性）
 - **平移 / 缩放过程中绝对不允许出现卡顿**。任何「按视口重建纹理」的方案都不可接受——陆地图层、颜色纹理只能在**数据变更 / 时次切换 / 勾选图层**时构建，平移缩放时必须原样复用
 - 分帧构建也不行：新区域闪旧海岸线同样不可接受
+- **并发可用，但同步原语必须用 POD**：真正的卡死原因是 `static std::mutex`（非平凡类型，MSVC 函数内 static 走 guard+TLS 的线程安全初始化），而 `ncdfLog` 在**插件加载期**就会被调用，那套机制尚未就绪 → 挂死。改用 `static volatile LONG` + `InterlockedCompareExchange` 自旋锁即正常。同理：插件加载期会执行到的代码里，不要用任何非平凡类型的函数内/文件作用域 static
+- 四层数据准备（`prepareAllGrids` / `prepareCoeff` 链）已并行化；`B 样条预滤波并行` 同理可行
+- **自旋锁/互斥锁的提前 return 必须释放锁**，否则下次调用永久死锁
 ### 陆海掩膜分辨率
 - 分辨率按 **nc 文件覆盖范围**自适应，不按视口。`BuildLandLayer` 从掩膜原生格距起，装不下 `GL_MAX_TEXTURE_SIZE` 或 `kMaxCells`（1.28 亿格）就把格距翻倍再试
 - 区域文件（≲90°×90°）保持 30″ 原生；**全球数据会被降到 2′（3.7 km）**——43201×21601 = 9.3 亿格 = 933 MB，单张纹理装不下。**用户已确认全球 2′ 可接受，不要再为此引入分块加载（会卡顿）或大纹理（933 MB）**
@@ -165,6 +168,26 @@
 - 流场动画**当前停用**。`ncdf_animate.cpp` 保留源码并在工程里编译（`m_animate` 成员要链接），但取数入口被 `#if 0` 关掉，`ncdf.cpp` 里 `m_animate.Init/ComputeDisplacementMap/Timer.Start` 已注释
 - 要重新启用：把 `ncdfoverlayfactory.cpp` 里 `bool animateActive = false;` 后面的 `#if 0` 改成 `#if 1`，并恢复 `ncdf.cpp` 里被 `// [动画已停用]` 注释的三行
 - **两套动画实现曾并存**（`ncdf_animate` / `ncdfanimate`，同一对专利的两套代码），`ncdfanimate.*` 与无人引用的 `ncdf_animate_shader.*` 已删除。若以后要 GL 加速版，从 git 历史找
+
+## 已知待优化 / 已定位（2026-10-28）
+- **平移/缩放卡顿：已定位为 OpenCPN 自身，不是本插件**。实测插件渲染 CPU 开销仅 `tileUV=0.12 sea=0.00 fill=0.00 land=0.00 ms/frame`；把 `ncdf_flags.txt` 的 `sea/land/fill` 全置 0（插件不画任何东西）后平移**依旧卡**。注：`glDrawArrays` 是异步的，CPU 计时测不到 GPU 开销，但插件不绘制仍卡说明问题不在插件
+- **同一文件内切换颜色图层卡顿** —— 已定位并修复：`setData` 原先无条件 `clearCoefficients()` 四层（删纹理+置 `gridReady=false`）+ 作废陆地图层，现改为 `dataChanged` 参数，切图层传 `false` 跳过破坏性清理
+- **局部图四周那圈海底色/陆地取舍** —— 搁置，用户回退了相关改动
+- **陆地概率性被渲染成海底色** —— 搁置；诊断日志保留：补空白在无掩膜时运行会记
+  `[landlayer] WARN: gap-fill running with NO land mask`
+
+## 性能实测基线（全球 4320×2041，2026-10-28）
+| 阶段 | 优化前 | 优化后 |
+|---|---|---|
+| `BuildLandLayer` | 4016 ms | ~500 ms |
+| `texture build`（每层） | 469~703 ms | 187~313 ms |
+| `prepareAllGrids` | 306 ms | 74~110 ms |
+| `prepareCoeff` | 194~426 ms | 91~271 ms |
+| **初次加载合计** | **≈4.7 s** | **≈1.1 s** |
+| 渲染 CPU（每帧） | — | 0.12 ms |
+
+手段：`parallelFor` 并行（行/列独立的循环）、`NcdfLandMask::landMaskRow` 增量下标+位段 popcount、
+`ncdfLog` 常驻句柄、同范围不重建陆地图层。`landMaskRow` 有自检（与逐格 `landFracInBox` 逐格比对）。
 
 ## 参考文档
 - `docs/交接文档-黑潮主轴与陆海掩膜.md`：黑潮主轴提取算法（Wang2026 流线约束最大流速法）与 GSHHG 陆海掩膜的完整设计、`.landmask.bin` 文件格式、构建部署流程、以及**已回退改动清单**（动手前先看，避免重蹈覆辙）

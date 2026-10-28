@@ -1057,6 +1057,7 @@ void FeatureEngine::extractFronts(MainDialog *gui, int i0, int i1, int j0, int j
 // ---------------------------------------------------------------------------
 void FeatureEngine::computeAll(MainDialog *gui, int waves)
 {
+    const ULONGLONG tFeat0 = ::GetTickCount64();
     auto t0 = std::chrono::high_resolution_clock::now();
     // partial recompute: clear only the kinds this run refreshes (arena compaction)
     if (waves & WAVE_FLOW) m_set.detected[FK_CONVERG] = m_set.detected[FK_DIVERG] = m_set.detected[FK_SHEAR] = 0;

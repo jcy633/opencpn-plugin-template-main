@@ -516,6 +516,8 @@ bool ncdf_pi::loadLandMaskFiles(bool force)
                     m_landMaskCoarse.nlat(), m_landMaskCoarse.nlon(), m_landMaskCoarse.dLat() * 60.0,
                     m_landMaskCoarse.latMin(), m_landMaskCoarse.latMax(),
                     m_landMaskCoarse.lonMin(), m_landMaskCoarse.lonMax());
+        // 掩膜刚载入（或换了一份），已建好的陆地图层作废，下次渲染时重建
+        InvalidateLandLayers();
     }
     return ok;
 }

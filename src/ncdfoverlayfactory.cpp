@@ -159,31 +159,45 @@ void ncdfOverlayFactory::SetBicubicMode(bool enable)
         m_zosOverlay.Invalidate();
 }
 
-void ncdfOverlayFactory::setData(MainDialog *gui, ncdf_pi *plugin, const ncdfDataMessage& g2data, int numberOfPoints, wxDouble tlat, wxDouble tlon, wxDouble blat, wxDouble blon)
+void ncdfOverlayFactory::setData(MainDialog *gui, ncdf_pi *plugin, const ncdfDataMessage& g2data, int numberOfPoints, wxDouble tlat, wxDouble tlon, wxDouble blat, wxDouble blon, bool dataChanged)
 {
 	ncdfLog("[setData] ENTER: hasCurr=%d hasSST=%d hasSal=%d hasZos=%d | showCurr=%d showSST=%d showSal=%d showZos=%d\n",
 		(int)g2data.hasCurrent(), (int)g2data.hasSSTData(), (int)g2data.hasSalData(), (int)g2data.hasZosData(),
 		(int)(plugin && plugin->m_bShowCurrentForce), (int)(plugin && plugin->m_bShowSeaTemp), (int)(plugin && plugin->m_bShowSalinity), (int)(plugin && plugin->m_bShowZos));
 
-	// Clear B-spline coefficients (data-dependent). Preserve grids for reuse.
-	m_currentOverlay.clearCoefficients();
-	m_seaTempOverlay.clearCoefficients();
-	m_salinityOverlay.clearCoefficients();
-	m_zosOverlay.clearCoefficients();
-	ClearParticles();
-	m_last_vp_scale = -1;
-	m_last_vp_latMax = -99999.0;
-	m_bUpdateParticles = true;
-	m_particleBurstCount = 30;
+	// 只有数据真的变了才做破坏性清理。
+	// clearCoefficients() 会删掉该层的 GPU 纹理并把 gridReady 置 false（并非注释
+	// 所说的"Preserve grids for reuse"），四个 overlay 一起来就是把全部状态清空。
+	// 切换颜色图层时数据其实是同一时次，走这条路径纯粹是浪费 —— 这就是切换卡顿。
+	if (dataChanged) {
+		m_currentOverlay.clearCoefficients();
+		m_seaTempOverlay.clearCoefficients();
+		m_salinityOverlay.clearCoefficients();
+		m_zosOverlay.clearCoefficients();
+		ClearParticles();
+		m_last_vp_scale = -1;
+		m_last_vp_latMax = -99999.0;
+		m_bUpdateParticles = true;
+		m_particleBurstCount = 30;
+	}
 
 	this->numberOfPoints = numberOfPoints;
 	this->gui = gui;
 	this->plugin = plugin;
 
-	this->tlat = wxMax(tlat, blat);
-	this->blat = wxMin(tlat, blat);
-	this->tlon = wxMin(tlon, blon);
-	this->blon = wxMax(tlon, blon);
+	// 陆地图层是按 nc 文件经纬度范围建的（格距也随范围自适应），范围变了才需要
+	// 重建。切回同一文件/同一范围时不该重付那 800ms。
+	const double newTlat = wxMax(tlat, blat), newBlat = wxMin(tlat, blat);
+	const double newTlon = wxMin(tlon, blon), newBlon = wxMax(tlon, blon);
+	const bool extentChanged = (this->tlat != newTlat || this->blat != newBlat ||
+	                            this->tlon != newTlon || this->blon != newBlon);
+	this->tlat = newTlat; this->blat = newBlat;
+	this->tlon = newTlon; this->blon = newBlon;
+
+	if (dataChanged && extentChanged) {
+		ncdfLog("[setData] extent changed -> invalidate land layers\n");
+		InvalidateLandLayers();
+	}
 
 	ncdfLog("[setData] bounds: lat[%.2f,%.2f] lon[%.2f,%.2f] ni=%d nj=%d\n",
 		this->tlat, this->blat, this->tlon, this->blon,
@@ -238,22 +252,25 @@ void ncdfOverlayFactory::prepareAllGrids()
 
     // P1: Only prepare grids for CHECKED (visible) types.
     // Unchecked types will be prepared on-demand when the user clicks the checkbox.
-    if (plugin && plugin->m_bShowCurrentForce && gui->myMessage.hasCurrent()) {
-        m_currentOverlay.prepareGrid(gui);
-        m_currentOverlay.dataReady = true;
-    }
-    if (plugin && plugin->m_bShowSeaTemp && gui->myMessage.hasSSTData()) {
-        m_seaTempOverlay.prepareGrid(gui);
-        m_seaTempOverlay.dataReady = true;
-    }
-    if (plugin && plugin->m_bShowSalinity && gui->myMessage.hasSalData()) {
-        m_salinityOverlay.prepareGrid(gui);
-        m_salinityOverlay.dataReady = true;
-    }
-    if (plugin && plugin->m_bShowZos && gui->myMessage.hasZosData()) {
-        m_zosOverlay.prepareGrid(gui);
-        m_zosOverlay.dataReady = true;
-    }
+    // [排查第2步] 四层并行：各写各的 overlay 结构体，myMessage 只读。
+    std::vector<std::thread> workers;
+    auto spawn = [&](bool run, auto &&fn) {
+        if (!run) return;
+        workers.emplace_back([fn]() {
+            try { fn(); }
+            catch (const std::exception &e) { ncdfLog("[prepare] grid worker FAILED: %s\n", e.what()); }
+            catch (...) { ncdfLog("[prepare] grid worker FAILED: unknown\n"); }
+        });
+    };
+    spawn(plugin && plugin->m_bShowCurrentForce && gui->myMessage.hasCurrent(),
+          [&]{ m_currentOverlay.prepareGrid(gui); m_currentOverlay.dataReady = true; });
+    spawn(plugin && plugin->m_bShowSeaTemp && gui->myMessage.hasSSTData(),
+          [&]{ m_seaTempOverlay.prepareGrid(gui); m_seaTempOverlay.dataReady = true; });
+    spawn(plugin && plugin->m_bShowSalinity && gui->myMessage.hasSalData(),
+          [&]{ m_salinityOverlay.prepareGrid(gui); m_salinityOverlay.dataReady = true; });
+    spawn(plugin && plugin->m_bShowZos && gui->myMessage.hasZosData(),
+          [&]{ m_zosOverlay.prepareGrid(gui); m_zosOverlay.dataReady = true; });
+    for (auto &t : workers) t.join();
 
     auto t1 = std::chrono::high_resolution_clock::now();
     ncdfLog("[perf] prepareAllGrids: TOTAL=%lldms\n",

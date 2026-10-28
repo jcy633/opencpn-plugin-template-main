@@ -45,6 +45,10 @@ set(SRC
     src/icons2.cpp
     src/helper.cpp
     src/ncdfarrow.cpp
+    src/ncdf_prefilter.cpp
+    src/ncdf_texture_build.cpp
+    src/ncdf_tilegrid.cpp
+    src/ncdf_landlayer.cpp
     src/ncdftexture.cpp
     src/ncdfparticle.cpp
     src/ncdf_overlay_current.cpp
@@ -65,6 +69,7 @@ set(HEADERS
     include/ncdf_pi.h
     include/gui.h
     include/ncdf_reader.h
+    include/ncdf_texture_internal.h
     include/ncdfoverlayfactory.h
     include/ncdfdata.h
     include/ncdf.h
