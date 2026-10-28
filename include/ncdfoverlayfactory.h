@@ -49,6 +49,7 @@
 #include "ncdf_overlay_seatemp.h"
 #include "ncdf_overlay_salinity.h"
 #include "ncdf_overlay_zos.h"
+#include "ncdf_overlay_scalar.h"
 #include "ncdf_feature.h"
 
 using namespace std;
@@ -193,12 +194,11 @@ public:
          float *p_cachedCoefScalarMin, *p_cachedCoefScalarMax;
          float *p_cachedPhysScalarMin, *p_cachedPhysScalarMax;
          int *p_cachedCoeffNj, *p_cachedCoeffNi;
+         GLuint *p_physicalTexID; bool *p_hasPhysicalTex;
      };
      bool RenderScalarColorMap(PlugIn_ViewPort *vp, MainDialog *gui, ncdf_pi *plugin,
                                ScalarOverlayState &state,
                                ColorFunc colorFunc, float lutMin, float lutMax,
-                               bool (*hasData)(MainDialog&),
-                               void (*fillGrid)(MainDialog&, std::unique_ptr<double*[]>&, int, int),
                                double** animatedGrid = NULL);
 
      // Shared color interpolation with optional smoothstep

@@ -2767,9 +2767,9 @@ void MainDialog::onAnimateZosClick(wxCommandEvent& event)
 	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
 	if (pof) {
 		if (pPlugIn->m_settingsZos.animate) {
-			pof->m_animate.Init(pPlugIn, this);
-			pof->m_animate.ComputeDisplacementMap();
-			pof->m_animateTimer.Start(100);
+			// [动画已停用] pof->m_animate.Init(pPlugIn, this);
+			// [动画已停用] pof->m_animate.ComputeDisplacementMap();
+			// [动画已停用] pof->m_animateTimer.Start(100);
 		} else if (!pPlugIn->m_settingsCurrent.animate && !pPlugIn->m_settingsSeaTemp.animate && !pPlugIn->m_settingsSalinity.animate) {
 			pof->m_animateTimer.Stop();
 			pof->m_animate.Cleanup();
@@ -3494,9 +3494,9 @@ void MainDialog::onAnimateClick(wxCommandEvent& event)
 	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
 	if (pof) {
 		if (checked) {
-			pof->m_animate.Init(pPlugIn, this);
-			pof->m_animate.ComputeDisplacementMap();
-			pof->m_animateTimer.Start(100);
+			// [动画已停用] pof->m_animate.Init(pPlugIn, this);
+			// [动画已停用] pof->m_animate.ComputeDisplacementMap();
+			// [动画已停用] pof->m_animateTimer.Start(100);
 		} else if (!pPlugIn->m_settingsSeaTemp.animate && !pPlugIn->m_settingsSalinity.animate && !pPlugIn->m_settingsZos.animate) {
 			pof->m_animateTimer.Stop();
 			pof->m_animate.Cleanup();
@@ -3520,9 +3520,9 @@ void MainDialog::onAnimateSSTClick(wxCommandEvent& event)
 	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
 	if (pof) {
 		if (checked) {
-			pof->m_animate.Init(pPlugIn, this);
-			pof->m_animate.ComputeDisplacementMap();
-			pof->m_animateTimer.Start(100);
+			// [动画已停用] pof->m_animate.Init(pPlugIn, this);
+			// [动画已停用] pof->m_animate.ComputeDisplacementMap();
+			// [动画已停用] pof->m_animateTimer.Start(100);
 		} else if (!pPlugIn->m_settingsCurrent.animate && !pPlugIn->m_settingsSalinity.animate && !pPlugIn->m_settingsZos.animate) {
 			pof->m_animateTimer.Stop();
 			pof->m_animate.Cleanup();
@@ -3546,9 +3546,9 @@ void MainDialog::onAnimateSalClick(wxCommandEvent& event)
 	ncdfOverlayFactory *pof = pPlugIn->GetncdfOverlayFactory();
 	if (pof) {
 		if (checked) {
-			pof->m_animate.Init(pPlugIn, this);
-			pof->m_animate.ComputeDisplacementMap();
-			pof->m_animateTimer.Start(100);
+			// [动画已停用] pof->m_animate.Init(pPlugIn, this);
+			// [动画已停用] pof->m_animate.ComputeDisplacementMap();
+			// [动画已停用] pof->m_animateTimer.Start(100);
 		} else if (!pPlugIn->m_settingsCurrent.animate && !pPlugIn->m_settingsSeaTemp.animate && !pPlugIn->m_settingsZos.animate) {
 			pof->m_animateTimer.Stop();
 			pof->m_animate.Cleanup();

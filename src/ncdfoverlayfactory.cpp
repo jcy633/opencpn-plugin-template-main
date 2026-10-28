@@ -358,18 +358,20 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
     double** animGrid = NULL;
     double** animUGrid = NULL;
     double** animVGrid = NULL;
-    bool animateActive = (plugin->m_settingsCurrent.animate && plugin->m_bShowCurrentForce) ||
-                         (plugin->m_settingsSeaTemp.animate && plugin->m_bShowSeaTemp) ||
-                         (plugin->m_settingsSalinity.animate && plugin->m_bShowSalinity) ||
-                         (plugin->m_settingsZos.animate && plugin->m_bShowZos);
+    // [步骤5g] 动画停用
+    bool animateActive = false;
+#if 0
+    animateActive = (plugin->m_settingsCurrent.animate && plugin->m_bShowCurrentForce) ||
+                    (plugin->m_settingsSeaTemp.animate && plugin->m_bShowSeaTemp) ||
+                    (plugin->m_settingsSalinity.animate && plugin->m_bShowSalinity) ||
+                    (plugin->m_settingsZos.animate && plugin->m_bShowZos);
     if (animateActive && m_animate.IsInitialized()) {
-        if (!m_animate.HasDisplacement()) {
-            m_animate.ComputeDisplacementMap();
-        }
+        if (!m_animate.HasDisplacement()) m_animate.ComputeDisplacementMap();
         animGrid = m_animate.GetAdvectedGrid();
         animUGrid = m_animate.GetAdvectedUGrid();
         animVGrid = m_animate.GetAdvectedVGrid();
     }
+#endif
 
     static int s_frameDbg = 0;
     if (s_frameDbg < 5) {

@@ -230,8 +230,6 @@ bool ncdfOverlayFactory::RenderScalarColorMap(
     PlugIn_ViewPort *vp, MainDialog *gui, ncdf_pi *plugin,
     ScalarOverlayState &st,
     ColorFunc colorFunc, float lutMin, float lutMax,
-    bool (*hasData)(MainDialog&),
-    void (*fillGrid)(MainDialog&, std::unique_ptr<double*[]>&, int, int),
     double** animatedGrid)
 {
     if (!gui) return false;
@@ -261,7 +259,8 @@ bool ncdfOverlayFactory::RenderScalarColorMap(
         RenderGridOverlay(vp, (float**)(size_t)1, colorFunc, settings,
             *st.p_glTexture, *st.p_hasTexture, *st.p_needsRebuild,
             st.p_dataDim, st.p_glDim, *st.p_lutID, *st.p_hasLUT,
-            *st.p_uploadBuf, *st.p_uploadBufSize);
+            *st.p_uploadBuf, *st.p_uploadBufSize,
+                st.p_physicalTexID, st.p_hasPhysicalTex);
         return true;
     }
 
@@ -288,7 +287,8 @@ bool ncdfOverlayFactory::RenderScalarColorMap(
         RenderGridOverlay(vp, rebuildGrid, colorFunc, settings,
             *st.p_glTexture, *st.p_hasTexture, *st.p_needsRebuild,
             st.p_dataDim, st.p_glDim, *st.p_lutID, *st.p_hasLUT,
-            *st.p_uploadBuf, *st.p_uploadBufSize);
+            *st.p_uploadBuf, *st.p_uploadBufSize,
+                st.p_physicalTexID, st.p_hasPhysicalTex);
         if (*st.p_hasTexture) {
             *st.p_cachedCoefMin = settings.dataMin;
             *st.p_cachedCoefMax = settings.dataMax;
@@ -347,7 +347,8 @@ bool ncdfOverlayFactory::RenderScalarColorMap(
     RenderGridOverlay(vp, gridPtr, colorFunc, settings,
         *st.p_glTexture, *st.p_hasTexture, *st.p_needsRebuild,
         st.p_dataDim, st.p_glDim, *st.p_lutID, *st.p_hasLUT,
-        *st.p_uploadBuf, *st.p_uploadBufSize);
+        *st.p_uploadBuf, *st.p_uploadBufSize,
+            st.p_physicalTexID, st.p_hasPhysicalTex);
 
     // Free temporary animation float grid
     if (animFloatGrid) {
@@ -920,22 +921,47 @@ static void BuildPhysicalTex(TexBuildContext &ctx,
 //   dbgFill=1 把补空白要画的区域涂成纯红，直接看它的边界形状
 //
 // 文件不存在或键缺失时全部走默认（三 pass 全开、自动分块），
-// 所以平时完全不影响任何行为。每 30 次渲染重读一次，改完存盘即可生效。
+// 所以平时完全不影响任何行为。按文件 mtime 判断是否重读，改完存盘即可生效。
 //===================================================================
 struct NcdfDbgFlags {
     bool sea, land, fill;
     int  tileX, tileY;
     bool dbgFill;
+    bool dbgTiles;
 };
-static NcdfDbgFlags s_dbg = { true, true, true, 0, 0, false };
+static NcdfDbgFlags s_dbg = { true, true, true, 0, 0, false, false };
 
+// 用 mtime 判断是否需要重读：fopen+fgets+sscanf 只在文件真的变过时才做。
+// 渲染热路径每帧每层都会走到这里，原来每 30 次调用就读一遍文件，纯浪费。
 static void LoadDbgFlags()
 {
-    static int s_tick = 0;
-    if ((s_tick++ % 30) != 0) return;
+    static ULONGLONG s_lastCheck = 0;
+    static FILETIME   s_lastWrite = { 0, 0 };
+    static bool       s_loadedOnce = false;
+
+    ULONGLONG now = ::GetTickCount64();
+    if (s_loadedOnce && now - s_lastCheck < 500) return;   // 500ms 内不再 stat
+    s_lastCheck = now;
+
+    WIN32_FILE_ATTRIBUTE_DATA fad;
+    if (!::GetFileAttributesExA("C:\\ProgramData\\opencpn\\ncdf_flags.txt",
+                                GetFileExInfoStandard, &fad)) {
+        // 文件不存在 -> 保持默认值
+        if (!s_loadedOnce) {
+            s_dbg.sea = true; s_dbg.land = true; s_dbg.fill = true;
+            s_dbg.tileX = 0; s_dbg.tileY = 0;
+            s_dbg.dbgFill = false; s_dbg.dbgTiles = false;
+            s_loadedOnce = true;
+        }
+        return;
+    }
+    if (s_loadedOnce &&
+        fad.ftLastWriteTime.dwLowDateTime == s_lastWrite.dwLowDateTime &&
+        fad.ftLastWriteTime.dwHighDateTime == s_lastWrite.dwHighDateTime) return;
+    s_lastWrite = fad.ftLastWriteTime;
 
     s_dbg.sea = true; s_dbg.land = true; s_dbg.fill = true;
-    s_dbg.tileX = 0;  s_dbg.tileY = 0;  s_dbg.dbgFill = false;
+    s_dbg.tileX = 0;  s_dbg.tileY = 0;  s_dbg.dbgFill = false; s_dbg.dbgTiles = false;
 
     FILE *fp = fopen("C:\\ProgramData\\opencpn\\ncdf_flags.txt", "r");
     if (!fp) return;
@@ -948,8 +974,10 @@ static void LoadDbgFlags()
         else if (sscanf(line, "tileX=%d", &v) == 1) s_dbg.tileX = v;
         else if (sscanf(line, "tileY=%d", &v) == 1) s_dbg.tileY = v;
         else if (sscanf(line, "dbgFill=%d", &v) == 1) s_dbg.dbgFill = (v != 0);
+        else if (sscanf(line, "dbgTiles=%d", &v) == 1) s_dbg.dbgTiles = (v != 0);
     }
     fclose(fp);
+    s_loadedOnce = true;
 }
 
 // 分块被跳过的原因统计 —— 如果隐形线来自某个分块被误剔，
@@ -1102,44 +1130,7 @@ static void DrawShaderTile(const TileQuad &q, void *userData) {
     ncdf_shader_disable_attrib(1);
 }
 
-// Fill gaps in the data texture by nearest-neighbour propagation, so the
-// ocean colour field is continuous over the file's lon/lat extent instead of
-// being riddled with holes where the model has no value (coastal cells etc).
-// Land is painted on top afterwards, so filling everything is safe.
-static void FillTextureGaps(unsigned char *texData, int tw, int th, int borderH)
-{
-    std::vector<int> src((size_t)tw * th, -1);
-    for (int y = 1; y < th - 1; y++)
-        for (int x = 0; x < tw; x++) {
-            size_t k = (size_t)y * tw + x;
-            if (texData[4 * k + 3] == 255) src[k] = (int)k;
-        }
-    const int DX[4] = {1, -1, 0, 0}, DY[4] = {0, 0, 1, -1};
-    for (int pass = 0; pass < 6; pass++) {
-        bool changed = false;
-        for (int y = 1; y < th - 1; y++)
-            for (int x = borderH; x < tw - borderH; x++) {
-                size_t k = (size_t)y * tw + x;
-                if (src[k] >= 0 || texData[4 * k + 3] == 0) continue;
-                for (int d = 0; d < 4; d++) {
-                    int nx = x + DX[d], ny = y + DY[d];
-                    if (nx < 0 || nx >= tw || ny < 0 || ny >= th) continue;
-                    size_t nk = (size_t)ny * tw + nx;
-                    if (src[nk] >= 0) {
-                        size_t s = (size_t)src[nk];
-                        texData[4 * k]     = texData[4 * s];
-                        texData[4 * k + 1] = texData[4 * s + 1];
-                        texData[4 * k + 2] = texData[4 * s + 2];
-                        texData[4 * k + 3] = 255;
-                        src[k] = src[nk];
-                        changed = true;
-                        break;
-                    }
-                }
-            }
-        if (!changed) break;
-    }
-}
+// [步骤5d] FillTextureGaps 已删（基准里就已无调用，纯死代码）
 
 
 //
@@ -1164,9 +1155,7 @@ struct LandLayer {
 static bool BuildLandLayer(NcdfLandMask &m,
                            double latMin, double latMax,
                            double lonMin, double lonMax,
-                           LandLayer &out,
-                           double exLat0 = 1e30, double exLat1 = -1e30,
-                           double exLon0 = 1e30, double exLon1 = -1e30)
+                           LandLayer &out)
 {
     double a0 = wxMax(latMin, m.latMin()), a1 = wxMin(latMax, m.latMax());
     double o0 = wxMax(lonMin, m.lonMin()), o1 = wxMin(lonMax, m.lonMax());
@@ -1195,11 +1184,6 @@ static bool BuildLandLayer(NcdfLandMask &m,
         double la = a0 + step * j;
         for (int i = 0; i < tw; i++) {
             double lo = o0 + step * i;
-            // A finer layer drawn on top owns this cell -- keep this layer clear.
-            if (la >= exLat0 && la <= exLat1 && lo >= exLon0 && lo <= exLon1) {
-                px[(j + 1) * (tw + 2) + (i + 1)] = 0;
-                continue;
-            }
             // Per-texel hard decision from the fine mask.
             double lf = m.landFracInBox(la - 0.5 * step, la + 0.5 * step,
                                         lo - 0.5 * step, lo + 0.5 * step);
@@ -1253,7 +1237,10 @@ static void ComputeLandUVs(PlugIn_ViewPort *vp, const LandLayer &L, TileGrid &tg
     tg.lva = new(std::nothrow) double[tg.gridW * tg.gridH * 2];
     if (!tg.lva) return;
 
-    double clon = 0.5 * (L.lonMin + (L.lonMin + L.lonStep * (L.tw - 1)));
+    // [步骤2] 经度沿 x 逐点解缠。原先按图层中心 clon 一次性 ±360，在日期变更线
+    // 处同一行会从 +180 跳到 -180，UV 从 1.0 断到 0.0，分块被 q.u1<=q.u0 误剔、
+    // 纹理也撕裂。改成和左边邻点对齐，UV 沿 x 连续。
+    std::vector<double> lonRef(tg.gridH, 0.0);
     for (int i = 0; i < tg.gridW; i++) {
         double px = vp->pix_width / (double)tg.xs * i;
         for (int j = 0; j < tg.gridH; j++) {
@@ -1261,8 +1248,13 @@ static void ComputeLandUVs(PlugIn_ViewPort *vp, const LandLayer &L, TileGrid &tg
             double lat, lon;
             wxPoint pt((int)px, (int)py);
             GetCanvasLLPix(vp, pt, &lat, &lon);
-            if (clon - lon > 180) lon += 360;
-            else if (lon - clon > 180) lon -= 360;
+            if (i == 0) {
+                lonRef[j] = lon;
+            } else {
+                while (lon - lonRef[j] > 180.0) lon -= 360.0;
+                while (lonRef[j] - lon > 180.0) lon += 360.0;
+                lonRef[j] = lon;
+            }
             int idx = (i * tg.gridH + j) * 2;
             // +1.5: one texel of transparent sea padding around the grid
             tg.lva[idx]     = ((lon - L.lonMin) / L.lonStep + 1.5) / L.tw;
@@ -1281,7 +1273,7 @@ static void DrawLandLayer(PlugIn_ViewPort *vp, const LandLayer &L)
 
     ncdf_shader_use_program(ncdf_shader_get_grid_program());
     NcdfShaderUniforms u = ncdf_shader_get_uniforms();
-    if (u.landMode >= 0) ncdf_shader_uniform_1i(u.landMode, 2);
+    if (u.landMode >= 0) ncdf_shader_uniform_1i(u.landMode, NCDF_LANDMODE_LAND);
     if (u.dataTex >= 0) {
         ncdf_shader_active_texture(0x84C0);
         glBindTexture(GL_TEXTURE_2D, L.texID);
@@ -1299,43 +1291,43 @@ static void DrawLandLayer(PlugIn_ViewPort *vp, const LandLayer &L)
 // ---- Two land layers: a coarse one over the whole data extent, and a fine
 // ---- one over the region where the high-res mask lives. The coarse layer is
 // ---- built with the fine region cut out so the two never overlap.
-static LandLayer s_landFine, s_landCoarse;
+static LandLayer s_landLayer;   // [步骤5c] 两层合并为一层
 static bool s_landBuilt = false;
 
-bool LandLayersActive() { return s_landBuilt && (s_landFine.hasTex || s_landCoarse.hasTex); }
+bool LandLayersActive() { return s_landBuilt && s_landLayer.hasTex; }
 
 static void BuildLandLayers(NcdfLandMask &fine, NcdfLandMask *coarse,
-                            double tlat, double tlon, double blat, double blon)
+                            double tlat, double tlon, double blat, double blon,
+                            bool repeat)
 {
     if (s_landBuilt) return;
     double latMin = wxMin(tlat, blat), latMax = wxMax(tlat, blat);
     double lonMin = wxMin(tlon, blon), lonMax = wxMax(tlon, blon);
 
-    // Fine layer: only where the fine mask actually covers.
-    bool hasFine = false;
-    if (fine.valid() && fine.nlat() > 0) {
-        hasFine = BuildLandLayer(fine, latMin, latMax, lonMin, lonMax, s_landFine);
+    // [步骤1] 日期变更线接缝：数据纹理是 GL_REPEAT，会画到 lon=180；但陆地图层
+    // 若按数据范围建，只到最后一格（1/12° 数据是 179.9167），差一格就露出空白
+    // 条带。全世界数据按整周期建到 ±180，掩膜本身是闭合的（nlon=43201）。
+    if (repeat) {
+        lonMin = wxMin(lonMin, -180.0);
+        lonMax = wxMax(lonMax, 180.0);
     }
-    // Coarse layer: everywhere else.
+
+    // [步骤4] 停用精层，只建粗层 —— 验证「陆地不正常」是否由此引起
+    bool hasFine = false;
+    (void)hasFine;
     if (coarse && coarse->valid()) {
-        if (hasFine)
-            BuildLandLayer(*coarse, latMin, latMax, lonMin, lonMax, s_landCoarse,
-                           s_landFine.latMin, s_landFine.latMax,
-                           s_landFine.lonMin, s_landFine.lonMax);
-        else
-            BuildLandLayer(*coarse, latMin, latMax, lonMin, lonMax, s_landCoarse);
+        BuildLandLayer(*coarse, latMin, latMax, lonMin, lonMax, s_landLayer);
     }
     s_landBuilt = true;
-    ncdfLog("[landlayer] active=%d fine=%d coarse=%d\n",
-            (int)LandLayersActive(), (int)s_landFine.hasTex, (int)s_landCoarse.hasTex);
+    ncdfLog("[landlayer] active=%d hasTex=%d\n",
+            (int)LandLayersActive(), (int)s_landLayer.hasTex);
 }
 
 void DrawLandLayers(PlugIn_ViewPort *vp)
 {
     if (!LandLayersActive()) return;
     if (!s_dbg.land) return;          // 诊断开关
-    DrawLandLayer(vp, s_landCoarse);
-    DrawLandLayer(vp, s_landFine);
+    DrawLandLayer(vp, s_landLayer);
 }
 
 // dataGeo: data-UV -> 经纬度；landGeoC/landGeoF: 经纬度 -> 掩膜 UV。
@@ -1353,7 +1345,7 @@ static void DrawShaderPath(PlugIn_ViewPort *vp,
     NcdfShaderUniforms u = ncdf_shader_get_uniforms();
     if (u.landMode >= 0) ncdf_shader_uniform_1i(u.landMode, landMode);
     if (u.dbgFill >= 0) ncdf_shader_uniform_1f(u.dbgFill,
-        (s_dbg.dbgFill && landMode == 4) ? 1.0f : 0.0f);
+        (s_dbg.dbgFill && landMode == NCDF_LANDMODE_FILL) ? 1.0f : 0.0f);
     if (u.texSize >= 0) ncdf_shader_uniform_2f(u.texSize, (float)tw, (float)th);
     if (u.vectorMode >= 0) ncdf_shader_uniform_1i(u.vectorMode, settings.vectorMode ? 1 : 0);
     if (u.dataMin >= 0) ncdf_shader_uniform_1f(u.dataMin, settings.dataMin);
@@ -1379,7 +1371,7 @@ static void DrawShaderPath(PlugIn_ViewPort *vp,
     // physicalTex: vector mode 的 readPhysical 要用，补空白 pass（landMode==4）
     // 两种模式都直接从它取最近海点的值，所以这里不能只在 vectorMode 时绑定。
     if (u.physicalTex >= 0 &&
-        (settings.vectorMode || landMode == 4) && hasPhysicalTex && *hasPhysicalTex) {
+        (settings.vectorMode || landMode == NCDF_LANDMODE_FILL) && hasPhysicalTex && *hasPhysicalTex) {
         ncdf_shader_active_texture(0x84C2);
         glBindTexture(GL_TEXTURE_2D, *physicalTexID);
         ncdf_shader_uniform_1i(u.physicalTex, 2);
@@ -1476,7 +1468,7 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
                                            unsigned char *&uploadBuf, int &uploadBufSize,
                                            GLuint *physicalTexID, bool *hasPhysicalTex)
 {
-    ncdfLog("[render] RenderGridOverlay: ENTERED, gui=%p vp=%p grid=%p\n", (void*)gui, (void*)vp, (void*)grid);
+    // [步骤5f] 逐帧日志已删：每帧每层都写，4 层 60fps 约 200 MB/小时
     if (!gui || !vp) return;
     if (!grid && !settings.vectorMode) return;  // grid required for scalar mode only
     int ni = gui->myMessage.lonLength;
@@ -1487,7 +1479,7 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
 
     if (!m_pdc) {
 #ifdef ocpnUSE_GL
-        ncdfLog("[render] RenderGridOverlay: ni=%d nj=%d hasTex=%d needsRebuild=%d\n", ni, nj, (int)hasTex, (int)needsRebuild);
+        // (逐帧日志已删)
         // --- Texture creation/update ---
         double lonMin = tlon, lonMax = blon;
         double gridSpacingLon = (lonMax - lonMin) / (ni - 1);
@@ -1496,7 +1488,7 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
         int extraCol = repeat ? 1 : 0;
         int expectedTw = ni + 2 * borderH + extraCol;
         int expectedTh = nj + 2;
-        ncdfLog("[render] RenderGridOverlay: expectedTw=%d expectedTh=%d repeat=%d\n", expectedTw, expectedTh, (int)repeat);
+        // (逐帧日志已删)
 
         bool dataChanged = needsRebuild || !hasTex;
         if (needsRebuild) {
@@ -1549,7 +1541,7 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
     if (gui && gui->pPlugIn)
         BuildLandLayers(gui->pPlugIn->m_landMask,
                         gui->pPlugIn->m_landMaskCoarse.valid() ? &gui->pPlugIn->m_landMaskCoarse : NULL,
-                        tlat, tlon, blat, blon);
+                        tlat, tlon, blat, blon, repeat);
 
     // --- Draw tiled texture (GRIB pattern) ---
         if (hasTex && texID) {
@@ -1560,22 +1552,18 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
             if (!tg.lva) return;
 
             if (ncdf_shader_initialized() && ncdf_shader_get_grid_program() > 0) {
-                // landMode: 3 = land layers cover the land (draw colours everywhere)
-                //           1 = no layers, decide per cell and paint land here
-                //           0 = no layers and panel closed -> hide land
-                // landMode 0: the data pass CLIPS ITSELF to the sea and leaves
-                // land transparent, so ocean can never pollute a land pixel even
-                // if the land layer has a gap. The land layer paints the fine
-                // coastline on top; if there is no mask it paints from the B flag.
-                int landMode = LandLayersActive() ? 0 : (gui->IsShown() ? 1 : 0);
+                // 有 GSHHG 陆地层 -> CLIP（数据 pass 自裁到海，陆地留给陆地层）
+                // 没有但面板开着 -> PAINT（数据 pass 按 B 通道自己画陆地色）
+                int landMode = LandLayersActive() ? NCDF_LANDMODE_CLIP
+                              : (gui->IsShown() ? NCDF_LANDMODE_PAINT : NCDF_LANDMODE_CLIP);
                 LoadDbgFlags();
                 if (s_dbg.sea)
                     DrawShaderPath(vp, settings, texID, lutID, hasLUT,
                                    physicalTexID, hasPhysicalTex,
                                    tg, glDim[0], glDim[1], landMode);
 
-                // ---- 第 3 层：GSHHG 陆地，画在海色之后 ----
-                if (gui->IsShown()) DrawLandLayers(vp);
+                // [步骤5b] 逐层的 GSHHG 陆地绘制已移除，只保留 DoRenderncdfOverlay
+                // 末尾统一画一次（顺序变成 海色→填补 → … → 陆地收尾）。
 
                 // ---- 填补 GSHHG 与海色之间的空白带 ----
                 // 取色 = 最近的海的点的颜色，纯点取色、不跨陆地插值。
@@ -1585,16 +1573,16 @@ void ncdfOverlayFactory::RenderGridOverlay(PlugIn_ViewPort *vp,
                 if (s_dbg.fill && physicalTexID && hasPhysicalTex && *hasPhysicalTex) {
                     float dGeo[4], gC[4], gF[4];
                     MakeDataGeo(tg, glDim[0], glDim[1], dataDim[0], dataDim[1], dGeo);
-                    MakeLandGeo(s_landCoarse, gC);
-                    MakeLandGeo(s_landFine, gF);
+                    MakeLandGeo(s_landLayer, gC);
+                    MakeLandGeo(s_landLayer, gF);
                     DrawShaderPath(vp, settings, texID, lutID, hasLUT,
                                    physicalTexID, hasPhysicalTex,
-                                   tg, glDim[0], glDim[1], 4,
-                                   s_landCoarse.hasTex ? s_landCoarse.texID : 0,
-                                   s_landFine.hasTex ? s_landFine.texID : 0,
+                                   tg, glDim[0], glDim[1], NCDF_LANDMODE_FILL,
+                                   s_landLayer.hasTex ? s_landLayer.texID : 0,
+                                   s_landLayer.hasTex ? s_landLayer.texID : 0,
                                    dGeo,
-                                   s_landCoarse.hasTex ? gC : NULL,
-                                   s_landFine.hasTex ? gF : NULL);
+                                   s_landLayer.hasTex ? gC : NULL,
+                                   s_landLayer.hasTex ? gF : NULL);
                 }
 
                 // 分块统计：如果隐形线来自某个分块被误剔，这里会直接显示出来

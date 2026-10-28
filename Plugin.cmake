@@ -48,6 +48,7 @@ set(SRC
     src/ncdftexture.cpp
     src/ncdfparticle.cpp
     src/ncdf_overlay_current.cpp
+    src/ncdf_overlay_scalar.cpp
     src/ncdf_overlay_seatemp.cpp
     src/ncdf_overlay_salinity.cpp
     src/ncdf_overlay_zos.cpp
@@ -57,9 +58,7 @@ set(SRC
     src/ncdf_feature_render.cpp
     src/shader/ncdf_shader.cpp
     src/ncdf_legend.cpp
-    src/ncdfanimate.cpp
     src/ncdf_animate.cpp
-    src/shader/ncdf_animate_shader.cpp
 )
 
 set(HEADERS
@@ -73,6 +72,7 @@ set(HEADERS
     include/icons2.h
     include/helper.h
     include/ncdf_overlay_current.h
+    include/ncdf_overlay_scalar.h
     include/ncdf_overlay_seatemp.h
     include/ncdf_overlay_salinity.h
     include/ncdf_overlay_zos.h

@@ -19,6 +19,16 @@ void ncdf_shader_cleanup();
 unsigned int ncdf_shader_get_grid_program();
 
 // Uniform locations (cached at init time)
+// s_frag 的 landMode 取值。GLSL 1.20 里 uniform 仍传 int，这里给 C++ 侧有名字的
+// 常量，避免到处写魔法数字。取值必须与 ncdf_shader.cpp 里的分支一一对应。
+enum NcdfLandMode {
+    NCDF_LANDMODE_CLIP  = 0,  // 无高分辨率陆地层：数据 pass 按 B 通道裁到海，陆地留透明
+    NCDF_LANDMODE_PAINT = 1,  // 无高分辨率陆地层但面板开着：数据 pass 自己画陆地色
+    NCDF_LANDMODE_LAND  = 2,  // GSHHG 陆地层：dataTex 绑掩膜，逐掩膜格判海陆
+    NCDF_LANDMODE_FILL  = 4,  // 亚网格空白带填补（取最近海点颜色）
+    // 3 已废弃：原「陆地层覆盖陆地、色场到处画」的模式，现由 0 + 末尾统一画陆地替代
+};
+
 struct NcdfShaderUniforms {
     int dataTex;      // sampler2D: R8 data texture (R=normalized coeff, A=validity)
     int physicalTex;  // sampler2D: physical values for bilinear fallback

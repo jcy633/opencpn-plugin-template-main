@@ -6,6 +6,8 @@
 - 部署完成后启动OpenCPN：`start "" "C:\Program Files (x86)\OpenCPN\opencpn.exe"`（直接用exe，不用快捷方式）
 - 如果DLL被占用，先 `taskkill //f //im opencpn.exe` 再部署
 - rebuild.bat 已配置自动关闭OpenCPN、部署、重启
+- **build/ 是 CMake 生成的工程**。改了 `Plugin.cmake` / `CMakeLists.txt` 后必须重新生成，且**必须在 `build/` 目录里跑并显式指定平台**：`cd build && cmake -A Win32 ..`。裸 `cmake .` 会①默认生成成 x64 冲掉 Win32 配置、②把产物吐到项目根目录污染源码树。生成后 `grep -oE 'Include="[^"]*\|[^ \"]*' build/ncdf_pi.vcxproj | sort -u` 必须出现 `Release|Win32`
+- 源码文件改动后不需要重新生成 CMake（只加/删源文件才需要）
 - OpenCPN运行日志位于C:\ProgramData\opencpn\opencpn.log
 - OpenCPN崩溃日志位于C:\Users\季曹阳\AppData\Local\CrashDumps\
 - 插件的调试日志位于C:\ProgramData\opencpn\ncdf_debug.log
@@ -54,15 +56,15 @@
 - 颜色映射必须使用GetSeaCurrentGraphicColorRaw直接写入RGBA，避免wxColour对象开销
 - 箭头颜色必须随速度变化，使用GetSeaCurrentGraphicColorRaw获取颜色
 - 渲染时必须启用OpenGL抗锯齿（GL_LINE_SMOOTH和GL_BLEND），设置glHint(GL_LINE_SMOOTH_HINT, GL_NICEST)
-- 纹理上传必须设置OpenGL像素存储参数优化效率，添加双线性插值提升低分辨率数据渲染质量
+- 纹理上传必须显式设置 `glPixelStorei(GL_UNPACK_ALIGNMENT, …)`（详见「渲染与着色器约束」）。**数据/物理纹理用 `GL_NEAREST`，插值由着色器自己做**（B 样条 / 双线性 / 点取色）；只有 LUT 用 `GL_LINEAR`
 - 纹理绘制需支持全球数据重复渲染（repeat = true），使用GetCanvasLLPix转换像素坐标为经纬度映射到纹理坐标
 - 墨卡托投影下（vp->rotation == 0 && vp->m_projection_type == PI_PROJECTION_MERCATOR），经度方向设为线性（xsquares=1）减少分块数量
 - 全球数据分块跨越日期变更线时，通过u1 - u0 > .5时u1--校正纹理坐标相位，避免纹理撕裂
 - 纹理绘制前检查块的纹理坐标是否在[0,1]范围内，跳过完全在纹理外的块（repeat模式除外）
 - 行缓冲采用j = !j交替读写优化，替代整行memcpy复制
-- 纹理生成使用next_power_of_two()计算最近的2的幂尺寸，提升兼容性和采样性能
-- 新增m_texDataDim[2]记录实际数据尺寸，通过potNormX/potNormY归一化数据坐标到POT纹理空间
-- 纹理内存初始化使用memset将POT纹理缓冲区初始化为0，确保未使用区域为透明黑色
+- ~~纹理生成使用next_power_of_two()计算最近的2的幂尺寸~~ **已废弃**：纹理直接按数据原生网格尺寸（ni+2, nj+2）建，不再做 POT 填充
+- ~~新增m_texDataDim[2]记录实际数据尺寸，通过potNormX/potNormY归一化数据坐标到POT纹理空间~~ **已废弃**：`potNormX/potNormY` 仍留在 `ComputeTileUVs`/`MakeDataGeo` 里，但 `dataDim == glDim` 恒成立，取值恒为 1.0
+- 纹理缓冲区用 `memset` 初始化为 0，确保未写入区域为透明黑色（这条仍有效）
 - 箭头角度计算必须包含vp->rotation：double ang = atan2(g2data.vcurr[mi], -g2data.ucurr[mi]) + vp->rotation
 - 箭头大小随速度缩放：double scale = wxMax(1.0, vkn / 5.0)
 - DrawGLLine函数中禁止使用逐行glPushAttrib/glPopAttrib调用，仅保留必要的glColor4ub、glLineWidth和glBegin/glEnd
@@ -77,21 +79,37 @@
 - `compile_shader_gl` 里的非 ASCII 消毒是**运行时**的，救不了 C 编译期的破坏。防止手段只有一个：注释写英文
 - C++ 代码里的中文注释不受影响（不在 GLSL 字符串内），但同一文件会有 C4819 警告，属正常
 ### 绘制顺序（必须保持）
-- 每个数据图层内部：**海色 → GSHHG 陆地 → 补空白**（`landMode==4`）
-- 所有数据图层画完后，`DoRenderncdfOverlay` 末尾再画一次 GSHHG 陆地收尾
-- 海底底色板已移除（用户判定无用）。**海色（数据插值色场）与海底色是两个概念**，不要混用
+- 每个数据图层内部：**海色 → 补空白**（`landMode==4`）
+- 所有数据图层画完后，`DoRenderncdfOverlay` 末尾**统一画一次** GSHHG 陆地收尾，永远是最后一笔
+- 陆地不需要在每个数据层内部画：补空白自己查掩膜避开陆地，四层全开时逐层画陆地是纯浪费（8 个 pass/帧）
+- 海底底色板已移除（铺满整片的做法用户判定无用）；海底色 `#A9C2EF` 仅用于补空白的无源水域分支。**海色（数据插值色场）与海底色是两个概念**，不要混用
 ### 插值规则
 - **2x2 邻域内只要有一个陆地格点，该片元完全不插值**，直接输出透明跳过
 - 4x4 有陆地但 2x2 干净 → 对物理量做**双线性插值**（Case 2，保留）
 - 4x4 全海 → **B 样条重建**（Case 1）
-- 补空白只在「海色 pass 留了空隙 **且** GSHHG 判为海 **且** 取得到海点颜色」时着色；取不到源颜色（如内陆水体）一律**透明**，禁止编造颜色
+- 补空白只在「海色 pass 留了空隙 **且** GSHHG 判为海」时着色：取得到海点颜色 → 最近海点的颜色；取不到源颜色（如内陆水体）→ **海底色 `#A9C2EF` = RGB(169,194,239)**。禁止编造海洋数据颜色
+- 海底色只在上面这种「无源水域」处出现，不要拿它参与任何插值或充当海色
 ### 陆海掩膜（GSHHG）查询
 - 查掩膜**必须绕道经纬度**，且经度先规范化到 [-180,180)：`dLon = -180.0 + mod(dLon + 180.0, 360.0)`
 - **禁止用 dataUV 的仿射直接查掩膜**：全世界数据的 dataTex 是 `GL_REPEAT`，`vUV.x` 在日期变更线 1→0 绕回，非周期仿射会让掩膜 UV 平移一整格宽度 → 陆地判定翻转
 - 掩膜纹理是 `GL_LUMINANCE`（1 字节/格），宽度常非 4 倍数，上传前必须 `glPixelStorei(GL_UNPACK_ALIGNMENT, 1)`
-- 两级掩膜：精层（黑潮区 15″）+ 粗层（全球 30″），查询精层优先、覆盖不到自动落粗层；粗层在精区被挖空，两层互补不重叠
+- 掩膜文件本身是**闭合**的（`nlon = 43201 = 43200+1`，首尾各一份）。历史上是精层+粗层两级互补，**现在只建一层**（`s_landLayer`），没有挖空/接缝问题
 ### 分块绘制
 - `ComputeTileUVs`（数据）与 `ComputeLandUVs`（陆地）的分块数**必须一致**（xs、ys 下限都是 4）。不一致时两边分段线性 UV 逼近误差不同，海岸线会被错开一圈
+### 性能（硬性）
+- **平移 / 缩放过程中绝对不允许出现卡顿**。任何「按视口重建纹理」的方案都不可接受——陆地图层、颜色纹理只能在**数据变更 / 时次切换 / 勾选图层**时构建，平移缩放时必须原样复用
+- 分帧构建也不行：新区域闪旧海岸线同样不可接受
+### 陆海掩膜分辨率
+- 分辨率按 **nc 文件覆盖范围**自适应，不按视口。`BuildLandLayer` 从掩膜原生格距起，装不下 `GL_MAX_TEXTURE_SIZE` 或 `kMaxCells`（1.28 亿格）就把格距翻倍再试
+- 区域文件（≲90°×90°）保持 30″ 原生；**全球数据会被降到 2′（3.7 km）**——43201×21601 = 9.3 亿格 = 933 MB，单张纹理装不下。**用户已确认全球 2′ 可接受，不要再为此引入分块加载（会卡顿）或大纹理（933 MB）**
+- 精层（15″）已停用，只建一层粗层，不存在两层挖空接缝
+### 四种颜色图的资源复用
+- **颜色图的显示与否只能由它自己的复选框决定**（`m_bShowCurrentForce` / `m_bShowSeaTemp` / `m_bShowSalinity` / `m_bShowZos`）。即使数据/纹理提前准备好，没勾选也必须隐藏——**禁止「先准备好就先显示」的渐进式显示**
+- 加速只能作用于**准备阶段**（网格、B 样条系数、纹理上传），不能改变显示时机
+- **GSHHG 陆地图层全局只建一次**（`s_landBuilt` 守卫），海流/海温/海盐/海高四层共用；不要按图层重复建
+- 各图层的**数据纹理 + 物理纹理**各自独立、按需构建：`prepareAllOverlays` 只准备勾选中的图层，GL 纹理在首次渲染时才上传（需要 GL 上下文）
+- 全球数据下单层约占 70 MB（数据 35 MB + 物理 35 MB），四层全开约 280 MB
+
 ### 其他硬性要求
 - `physicalTex` 在补空白 pass（`landMode==4`）下**标量模式也要绑定**，不能只在 `vectorMode` 时绑
 - **禁止对系数纹理 `texData` 调 `FillTextureGaps`**：它会把无数据格点填成海洋值并把 alpha 改写成 255，既毁掉 `FillLandFractionChannel` 的 `a == 1` 陆地标记，也让着色器的 2x2 判陆彻底失效
@@ -142,6 +160,11 @@
 - **连续猜错两次就该停手改成可二分的开关诊断**。本次定位靠一条观测：硬边在日期变更线且与 `tileX` 无关。用 `sea`/`land`/`fill` 开关二分比反复改代码猜因果快得多
 - `_FillValue = NaNf` 会让缺测判定失效（`x != NaN` 恒为真）。已改为「数据为 NaN 一律缺测；fill 非 NaN 时再比对相等」
 - GSHHG 栅格化两个坑：① level 5/6 是南极（冰架前缘/接地线）不是水；② 多边形经度是 0..360 展开的，必须先沿路径解缠再扫描线，否则跨本初子午线的多边形会被填成覆盖半个地球
+
+## 动画功能（已停用）
+- 流场动画**当前停用**。`ncdf_animate.cpp` 保留源码并在工程里编译（`m_animate` 成员要链接），但取数入口被 `#if 0` 关掉，`ncdf.cpp` 里 `m_animate.Init/ComputeDisplacementMap/Timer.Start` 已注释
+- 要重新启用：把 `ncdfoverlayfactory.cpp` 里 `bool animateActive = false;` 后面的 `#if 0` 改成 `#if 1`，并恢复 `ncdf.cpp` 里被 `// [动画已停用]` 注释的三行
+- **两套动画实现曾并存**（`ncdf_animate` / `ncdfanimate`，同一对专利的两套代码），`ncdfanimate.*` 与无人引用的 `ncdf_animate_shader.*` 已删除。若以后要 GL 加速版，从 git 历史找
 
 ## 参考文档
 - `docs/交接文档-黑潮主轴与陆海掩膜.md`：黑潮主轴提取算法（Wang2026 流线约束最大流速法）与 GSHHG 陆海掩膜的完整设计、`.landmask.bin` 文件格式、构建部署流程、以及**已回退改动清单**（动手前先看，避免重蹈覆辙）
