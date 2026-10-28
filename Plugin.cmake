@@ -41,6 +41,7 @@ set(SRC
     src/ncdfoverlayfactory.cpp
     src/ncdfdata.cpp
     src/ncdf.cpp
+    src/ncdf_ncio.cpp
     src/IsoLine2.cpp
     src/icons2.cpp
     src/helper.cpp

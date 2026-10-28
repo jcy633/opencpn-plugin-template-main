@@ -252,6 +252,10 @@ void ncdfOverlayFactory::prepareAllGrids()
 
     // P1: Only prepare grids for CHECKED (visible) types.
     // Unchecked types will be prepared on-demand when the user clicks the checkbox.
+    // 该时次**所有**数据类型都准备，不只勾选中的。
+    // 原先只准备勾选中的，导致第一次勾选必然卡一下（要现读文件+setData+算系数）。
+    // 网格和 B 样条系数都在这里并行算好，首次勾选就只剩纹理上传。
+    // 代价：四种全有时约 4×(网格+系数) ≈ 280 MB CPU 内存；纹理仍按需上传 GPU。
     // [排查第2步] 四层并行：各写各的 overlay 结构体，myMessage 只读。
     std::vector<std::thread> workers;
     auto spawn = [&](bool run, auto &&fn) {
@@ -262,13 +266,13 @@ void ncdfOverlayFactory::prepareAllGrids()
             catch (...) { ncdfLog("[prepare] grid worker FAILED: unknown\n"); }
         });
     };
-    spawn(plugin && plugin->m_bShowCurrentForce && gui->myMessage.hasCurrent(),
+    spawn(gui->myMessage.hasCurrent(),
           [&]{ m_currentOverlay.prepareGrid(gui); m_currentOverlay.dataReady = true; });
-    spawn(plugin && plugin->m_bShowSeaTemp && gui->myMessage.hasSSTData(),
+    spawn(gui->myMessage.hasSSTData(),
           [&]{ m_seaTempOverlay.prepareGrid(gui); m_seaTempOverlay.dataReady = true; });
-    spawn(plugin && plugin->m_bShowSalinity && gui->myMessage.hasSalData(),
+    spawn(gui->myMessage.hasSalData(),
           [&]{ m_salinityOverlay.prepareGrid(gui); m_salinityOverlay.dataReady = true; });
-    spawn(plugin && plugin->m_bShowZos && gui->myMessage.hasZosData(),
+    spawn(gui->myMessage.hasZosData(),
           [&]{ m_zosOverlay.prepareGrid(gui); m_zosOverlay.dataReady = true; });
     for (auto &t : workers) t.join();
 
