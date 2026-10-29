@@ -11,184 +11,70 @@
 
 #include <cmath>
 #include <cstring>
+#include <cstdio>
+#include <cstdlib>
 #include <algorithm>
 #include <chrono>
 #include <limits>
+#include <thread>
+#include <atomic>
+#include <vector>
 
 #include "ncdf.h"
 #include "ncdf_reader.h"
 #include "ncdf_kuroshio.h"
 #include "ncdf_landmask.h"
+#include "ncdf_uvfield.h"
 
 extern void ncdfLog(const char* format, ...);
 
-static const double kKmPerDeg = 111.0;        // 与官方代码一致
-static const double kREarth   = 6371.0;
-
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
-
-static inline double nanD() { return std::numeric_limits<double>::quiet_NaN(); }
-static inline bool isNanD(double v) { return !std::isfinite(v); }
-
-// 流速有效性：填充值 / NaN / 超物理量级一律视为陆地
-static inline bool finiteSpeed(double v) {
-    return std::isfinite(v) && v != (double)ncdf_NOTDEF && std::fabs(v) < 1.0e3;
-}
-
-static double haversineKm(double lon1, double lat1, double lon2, double lat2)
+// 诊断开关：C:\ProgramData\opencpn\ncdf_flags.txt 里写 kuroThreads=N。
+// N=1 强制串行，用于 A/B 对照排除并行化对结果的影响；未设或 N<=0 = 自动。
+// 与 ncdf_tilegrid.cpp 的 sea/land/fill 开关同一套文件、同一套用法。
+// 另可写 kuroCap=N 覆盖候选池上限（MATLAB 原版是不设上限的，见下）。
+static int kuroFlagInt(const char *key)
 {
-    double rlat1 = lat1 * M_PI / 180.0, rlat2 = lat2 * M_PI / 180.0;
-    double dlat = (lat2 - lat1) * M_PI / 180.0, dlon = (lon2 - lon1) * M_PI / 180.0;
-    double a = std::sin(dlat / 2) * std::sin(dlat / 2)
-             + std::cos(rlat1) * std::cos(rlat2) * std::sin(dlon / 2) * std::sin(dlon / 2);
-    if (a < 0) a = 0;
-    if (a > 1) a = 1;
-    return 2.0 * kREarth * std::atan2(std::sqrt(a), std::sqrt(1.0 - a));
+    FILE *fp = fopen("C:\\ProgramData\\opencpn\\ncdf_flags.txt", "r");
+    if (!fp) return 0;
+    char line[256];
+    int n = 0;
+    size_t klen = strlen(key);
+    while (fgets(line, sizeof(line), fp)) {
+        if (strncmp(line, key, klen) == 0) {
+            const char *eq = strchr(line, '=');
+            if (eq) n = atoi(eq + 1);
+            break;
+        }
+    }
+    fclose(fp);
+    return n;
+}
+static int kuroThreadsOverride() { return kuroFlagInt("kuroThreads"); }
+static int kuroCapOverride()     { return kuroFlagInt("kuroCap"); }
+static int kuroDbg()             { return kuroFlagInt("kuroDbg"); }
+static int kuroAvgZero()         { return kuroFlagInt("kuroAvgZero"); }
+// 复刻 MATLAB 的"无效格点填 0 后插值"（见 UVField::sampleZeroFill）。
+// kuroZeroFill=1 打开；默认 0 = 现有语义（四角有一无效即失败）。
+// 这是移植验证用的复刻开关，不代表认可该语义的物理合理性。
+static int kuroZeroFill()        { return kuroFlagInt("kuroZeroFill"); }
+
+// 统一取速度入口：按 F.zeroFillInvalid 分派到 sample / sampleZeroFill。
+// 参数顺序与 F.sample 保持一致，便于原地替换。
+static inline bool sampleF(const UVField &F, double lonq, double latq,
+                           double &uo, double &vo)
+{
+    return F.zeroFillInvalid ? F.sampleZeroFill(lonq, latq, uo, vo)
+                             : sampleF(F, lonq, latq, uo, vo);
+}
+// 评分权重 alpha（×1000）。score = alpha*dist_norm + (1-alpha)*(1-spd_norm)。
+// MATLAB 取 alpha=0.5。alpha=1000 → 纯按"离上一段最近"选（诊断用）：
+//   若此时 D 段骨架贴近真脊、校正后与参考轴吻合，就证明原 0.5 权重
+//   在这个场上把贴岸候选输给了离岸快流线。
+static double kuroScoreAlpha() {
+    int a = kuroFlagInt("kuroAlpha1000");
+    return (a > 0) ? (double)a / 1000.0 : 0.5;
 }
 
-// ===========================================================================
-// U/V 场：双线性插值 + 陆海掩膜
-// ===========================================================================
-struct UVField {
-    const double *u, *v;
-    const double *lat, *lon;
-    const NcdfLandMask *lm;     // 高分辨率掩膜；可为 NULL
-    size_t nlat, nlon;
-    bool latAsc, lonAsc;
-    bool latUni, lonUni;
-    double dLat, dLon;
-    double cellDeg;
-
-    void bind(const ncdfDataMessage &msg) {
-        u = msg.ucurr.empty() ? NULL : &msg.ucurr[0];
-        v = msg.vcurr.empty() ? NULL : &msg.vcurr[0];
-        lat = msg.latValues; lon = msg.lonValues;
-        lm = NULL;
-        nlat = msg.latLength; nlon = msg.lonLength;
-        latAsc = lonAsc = true;
-        latUni = lonUni = false;
-        dLat = dLon = 0.0; cellDeg = 0.1;
-        if (nlat >= 2 && lat) {
-            latAsc = (lat[nlat - 1] >= lat[0]);
-            double sMin = 1e30, sMax = -1e30;
-            for (size_t j = 1; j < nlat; j++) {
-                double s = std::fabs(lat[j] - lat[j - 1]);
-                if (s < sMin) sMin = s;
-                if (s > sMax) sMax = s;
-            }
-            dLat = (sMin > 0 && sMin < 1e30) ? sMin : 0.1;
-            latUni = (sMin > 0 && sMin < 1e30) && (sMax - sMin) <= 1e-6 * sMax;
-        }
-        if (nlon >= 2 && lon) {
-            lonAsc = (lon[nlon - 1] >= lon[0]);
-            double sMin = 1e30, sMax = -1e30;
-            for (size_t i = 1; i < nlon; i++) {
-                double s = std::fabs(lon[i] - lon[i - 1]);
-                if (s < sMin) sMin = s;
-                if (s > sMax) sMax = s;
-            }
-            dLon = (sMin > 0 && sMin < 1e30) ? sMin : 0.1;
-            lonUni = (sMin > 0 && sMin < 1e30) && (sMax - sMin) <= 1e-6 * sMax;
-        }
-        if (dLat <= 0) dLat = 0.1;
-        if (dLon <= 0) dLon = 0.1;
-        cellDeg = std::min(dLat, dLon);
-    }
-
-    // 均匀网格 O(1) 定位；否则二分
-    bool locate(const double *arr, size_t n, bool asc, bool uni, double step,
-                double x, size_t &i0, size_t &i1, double &t) const {
-        if (!arr || n == 0) return false;
-        if (n == 1) {
-            if (std::fabs(x - arr[0]) > 0.5 * cellDeg) return false;
-            i0 = i1 = 0; t = 0; return true;
-        }
-        double lo = asc ? arr[0] : arr[n - 1];
-        double hi = asc ? arr[n - 1] : arr[0];
-        const double eps = 1e-9;
-        if (x < lo - eps || x > hi + eps) return false;
-
-        if (uni && step > 0) {
-            double f = (x - arr[0]) / (asc ? step : -step);
-            if (f < 0) f = 0;
-            if (f > (double)(n - 1)) f = (double)(n - 1);
-            size_t k = (size_t)f;
-            if (k >= n - 1) { i0 = i1 = n - 1; t = 0; return true; }
-            i0 = k; i1 = k + 1;
-            t = f - (double)k;
-            return true;
-        }
-
-        if (asc) {
-            if (x <= arr[0])   { i0 = i1 = 0;     t = 0; return true; }
-            if (x >= arr[n-1]) { i0 = i1 = n - 1; t = 0; return true; }
-            size_t a = 0, b = n - 1;
-            while (b - a > 1) { size_t m = a + (b - a) / 2; if (arr[m] <= x) a = m; else b = m; }
-            i0 = a; i1 = a + 1;
-        } else {
-            if (x >= arr[0])   { i0 = i1 = 0;     t = 0; return true; }
-            if (x <= arr[n-1]) { i0 = i1 = n - 1; t = 0; return true; }
-            size_t a = 0, b = n - 1;
-            while (b - a > 1) { size_t m = a + (b - a) / 2; if (arr[m] >= x) a = m; else b = m; }
-            i0 = a; i1 = a + 1;
-        }
-        double d = arr[i1] - arr[i0];
-        t = (d != 0.0) ? (x - arr[i0]) / d : 0.0;
-        return true;
-    }
-
-    bool sample(double lonq, double latq, double &uo, double &vo) const {
-        uo = vo = nanD();
-        if (!u || !v || !lat || !lon || nlat < 1 || nlon < 1) return false;
-        size_t j0, j1, i0, i1;
-        double tj, ti;
-        if (!locate(lat, nlat, latAsc, latUni, dLat, latq, j0, j1, tj)) return false;
-        if (!locate(lon, nlon, lonAsc, lonUni, dLon, lonq, i0, i1, ti)) return false;
-
-        double u00 = u[j0 * nlon + i0], u01 = u[j0 * nlon + i1];
-        double u10 = u[j1 * nlon + i0], u11 = u[j1 * nlon + i1];
-        double v00 = v[j0 * nlon + i0], v01 = v[j0 * nlon + i1];
-        double v10 = v[j1 * nlon + i0], v11 = v[j1 * nlon + i1];
-        if (!finiteSpeed(u00) || !finiteSpeed(u01) || !finiteSpeed(u10) || !finiteSpeed(u11)) return false;
-        if (!finiteSpeed(v00) || !finiteSpeed(v01) || !finiteSpeed(v10) || !finiteSpeed(v11)) return false;
-
-        double u0 = u00 + (u01 - u00) * ti, u1 = u10 + (u11 - u10) * ti;
-        double v0 = v00 + (v01 - v00) * ti, v1 = v10 + (v11 - v10) * ti;
-        uo = u0 + (u1 - u0) * tj;
-        vo = v0 + (v1 - v0) * tj;
-        return finiteSpeed(uo) && finiteSpeed(vo);
-    }
-
-    // 陆海判定 = 有数据 且 高分辨率掩膜认为是海。
-    // 掩膜覆盖不到的地方退回数据自身有效性（NaN / ncdf_NOTDEF）。
-    bool isSea(double lonq, double latq) const {
-        if (lm && lm->covers(latq, lonq) && lm->isLand(latq, lonq)) return false;
-        double a, b;
-        return sample(lonq, latq, a, b);
-    }
-
-    // 最近格点下标（均匀网格 O(1)，否则线性扫描）
-    size_t nearest(const double *arr, size_t n, bool asc, bool uni, double step, double x) const {
-        if (!arr || n == 0) return 0;
-        if (n == 1) return 0;
-        if (uni && step > 0) {
-            double f = (x - arr[0]) / (asc ? step : -step);
-            double r = std::floor(f + 0.5);
-            if (r < 0) r = 0;
-            if (r > (double)(n - 1)) r = (double)(n - 1);
-            return (size_t)r;
-        }
-        size_t best = 0;
-        double bestD = std::fabs(arr[0] - x);
-        for (size_t i = 1; i < n; i++) {
-            double d = std::fabs(arr[i] - x);
-            if (d < bestD) { bestD = d; best = i; }
-        }
-        return best;
-    }
-};
 
 // ===========================================================================
 // 高斯窗 / 陆海约束平滑（smooth_path_bd）
@@ -420,6 +306,125 @@ struct CandList {
 
 // pick_best_candidate：start_dist 在选优时按 prev_end 重算
 //   score = 0.5*norm(start_dist) + 0.5*(1-norm(avg_speed))  -> 取最小
+
+// 候选池倒出（kuroDbg=1）：判定"贴陆架的候选"是没进池（流线生成问题）
+// 还是进了池但输给离岸候选（选优问题）。两者修法完全不同。
+static void dumpCands(const char *tag, const CandList &cl,
+                      double prevLon, double prevLat, bool havePrev,
+                      const UVField &F)
+{
+    if (!kuroDbg()) return;
+    size_t n = cl.v.size();
+    if (n == 0) { ncdfLog("[kuro]   cands %s: EMPTY\n", tag); return; }
+
+    struct Row { double score, dN, sN, sp; size_t i; };
+    std::vector<Row> rows(n);
+    double dMin = 1e300, dMax = -1e300, sMin = 1e300, sMax = -1e300;
+    for (size_t i = 0; i < n; i++) {
+        double d = havePrev ? std::hypot(cl.v[i].xy[0] - prevLon, cl.v[i].xy[1] - prevLat) : 0.0;
+        rows[i].score = d; rows[i].sp = cl.v[i].avgSpeed; rows[i].i = i;
+        if (d < dMin) dMin = d;
+        if (d > dMax) dMax = d;
+        if (cl.v[i].avgSpeed < sMin) sMin = cl.v[i].avgSpeed;
+        if (cl.v[i].avgSpeed > sMax) sMax = cl.v[i].avgSpeed;
+    }
+    double dSpan = (n > 1) ? (dMax - dMin) : 1.0;
+    double sSpan = (n > 1) ? (sMax - sMin) : 1.0;
+    if (dSpan < 1e-12) dSpan = 1e-12;
+    if (sSpan < 1e-12) sSpan = 1e-12;
+    std::vector<double> scByOrig(n);      // 以下标（原候选序）索引的 score
+    const double alpha = kuroScoreAlpha();
+    for (size_t i = 0; i < n; i++) {
+        rows[i].dN = (n > 1) ? (rows[i].score - dMin) / dSpan : 0.0;
+        rows[i].sN = (n > 1) ? (rows[i].sp - sMin) / sSpan : 1.0;
+        rows[i].score = alpha * rows[i].dN + (1.0 - alpha) * (1.0 - rows[i].sN);
+        scByOrig[rows[i].i] = rows[i].score;
+    }
+    std::sort(rows.begin(), rows.end(),
+              [](const Row &a, const Row &b) { return a.score < b.score; });
+    ncdfLog("[kuro]   cands %s: n=%u  (dSpan=%.3fdeg sSpan=%.3f)\n",
+            tag, (unsigned)n, dSpan, sSpan);
+    size_t show = (n < 8) ? n : 8;
+    for (size_t k = 0; k < show; k++) {
+        const std::vector<double> &p = cl.v[rows[k].i].xy;
+        size_t m = p.size() / 2;
+        ncdfLog("[kuro]     #%u score=%.3f dN=%.3f sN=%.3f sp=%.2f  "
+                "(%.3f,%.3f)->(%.3f,%.3f) n=%u\n",
+                (unsigned)k, rows[k].score, rows[k].dN, rows[k].sN, rows[k].sp,
+                p[0], p[1], p[2 * (m - 1)], p[2 * (m - 1) + 1], (unsigned)m);
+    }
+    // 起点经度直方图（每 0.5° 一格）：判"贴岸候选在不在池里、它分数多少"。
+    // 若某格有候选但 min score 明显高于赢家，说明是**选优**问题；
+    // 若某格根本没有候选，说明是**流线生成**问题（流线到不了那里）。
+    {
+        double lo = 1e300, hi = -1e300;
+        for (size_t i = 0; i < n; i++) {
+            double x = cl.v[i].xy[0];
+            if (x < lo) lo = x;
+            if (x > hi) hi = x;
+        }
+        const int NB = 24;
+        double w = (hi - lo) / NB;
+        if (w > 1e-9) {
+            std::vector<double> bestSc(NB, 1e300), bestSp(NB, -1.0);
+            std::vector<int> cnt(NB, 0), bestIdx(NB, -1);
+            for (size_t i = 0; i < n; i++) {
+                int b = (int)((cl.v[i].xy[0] - lo) / w);
+                if (b < 0) b = 0;
+                if (b >= NB) b = NB - 1;
+                cnt[b]++;
+                if (scByOrig[i] < bestSc[b]) {
+                    bestSc[b] = scByOrig[i];
+                    bestSp[b] = cl.v[i].avgSpeed;
+                    bestIdx[b] = (int)i;
+                }
+            }
+            ncdfLog("[kuro]     start-lon histogram (bin=%.2f deg):\n", w);
+            for (int b = 0; b < NB; b++) {
+                if (!cnt[b]) continue;
+                ncdfLog("[kuro]       lon %6.2f..%6.2f  n=%-5d bestScore=%.3f bestSp=%.3f\n",
+                        lo + b * w, lo + (b + 1) * w, cnt[b],
+                        (bestSc[b] > 1e299) ? -1.0 : bestSc[b], bestSp[b]);
+            }
+            // 冠军 vs 最靠岸那一格的最优候选：逐点流速剖面
+            //   —— 判定"贴岸候选的均速真的低"还是"我们的 avgSpeed 算错了"
+            auto dumpProf = [&F](const char *who, const Cand &c) {
+                size_t m = c.xy.size() / 2;
+                ncdfLog("[kuro]     profile %s: avgSpeed=%.3f  n=%u  "
+                        "(%.3f,%.3f)->(%.3f,%.3f)\n", who, c.avgSpeed, (unsigned)m,
+                        c.xy[0], c.xy[1], c.xy[2 * (m - 1)], c.xy[2 * (m - 1) + 1]);
+                size_t stride = (m > 8) ? m / 8 : 1;
+                for (size_t k = 0; k < m; k += stride) {
+                    double u, v;
+                    bool ok = sampleF(F, c.xy[2 * k], c.xy[2 * k + 1], u, v);
+                    ncdfLog("[kuro]        [%3u] (%.3f,%.3f) |u|=%s%.3f\n",
+                            (unsigned)k, c.xy[2 * k], c.xy[2 * k + 1],
+                            ok ? "" : "FAIL ", ok ? std::hypot(u, v) : -1.0);
+                }
+            };
+            dumpProf("winner", cl.v[rows[0].i]);
+            for (int b = 0; b < NB; b++) {
+                if (cnt[b] > 0 && bestIdx[b] >= 0) {
+                    dumpProf("shoreward-best", cl.v[(size_t)bestIdx[b]]);
+                    break;
+                }
+            }
+        }
+    }
+}
+
+// 逐阶段折线采样：定位偏差是哪一步引入的（拼装 / 平滑 / 垂断面校正）。
+// 只在 kuroDbg=1 时输出。诊断输出必须紧跟它要展示的那个步骤之后。
+static void logPolySample(const char *tag, const std::vector<double> &p, int nSample)
+{
+    if (!kuroDbg()) return;
+    size_t n = p.size() / 2;
+    if (n < 2) { ncdfLog("[kuro]   %s: empty (%u pts)\n", tag, (unsigned)n); return; }
+    size_t stride = (n > (size_t)nSample) ? n / (size_t)nSample : 1;
+    ncdfLog("[kuro]   %s (%u pts):\n", tag, (unsigned)n);
+    for (size_t i = 0; i < n; i += stride)
+        ncdfLog("[kuro]     [%4u] (%.4f, %.4f)\n", (unsigned)i, p[2 * i], p[2 * i + 1]);
+}
 static bool pickBest(const CandList &cands, double prevLon, double prevLat, bool havePrev, Cand &best)
 {
     size_t n = cands.v.size();
@@ -441,10 +446,11 @@ static bool pickBest(const CandList &cands, double prevLon, double prevLat, bool
 
     double bestScore = 1e300;
     size_t bestIdx = 0;
+    const double alpha = kuroScoreAlpha();   // MATLAB = 0.5；kuroAlpha1000 可覆盖（诊断）
     for (size_t i = 0; i < n; i++) {
         double dN = (n > 1) ? (dist[i] - dMin) / dSpan : 0.0;
         double sN = (n > 1) ? (cands.v[i].avgSpeed - sMin) / sSpan : 1.0;
-        double score = 0.5 * dN + 0.5 * (1.0 - sN);
+        double score = alpha * dN + (1.0 - alpha) * (1.0 - sN);
         if (score < bestScore) { bestScore = score; bestIdx = i; }
     }
     best.xy = cands.v[bestIdx].xy;
@@ -473,7 +479,7 @@ static void integrateOneWay(const UVField &F, double lon0, double lat0,
 
     for (int step = 1; step < maxPts; step++) {
         double u1, v1;
-        if (!F.sample(lon, lat, u1, v1)) break;
+        if (!sampleF(F, lon, lat, u1, v1)) break;
         double sp = std::hypot(u1, v1);
         if (sp < 1e-9) break;
 
@@ -484,7 +490,7 @@ static void integrateOneWay(const UVField &F, double lon0, double lat0,
 
         // 中点法；中点落在陆地/域外时退化为一阶欧拉步，避免近岸被过早截断
         double u2 = u1, v2 = v1;
-        if (F.sample(mLon, mLat, u2, v2)) {
+        if (sampleF(F, mLon, mLat, u2, v2)) {
             if (std::hypot(u2, v2) < 1e-9) break;
         } else {
             u2 = u1; v2 = v1;
@@ -515,6 +521,9 @@ static void collectCandidates(const std::vector<double> &xy, const SegDef &seg,
 {
     if (idxA.empty() || idxB.empty()) return;
 
+    // 诊断（kuroDbg=1）：候选为什么这么少 —— 卡在「没跨断面」还是「validate 被拒」，
+    // 两者修法完全不同。B 段实测主路径只有 1 个候选，靠这个分类定位。
+    struct { int seeds, noB, noNorthAfter, boxRej, loopRej, added, brk; } st = {};
     int nA = (int)idxA.size();
     for (int ii = 0; ii < nA; ii++) {
         int s = idxA[backward ? (size_t)(nA - 1 - ii) : (size_t)ii];
@@ -522,7 +531,9 @@ static void collectCandidates(const std::vector<double> &xy, const SegDef &seg,
         for (size_t k = 0; k < idxB.size(); k++) {
             if (idxB[k] > s) { e = idxB[k]; break; }
         }
-        if (e < 0) continue;
+        st.seeds++;
+        if (idxB.empty()) { st.noB++; continue; }
+        if (e < 0) { st.noNorthAfter++; continue; }
 
         Cand c;
         c.xy.assign(xy.begin() + 2 * s, xy.begin() + 2 * e + 2);
@@ -534,19 +545,38 @@ static void collectCandidates(const std::vector<double> &xy, const SegDef &seg,
             if (lo < seg.lonRange[0] || lo > seg.lonRange[1] ||
                 la < seg.latLim[0]   || la > seg.latLim[1]) valid = false;
         }
-        if (valid && detectLoops(c.xy, minLoopPts, loopDist)) valid = false;
-        if (!valid) continue;
+        if (!valid) { st.boxRej++; continue; }
+        if (detectLoops(c.xy, minLoopPts, loopDist)) { st.loopRej++; continue; }
 
-        double sum = 0; int cnt = 0;
+        // avg_speed：MATLAB 是 mean(hypot(uu,vv), 'omitnan')，而 Fu/Fv 建在
+        // **零填充**的网格上（sub_u(isnan|land)=0）—— 所以无效格点以 0 计入均值，
+        // 不是被跳过。我们原先只统计有效点，口径不同，而 avgSpeed 正是
+        // pickBest 评分的一项。kuroAvgZero=1 复刻 MATLAB 口径。
+        double sum = 0.0;
+        int cnt = (int)(c.xy.size() / 2);
         for (size_t k = 0; k < c.xy.size() / 2; k++) {
             double uu, vv;
-            if (F.sample(c.xy[2 * k], c.xy[2 * k + 1], uu, vv)) {
-                sum += std::hypot(uu, vv); cnt++;
-            }
+            if (sampleF(F, c.xy[2 * k], c.xy[2 * k + 1], uu, vv)) sum += std::hypot(uu, vv);
+            // 取不到速度的点：kuroAvgZero 时按 0 计（复刻 MATLAB）；否则不计分母
         }
-        c.avgSpeed = (cnt > 0) ? sum / cnt : 0.0;
+        if (!kuroAvgZero()) {
+            int valid = 0;
+            for (size_t k = 0; k < c.xy.size() / 2; k++) {
+                double uu, vv;
+                if (sampleF(F, c.xy[2 * k], c.xy[2 * k + 1], uu, vv)) valid++;
+            }
+            cnt = valid;
+        }
+        c.avgSpeed = (cnt > 0) ? sum / (double)cnt : 0.0;
         out.add(c);
-        if (breakAfter) break;
+        st.added++;
+        if (breakAfter) { st.brk++; break; }
+    }
+    if (kuroDbg()) {
+        ncdfLog("[kuro]     collect(%s%c seg=%c): seeds=%d added=%d | noNorthAfter=%d "
+                "boxRej=%d loopRej=%d brk=%d\n",
+                backward ? "backward" : "forward", breakAfter ? '+' : '-', seg.name,
+                st.seeds, st.added, st.noNorthAfter, st.boxRej, st.loopRej, st.brk);
     }
 }
 
@@ -566,7 +596,7 @@ static void correctAxisTransect(const UVField &F, const std::vector<double> &ref
         double rlon = ref[2 * i], rlat = ref[2 * i + 1];
         if (isNanD(rlon) || isNanD(rlat)) continue;
         double u0, v0;
-        if (!F.sample(rlon, rlat, u0, v0) || (u0 == 0.0 && v0 == 0.0)) {
+        if (!sampleF(F, rlon, rlat, u0, v0) || (u0 == 0.0 && v0 == 0.0)) {
             raw[2 * i] = rlon; raw[2 * i + 1] = rlat;
             continue;
         }
@@ -581,7 +611,17 @@ static void correctAxisTransect(const UVField &F, const std::vector<double> &ref
         double deltaLon = degLon * std::cos(perp);
         double deltaLat = degLat * std::sin(perp);
 
-        // 陆地 / 无效点取 -inf：避免 argmax 落到陆地（官方代码缺陷 4）
+        // 垂断面取沿流投影最大点。
+        //
+        // 【与 MATLAB 原版的一处实质差异】官方是
+        //     V_proj_masked(mask_sect < 1) = 0;
+        //     [~, idx_max] = max(V_proj_masked, [], 'omitnan');
+        // 无效点置 **0** —— 当断面上所有有效点的沿流投影都是负值时，
+        // argmax 会落到陆地/无效点，轴线被拉过去。
+        // 我们当初判为官方 bug 改成置 -inf（强制选有效点）。
+        // **但发布数据集是用原版生成的**，验证移植正确性要先复刻原版行为，
+        // 故提供 kuroTransectZero=1 切回置 0 的语义做 A/B。
+        const bool matlabZero = (kuroFlagInt("kuroTransectZero") != 0);
         double bestV = -std::numeric_limits<double>::infinity();
         double bestLon = rlon, bestLat = rlat;
         bool got = false;
@@ -589,11 +629,12 @@ static void correctAxisTransect(const UVField &F, const std::vector<double> &ref
             double t = (nSect > 1) ? (double)k / (double)(nSect - 1) : 0.5;
             double lo = (rlon - deltaLon) + 2.0 * deltaLon * t;
             double la = (rlat - deltaLat) + 2.0 * deltaLat * t;
-            double us, vs, vp = -std::numeric_limits<double>::infinity();
-            // 陆地 / 无效点取 -inf：避免 argmax 落到陆地（官方代码缺陷 4）。
-            // 陆海以高分辨率掩膜为准（论文：ETOPO 2022）。
-            if (F.isSea(lo, la) && F.sample(lo, la, us, vs))
-                vp = us * std::cos(thetaRef) + vs * std::sin(thetaRef);
+            double us, vs;
+            double vp;
+            bool valid = F.isSea(lo, la) && sampleF(F, lo, la, us, vs);
+            if (valid)      vp = us * std::cos(thetaRef) + vs * std::sin(thetaRef);
+            else if (matlabZero) vp = 0.0;      // 官方语义：无效点置 0，可能被 argmax 选中
+            else                 vp = -std::numeric_limits<double>::infinity();
             if (vp > bestV) { bestV = vp; bestLon = lo; bestLat = la; got = true; }
         }
         if (got && std::isfinite(bestV)) {
@@ -663,7 +704,7 @@ static void searchBoundaryKM(const UVField &F, double lon0, double lat0,
         double lonT = lon0 + (stepKm * s * dirLon) / kmPerDegLon;
 
         double uT, vT;
-        if (!F.isSea(lonT, latT) || !F.sample(lonT, latT, uT, vT)) break;   // NaN / 陆地 -> 终止
+        if (!F.isSea(lonT, latT) || !sampleF(F, lonT, latT, uT, vT)) break;   // NaN / 陆地 -> 终止
 
         lastLon = lonT; lastLat = latT;
 
@@ -701,7 +742,7 @@ static void findKuroshioBoundaries(const UVField &F, const std::vector<double> &
         double lon0 = axis[2 * i], lat0 = axis[2 * i + 1];
         if (isNanD(lon0) || isNanD(lat0)) continue;
         double u0, v0;
-        if (!F.sample(lon0, lat0, u0, v0) || (u0 == 0.0 && v0 == 0.0)) continue;
+        if (!sampleF(F, lon0, lat0, u0, v0) || (u0 == 0.0 && v0 == 0.0)) continue;
 
         double nrm = std::hypot(u0, v0);
         double t1 = u0 / nrm, t2 = v0 / nrm;
@@ -858,6 +899,15 @@ bool KuroshioExtractor::extract(const ncdfDataMessage &msg, KuroshioAxisResult &
     auto t0 = std::chrono::high_resolution_clock::now();
     out.clear();
 
+    // 分段计时：总耗时看不出瓶颈在哪，提速前后都需要（2026-10-29 加）
+    auto tPh = t0;
+    auto phaseMs = [&tPh]() -> long long {
+        auto now = std::chrono::high_resolution_clock::now();
+        long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - tPh).count();
+        tPh = now;
+        return ms;
+    };
+
     if (!msg.hasCurrent() || !msg.latValues || !msg.lonValues ||
         msg.latLength < 4 || msg.lonLength < 4) {
         out.message = wxString::FromUTF8("数据无效：需要已加载的 U/V 流场与坐标");
@@ -867,6 +917,11 @@ bool KuroshioExtractor::extract(const ncdfDataMessage &msg, KuroshioAxisResult &
     UVField F;
     F.bind(msg);
     F.lm = m_landMask;
+    // kuroZeroFill=1 时复刻 MATLAB 的"无效格点填 0 后插值"语义（移植验证用）。
+    // 默认 false：保持 sample() 的"四角有一无效即失败"。
+    F.zeroFillInvalid = (kuroZeroFill() != 0);
+    if (F.zeroFillInvalid)
+        ncdfLog("[kuro] zeroFill mode ON (MATLAB semantics: invalid cells -> 0)\n");
     if (F.lm && F.lm->valid()) {
         ncdfLog("[kuro] land mask: %s  %dx%d  lat %.2f..%.2f lon %.2f..%.2f\n",
                 (const char*)F.lm->sourcePath().mb_str(), F.lm->nlat(), F.lm->nlon(),
@@ -903,7 +958,7 @@ bool KuroshioExtractor::extract(const ncdfDataMessage &msg, KuroshioAxisResult &
 
                 double gu, gv;
                 if (!F.isSea(F.lon[bi], F.lat[bj])) continue;   // 仅海点
-                if (!F.sample(F.lon[bi], F.lat[bj], gu, gv)) continue;
+                if (!sampleF(F, F.lon[bi], F.lat[bj], gu, gv)) continue;
                 seeds.push_back(F.lon[bi]);
                 seeds.push_back(F.lat[bj]);
             }
@@ -911,6 +966,7 @@ bool KuroshioExtractor::extract(const ncdfDataMessage &msg, KuroshioAxisResult &
     }
 
     ncdfLog("[kuro] seeds: %d sea points in corridor\n", (int)(seeds.size() / 2));
+    ncdfLog("[kuro][perf] setup+seeds=%lldms\n", phaseMs());
     if (seeds.size() < 4) {
         out.message = wxString::FromUTF8(
             "流廊道内无有效海点：数据范围可能不覆盖 115~132E / 15~32N 黑潮流区");
@@ -942,44 +998,151 @@ bool KuroshioExtractor::extract(const ncdfDataMessage &msg, KuroshioAxisResult &
     tb.latMin -= kTraceMargin; tb.latMax += kTraceMargin;
 
     CandList candsMain[5], candsSM[5], candsMN[5];
-    std::vector<double> fwd, bwd, full;
 
-    for (size_t si = 0; si < seeds.size() / 2; si++) {
-        double sLon = seeds[2 * si], sLat = seeds[2 * si + 1];
-        int half = maxStreamPoints / 2;
-        if (half < 8) half = 8;
-
-        integrateOneWay(F, sLon, sLat, +1.0, half, tb, fwd);
-        integrateOneWay(F, sLon, sLat, -1.0, half, tb, bwd);
-        if (fwd.size() + bwd.size() < 8) continue;
-
-        full.clear();
-        size_t nb = bwd.size() / 2;
-        full.reserve(nb * 2 + fwd.size());
-        for (size_t k = nb; k-- > 0; ) { full.push_back(bwd[2 * k]); full.push_back(bwd[2 * k + 1]); }
-        for (size_t k = 1; k < fwd.size() / 2; k++) { full.push_back(fwd[2 * k]); full.push_back(fwd[2 * k + 1]); }
-        if (full.size() < 4) continue;
-
-        // 11 条断面各算一次命中下标，五段复用（相邻段共用断面，勿重复计算）
-        std::vector<int> hits[11];
-        for (int s = 0; s < 11; s++)
-            onSection(full, kSections[s].lon1, kSections[s].lat1,
-                      kSections[s].lon2, kSections[s].lat2, sectionTolDeg, hits[s]);
-
-        for (int s = 0; s < 5; s++) {
-            const std::vector<int> &hs = hits[kSegs[s].iSouth];
-            const std::vector<int> &hm = hits[kSegs[s].iMid];
-            const std::vector<int> &hn = hits[kSegs[s].iNorth];
-            // 主路径：从最后一个 south 交点向前回溯，取第一条有效子段
-            collectCandidates(full, kSegs[s], hs, hn, F,
-                              true, true, minLoopPoints, loopDistDeg, candsMain[s]);
-            // 降级路径：south->mid 与 mid->north（官方前向、不 break）
-            collectCandidates(full, kSegs[s], hs, hm, F,
-                              false, false, minLoopPoints, loopDistDeg, candsSM[s]);
-            collectCandidates(full, kSegs[s], hm, hn, F,
-                              false, false, minLoopPoints, loopDistDeg, candsMN[s]);
+    // 候选池上限。MATLAB 原版**不设上限**（candidates(end+1) 一路追加），
+    // 这里的 cap 是移植时加的内存保护。但它按 avgSpeed 截断，而选优评分是
+    //   score = 0.5*norm(start_dist) + 0.5*(1-norm(avg_speed))
+    // —— 只按速度截断会把"离上一段近但略慢"的候选丢掉，偏向离岸的快流线。
+    // 实测复杂段（B/C/D）三张表全部顶满 1500，故提供 kuroCap 做 A/B。
+    size_t candCap = 1500;
+    {
+        int ovr = kuroCapOverride();
+        if (ovr > 0) {
+            candCap = (size_t)ovr;
+            ncdfLog("[kuro] candCap forced to %u by ncdf_flags.txt (kuroCap)\n", (unsigned)candCap);
         }
     }
+    for (int s = 0; s < 5; s++) {
+        candsMain[s].cap = candCap;
+        candsSM[s].cap   = candCap;
+        candsMN[s].cap   = candCap;
+    }
+
+    // ---- 并行化（2026-10-29）----
+    // 实测本阶段占总耗时 98.8%（integrate+collect=6672ms / 合计 6752ms）。
+    // 22293 条种子流线彼此完全独立（UVField 只读、结果写各自的候选表）。
+    //
+    // 【为什么按线程分候选表而不是全程共享】CandList::add 不是线程安全的。
+    // 【为什么结果仍确定】淘汰策略是"仅当更快者替换最慢者"——按 avgSpeed 质量取舍，
+    //   与插入顺序无关。合并时按线程序号顺序重放，最终池等价于"全体候选里最快的 1500 条"。
+    //   （严格说，若出现 avgSpeed 完全相同的并列，取舍会有先后差别；实测不会发生。）
+    // 【注意】每线程各自 cap=1500 会让池子比串行**更宽**（8×1500 合并到 1500），
+    //   即质量只会更好不会更差。改完须核对 nAxis / len / segs 与改前一致。
+    unsigned nThreads = std::thread::hardware_concurrency();
+    if (nThreads == 0) nThreads = 4;
+    if (nThreads > 8) nThreads = 8;
+    {
+        int ovr = kuroThreadsOverride();
+        if (ovr > 0) {
+            nThreads = (unsigned)ovr;
+            ncdfLog("[kuro] threads forced to %u by ncdf_flags.txt (kuroThreads)\n", nThreads);
+        }
+    }
+    const size_t nSeeds = seeds.size() / 2;
+    if ((size_t)nThreads > nSeeds) nThreads = (unsigned)nSeeds;
+    if (nThreads < 1) nThreads = 1;
+
+    struct WorkerOut {
+        CandList cm[5], cs[5], cn[5];
+        explicit WorkerOut(size_t cap = 1500) {
+            for (int s = 0; s < 5; s++) { cm[s] = CandList(cap); cs[s] = CandList(cap); cn[s] = CandList(cap); }
+        }
+    };
+    std::vector<WorkerOut> wout;
+    wout.reserve(nThreads);
+    for (unsigned t = 0; t < nThreads; t++) wout.push_back(WorkerOut(candCap));
+
+    {
+        // 动态派发（原子计数器）而不是静态分块：各处流线长短差别很大，
+        // 静态分块会让先做完的线程干等。合并是"取全体前 cap 条"，与派发顺序无关。
+        std::atomic<size_t> nextSeed(0);
+        std::vector<std::thread> ts;
+        ts.reserve(nThreads);
+        for (unsigned t = 0; t < nThreads; t++) {
+            ts.emplace_back([&, t]() {
+                WorkerOut &w = wout[t];
+                std::vector<double> fwd, bwd, full;
+                std::vector<int> hits[11];
+                int half = maxStreamPoints / 2;
+                if (half < 8) half = 8;
+
+                for (;;) {
+                    size_t si = nextSeed.fetch_add(1, std::memory_order_relaxed);
+                    if (si >= nSeeds) break;
+                    double sLon = seeds[2 * si], sLat = seeds[2 * si + 1];
+
+                    integrateOneWay(F, sLon, sLat, +1.0, half, tb, fwd);
+                    integrateOneWay(F, sLon, sLat, -1.0, half, tb, bwd);
+                    if (fwd.size() + bwd.size() < 8) continue;
+
+                    full.clear();
+                    size_t nb = bwd.size() / 2;
+                    full.reserve(nb * 2 + fwd.size());
+                    for (size_t k = nb; k-- > 0; ) { full.push_back(bwd[2 * k]); full.push_back(bwd[2 * k + 1]); }
+                    for (size_t k = 1; k < fwd.size() / 2; k++) { full.push_back(fwd[2 * k]); full.push_back(fwd[2 * k + 1]); }
+                    if (full.size() < 4) continue;
+
+                    // 11 条断面各算一次命中下标，五段复用（相邻段共用断面，勿重复计算）
+                    for (int s = 0; s < 11; s++)
+                        onSection(full, kSections[s].lon1, kSections[s].lat1,
+                                  kSections[s].lon2, kSections[s].lat2, sectionTolDeg, hits[s]);
+
+                    for (int s = 0; s < 5; s++) {
+                        const std::vector<int> &hs = hits[kSegs[s].iSouth];
+                        const std::vector<int> &hm = hits[kSegs[s].iMid];
+                        const std::vector<int> &hn = hits[kSegs[s].iNorth];
+                        // 主路径：从最后一个 south 交点向前回溯，取第一条有效子段
+                        collectCandidates(full, kSegs[s], hs, hn, F,
+                                          true, true, minLoopPoints, loopDistDeg, w.cm[s]);
+                        // 降级路径：south->mid 与 mid->north（官方前向、不 break）
+                        collectCandidates(full, kSegs[s], hs, hm, F,
+                                          false, false, minLoopPoints, loopDistDeg, w.cs[s]);
+                        collectCandidates(full, kSegs[s], hm, hn, F,
+                                          false, false, minLoopPoints, loopDistDeg, w.cn[s]);
+                    }
+                }
+            });
+        }
+        for (size_t k = 0; k < ts.size(); k++) ts[k].join();
+    }
+
+    // 合并：把所有线程的同一张表（同段同类型）汇到一起，按 avgSpeed 取前 cap 条入库。
+    //
+    // 【不能逐条 add】CandList::add 在池满后每条都要 O(cap) 线性扫最慢者，
+    // 8 线程 × 1500 条 × 15 个表 ≈ 2.7 亿次比较，反而成了新瓶颈（8 线程只换到 3 倍）。
+    // 改成先排序取前 cap 再依次入库：此时池未满，add 是 O(1)。
+    //
+    // 【结果与线程数无关】取的是"全体候选里最快的 cap 条"，与合并顺序无关 ——
+    // 比串行的"先到先得占坑、后来者替换最慢"更严格（串行可能把后到的好候选漏在坑外）。
+    //
+    // 【用 swap 不拷贝】候选里是折线坐标，拷贝代价高。
+    auto mergeCapped = [&wout, nThreads](int which, int s, CandList &dst) {
+        struct Ref { double sp; Cand *c; };
+        std::vector<Ref> all;
+        for (unsigned t = 0; t < nThreads; t++) {
+            CandList &L = (which == 0) ? wout[t].cm[s]
+                        : (which == 1) ? wout[t].cs[s] : wout[t].cn[s];
+            for (size_t i = 0; i < L.v.size(); i++)
+                all.push_back(Ref{ L.v[i].avgSpeed, &L.v[i] });
+        }
+        if (all.empty()) return;
+        size_t cap = std::min(dst.cap, all.size());
+        std::partial_sort(all.begin(), all.begin() + (std::ptrdiff_t)cap, all.end(),
+                          [](const Ref &a, const Ref &b) { return a.sp > b.sp; });
+        for (size_t i = 0; i < cap; i++) {
+            Cand c;
+            c.xy.swap(all[i].c->xy);          // 移交，不拷贝
+            c.avgSpeed = all[i].c->avgSpeed;
+            dst.add(c);
+        }
+    };
+    for (int s = 0; s < 5; s++) {
+        mergeCapped(0, s, candsMain[s]);
+        mergeCapped(1, s, candsSM[s]);
+        mergeCapped(2, s, candsMN[s]);
+    }
+    ncdfLog("[kuro][perf] integrate+collect=%lldms (%u threads, %u seeds)\n",
+            phaseMs(), nThreads, (unsigned)nSeeds);
 
     // ---- [2] 分段拼装：选优 + prev_end 接力 ----
     std::vector<double> segXY[5];
@@ -989,6 +1152,10 @@ bool KuroshioExtractor::extract(const ncdfDataMessage &msg, KuroshioAxisResult &
 
     for (int s = 0; s < 5; s++) {
         Cand best;
+        {
+            char tag[8]; snprintf(tag, sizeof(tag), "%c/main", kSegs[s].name);
+            dumpCands(tag, candsMain[s], prevEndLon, prevEndLat, havePrevEnd, F);
+        }
         if (!candsMain[s].empty() && pickBest(candsMain[s], prevEndLon, prevEndLat, havePrevEnd, best)) {
             segXY[s].swap(best.xy);
             prevEndLon = segXY[s][segXY[s].size() - 2];
@@ -1030,6 +1197,7 @@ bool KuroshioExtractor::extract(const ncdfDataMessage &msg, KuroshioAxisResult &
                 (int)candsMain[s].size(), (int)candsSM[s].size(), (int)candsMN[s].size());
     }
 
+    ncdfLog("[kuro][perf] assemble=%lldms\n", phaseMs());
     std::vector<double> reference;
     for (int s = 0; s < 5; s++)
         if (segOk[s]) reference.insert(reference.end(), segXY[s].begin(), segXY[s].end());
@@ -1038,12 +1206,15 @@ bool KuroshioExtractor::extract(const ncdfDataMessage &msg, KuroshioAxisResult &
         out.message = wxString::FromUTF8("未拼装出有效流线骨架：A–E 各段均无候选（数据范围/流速不足）");
         return false;
     }
+    logPolySample("1-ref-assembled", reference, 30);   // [1] 拼装后的骨架
 
     // ---- [3] 陆海约束高斯平滑（55 km）----
     std::vector<double> smoothed;
     std::vector<int> removed;
     smoothPathBD(reference, recommendWindowRadius(reference, smoothRefKm), F, smoothed, removed);
     dropRows(smoothed, removed);
+    ncdfLog("[kuro][perf] smooth=%lldms\n", phaseMs());
+    logPolySample("2-smoothed", smoothed, 30);          // [2] 平滑后
     if (smoothed.size() < 8) {
         out.message = wxString::FromUTF8("平滑后主轴点过少（陆海掩膜剔除过多）");
         return false;
@@ -1052,6 +1223,8 @@ bool KuroshioExtractor::extract(const ncdfDataMessage &msg, KuroshioAxisResult &
     // ---- [4] 流线约束最大流速校正 ----
     std::vector<double> mainAxis;
     correctAxisTransect(F, smoothed, halfLenKm, nSect, smoothFinalKm, mainAxis);
+    ncdfLog("[kuro][perf] correct=%lldms\n", phaseMs());
+    logPolySample("3-after-correct", mainAxis, 30);     // [3] 垂断面校正后
 
     // ---- [5] 裁剪 ----
     cutReferenceAxis(mainAxis, cutLatMin, cutLonMax);
@@ -1067,6 +1240,7 @@ bool KuroshioExtractor::extract(const ncdfDataMessage &msg, KuroshioAxisResult &
         dropDecreasingLat(left);
         dropDecreasingLat(right);
         maskSideFlip(mainAxis, left, right);
+        ncdfLog("[kuro][perf] boundaries=%lldms\n", phaseMs());
     }
 
     // ---- 输出统计 ----
@@ -1078,7 +1252,7 @@ bool KuroshioExtractor::extract(const ncdfDataMessage &msg, KuroshioAxisResult &
     double sumSpd = 0, maxSpd = 0; int nSpd = 0;
     for (size_t i = 0; i < mainAxis.size() / 2; i++) {
         double uu, vv;
-        if (F.sample(mainAxis[2 * i], mainAxis[2 * i + 1], uu, vv)) {
+        if (sampleF(F, mainAxis[2 * i], mainAxis[2 * i + 1], uu, vv)) {
             double sp = std::hypot(uu, vv);
             sumSpd += sp; nSpd++;
             if (sp > maxSpd) maxSpd = sp;

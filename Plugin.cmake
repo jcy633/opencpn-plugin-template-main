@@ -59,6 +59,7 @@ set(SRC
     src/ncdf_overlay_zos.cpp
     src/ncdf_feature.cpp
     src/ncdf_kuroshio.cpp
+    src/ncdf_seamt.cpp
     src/ncdf_landmask.cpp
     src/ncdf_feature_render.cpp
     src/shader/ncdf_shader.cpp
@@ -84,6 +85,8 @@ set(HEADERS
     include/ncdf_overlay_zos.h
     include/ncdf_feature.h
     include/ncdf_kuroshio.h
+    include/ncdf_seamt.h
+    include/ncdf_uvfield.h
     include/ncdf_landmask.h
     include/ncdf_feature_render.h
     include/shader/ncdf_shader.h

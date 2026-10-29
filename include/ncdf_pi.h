@@ -128,6 +128,13 @@ public:
       // 黑潮主轴（流线约束最大流速法）
       bool              m_bShowKuroshio;    // 显示主轴
       bool              m_bShowKuroshioBdy; // 显示左右边界
+      // SEAMT 急流核心提取（Udalov2026，黑潮下游）
+      bool              m_bShowSeamt;
+      bool              m_bShowSeamtSubjets;
+      int               m_iSeamtPreset;     // 0=日本以南 1=论文原域 2=自定义
+      double            m_seamtLonIn, m_seamtLonOut;
+      int               m_seamtNpts;
+      double            m_seamtHalfWidth;
       wxString          m_etopoPath;        // ETOPO 2022 高分辨率陆海掩膜 (NetCDF)
       // 陆海掩膜：主层（精细，通常 30"/15"）+ 回退层（粗，通常全球 1'）。
       // 一律位打包，全球 1' 约 29 MB；首次从 NetCDF 建好后写 .bin 缓存，

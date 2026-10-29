@@ -4,6 +4,8 @@
 - 编译输出DLL位于：`d:\opencpn-plugin-template-main\build\Release\ncdf_pi.dll`（注意是build/Release/，不是根目录的Release/）
 - 部署：将 `build\Release\ncdf_pi.dll` 复制到 `C:\Users\季曹阳\AppData\Local\opencpn\plugins\`
 - 部署完成后启动OpenCPN：`start "" "C:\Program Files (x86)\OpenCPN\opencpn.exe"`（直接用exe，不用快捷方式）
+- **⚠️ 覆盖 DLL 不一定生效**：如果 OpenCPN 之前**拒绝过**某个 `ncdf_pi.dll`（例如误放过 64 位版本），之后即使正常覆盖 32 位 DLL，OpenCPN 也可能一直跑旧的缓存副本，**必须在插件管理器里手动重新导入**。判据：`strings .../ncdf_pi.dll | grep "<新加的日志串>"` 能搜到，但 `ncdf_debug.log` 里就是不出现 —— 说明跑的是旧副本。改完代码后若日志行为对不上，先怀疑这一条，别去怀疑代码
+- **⚠️ 插件加载期不要触发 MainDialog**：`MainDialog` 是**点工具栏才构造的**。若在 `ncdf_pi::Init()` 里调 `OnToolbarToolCallback(0)` 强行建面板（自动化测试入口就是这么做的），加载插件时就会走完整个面板构造 + 数据加载链路。2026-10-29 疑似因此卡死。判据：`C:\ProgramData\opencpn\ncdf_seamt_auto.txt` 存在 → 每次加载都触发。**排查/退出前务必删掉该请求文件**
 - 如果DLL被占用，先 `taskkill //f //im opencpn.exe` 再部署
 - rebuild.bat 已配置自动关闭OpenCPN、部署、重启
 - **build/ 是 CMake 生成的工程**。改了 `Plugin.cmake` / `CMakeLists.txt` 后必须重新生成，且**必须在 `build/` 目录里跑并显式指定平台**：`cd build && cmake -A Win32 ..`。裸 `cmake .` 会①默认生成成 x64 冲掉 Win32 配置、②把产物吐到项目根目录污染源码树。生成后 `grep -oE 'Include="[^"]*\|[^ \"]*' build/ncdf_pi.vcxproj | sort -u` 必须出现 `Release|Win32`
@@ -73,6 +75,35 @@
 - 颜色映射支持动态切换（ColorMapType枚举：CurrentMap、WindMap、GenericMap、SeaTempMap），通过m_colorMapType成员变量控制
 - 固定间距箭头绘制需添加间距计算的安全防护，避免除零错误
 -可以参考grib插件的相关功能的代码，对本插件的功能的代码进行优化。
+## 论文与数据源（两种主轴提取方法）
+
+| 方法 | 论文 | 本地路径 | 源数据 |
+|---|---|---|---|
+| **Wang2026**<br>流线约束最大流速法<br>（黑潮**上游**：115–132°E / 15–32°N） | Wang et al. 2026, *Scientific Data* 13:915 | `E:\my paper\Wang2026_黑潮轴与边界三维日尺度数据集_流线约束最大流速法_1993-2024东海与吕宋海峡日尺度三维轴线及左右边界\`<br>· `Wang2026_ScientificData_黑潮轴与边界三维日尺度数据集.pdf`<br>· `官方代码_Kuroshio-axis-and-boundaries\`（MATLAB 原版） | **GLORYS12V1** 再分析，1/12°，50 层，1993–2024<br>Copernicus Marine doi 10.48670/moi-00021<br>掩膜用 ETOPO 2022 |
+| **SEAMT**<br>流线集合最小 T 参数法<br>（黑潮**下游**：日本以南 / 延伸体） | Udalov 2026, *Ocean Modelling* 202:102730 | `E:\my paper\Udalov2026_急流核心提取_SEAMT流线集合分析_对流线集合求最小T参数定位黑潮及延伸体射流核\`<br>· `1-s2.0-S1463500326000545-main.pdf`<br>· `_extract_…txt`（英文抽取）、`中文译文_….md`、`核心算法解读_….md` | **CMEMS/AVISO L4** `SEALEVEL_GLO_PHY_L4_MY_008_047`<br>卫星测高地转流速，1/8°，1993–2024 |
+
+**两者适用域不重叠（上游 vs 下游），不要混用。**
+
+| 方法 | 验证状态 |
+|---|---|
+| **SEAMT** | ✅ **已成功**（2026-10-29）：用论文原始数据源（AVISO L4）+ 原始参数，6 个日子复现正文发表数值——核心量 T/L/ū 偏差 **0.06–0.2%**，13 个子射流对上 **11 个**（纬度偏差 ≤0.07°，网格 11.5 km）。见 `docs/SEAMT…md` §15 |
+| **Wang2026** | ⏳ **进行中**（2026-10-29）：与发布数据集比对，整体中位 **1.88 km**（网格 8.5 km），但 B/C 段 42 km 待查。见 `docs/Wang2026主轴移植验证-排查记录.md` |
+
+SEAMT 的方法论与实施修订见 `docs/SEAMT急流核心提取-方法论与实现方案.md`。
+
+**验证用可复现的发表数值**（Udalov 2026 正文给到小数位，可逐位对表）：
+
+| 日期 | 论文发表值 |
+|---|---|
+| 1993-01-01（平直日） | SEAMT T=35.1 d、L=3314 km、ū=1.10 m/s |
+| 1993-07-19（强涡日） | SEAMT T=52.9 d、L=4344 km、ū=1.0 m/s |
+| 1996-06-21 | 4 子射流：30.752°/71.50、30.427°/83.10、30.159°/112.25、30.000°/97.85 |
+| 1996-09-11 | 3 子射流：30.216°/64.00、35.066°/45.80、35.272°/65.55 |
+| 2010-12-24 | 3 子射流：33.749°/37.35、34.134°/60.85、34.173°/57.75 |
+| 2021-11-26 | 3 子射流：32.395°/58.65、37.342°/50.65、37.596°/52.20 |
+
+复现时须用论文原始参数：Γ_in=130°E、Γ_out=160°E、P₀ 带 28–31°N、141 点、Δt=0.03 d。
+
 ## 渲染与着色器约束
 ### GLSL 源码
 - **着色器字符串（`s_vert`/`s_frag`）里只能写 ASCII 注释**。MSVC 按 GBK（代码页 936）读源码：UTF-8 中文字符的尾字节 0x80–0xBF 落在 GBK 次字节范围 0x40–0xFE 内，会把紧随其后的 ASCII 字符（尤其 `\`）并成一个 GBK 双字节字符吞掉，`\n` 转义被毁、字符串边界错乱 → GLSL 语法错误 → 着色器编译失败 → 整屏白屏
@@ -168,6 +199,17 @@
 - **连续猜错两次就该停手改成可二分的开关诊断**。本次定位靠一条观测：硬边在日期变更线且与 `tileX` 无关。用 `sea`/`land`/`fill` 开关二分比反复改代码猜因果快得多
 - `_FillValue = NaNf` 会让缺测判定失效（`x != NaN` 恒为真）。已改为「数据为 NaN 一律缺测；fill 非 NaN 时再比对相等」
 - GSHHG 栅格化两个坑：① level 5/6 是南极（冰架前缘/接地线）不是水；② 多边形经度是 0..360 展开的，必须先沿路径解缠再扫描线，否则跨本初子午线的多边形会被填成覆盖半个地球
+- **任何"取数"路径（提取、诊断）都不得调 `setData(dataChanged=true)`**：它会 `clearCoefficients()` 删掉四层 GPU 纹理，而重建只在 `onTreeSelectionChanged` 的 Phase 2 做 —— 颜色图直接消失。而 Phase 2 会 `swap` 释放 `myMessage.ucurr/vcurr`（数据活在 float 网格里），`hasCurrent()` 恒为假，所以这个分支**每次都会进**。取数只需 `readTimeStepData`，不要动 overlay 状态
+- **`kMPerDegLat` 是米/度**。用它算出的距离是**米**，当公里报会得出"偏移 3004 km"这类不可能的数字。涉及物理量的诊断先核对量纲
+- **收敛性检验必须用超集**：拿"更密但不同格"的采样去对照，指标可能反而变差，检验完全失效。加密集合要用间距减半（`N' = 2·(N−1)+1`）；参数扫描时确认自变量**真的**在变
+- **`read_var_att_text` 必须认 `NC_STRING`**：NetCDF-4 的字符串属性是变长串，`nc_inq_attlen`+`nc_get_att_text` 对它必失败，导致所有 `standard_name` 读不出、只能退到变量名匹配。要按 `nc_inq_atttype` 分流；`nc_get_att_string` 的参数是 `char**`——**调用方分配指针数组**，用完 `nc_free_string`
+- **`nc_get_vara_*` 不做 CF 解包**：只做数值类型转换，**不**应用 `scale_factor`/`add_offset`。GLORYS 的 `uo/vo` 是 int16×0.00061、AVISO 的 `ugos/vgos` 是 int32×0.0001，不解包流速会变成 1300 m/s。缺失判定要在**原始值**上做，解包放在赋值时
+- **Wang2026 的输出是「最大流速脊」不是「流线」**（切向偏离局部流向中位 9.4°），而 SEAMT 的输出**必须是流线**（0.02°）。速度脊可以横切流线保持在最快水上，所以它比任何流线都快、**不可能出现在候选池里**（池里装流线）。Wang2026 的偏差因此必然出在「骨架离速度脊多远」——垂断面校正只有 ±70 km，骨架离脊超过这个距离就只能吸附到局部极大
+- **比对轴线必须用「点到折线垂距」**：参考产品常是定长重采样（如 180 点、点距 10–15 km），「点到点最近距离」有半个点距的**分辨率地板**，会把 1.88 km 抬成 4.13 km 误导结论
+- **整体中位数会掩盖问题，必须分段看**：Wang2026 移植验证整体中位 1.88 km 很漂亮，但分段后 A/E <2 km 而 B/C 42 km
+- **验证移植正确性要先复刻原版行为**，哪怕原版行为物理上不合理（如 MATLAB 把无效格点填 0 让流线穿过陆地）。先证明"与原版一致"，再讨论"原版哪里不合理"，这两件事分开
+- **共用件要用「并列提供」而不是「改语义」**：`UVField` 与 SEAMT 共用（控制变量），复刻 MATLAB 的零填充时没有改 `sample()`，而是**另加 `sampleZeroFill()` + `zeroFillInvalid` 开关**（默认 false）。同理任何共用基础件要加能力，优先加新方法/新开关，别动老方法的语义
+- **自动化测试的请求文件是「一次性地雷」**：`ncdf_seamt_auto.txt` 一旦存在，`ncdf_pi::Init()` 就会在插件加载期建面板跑测试。测试脚本会把它改名 `.done`，但手工跑/中断留下的残留会让**每次启动 OpenCPN 都走这条路径**。排查加载问题前先删它
 
 ## 动画功能（已停用）
 - 流场动画**当前停用**。`ncdf_animate.cpp` 保留源码并在工程里编译（`m_animate` 成员要链接），但取数入口被 `#if 0` 关掉，`ncdf.cpp` 里 `m_animate.Init/ComputeDisplacementMap/Timer.Start` 已注释
@@ -195,7 +237,10 @@
 `ncdfLog` 常驻句柄、同范围不重建陆地图层。`landMaskRow` 有自检（与逐格 `landFracInBox` 逐格比对）。
 
 ## 参考文档
+- `docs/交接文档-2026-10-29-两条主轴算法与自动化测试.md`：**最新**。两条算法的现状与分界、自动化测试用法与机制、诊断开关、零速格填充的实现、待办、**OpenCPN 加载卡死的排查线索**
 - `docs/交接文档-黑潮主轴与陆海掩膜.md`：黑潮主轴提取算法（Wang2026 流线约束最大流速法）与 GSHHG 陆海掩膜的完整设计、`.landmask.bin` 文件格式、构建部署流程、以及**已回退改动清单**（动手前先看，避免重蹈覆辙）
 - `docs/交接文档-渲染性能优化与结构整理.md`：性能基线（回归对比用）、模块划分、本轮修掉的三个 bug、踩坑清单、诊断工具用法、遗留问题
+- `docs/SEAMT急流核心提取-方法论与实现方案.md`：SEAMT（Udalov2026 最小 T 参数法）的完整方法论、**实施后修订（§12，含被实测推翻的参数）**、自动化测试用法与回归基线（§13）、踩坑汇总（§14）、**验证结果（§15，已成功）**。与 Wang2026 适用域不重叠（上游 vs 下游），**不要混用**
+- `docs/Wang2026主轴移植验证-排查记录.md`：Wang2026 移植正确性验证（进行中）。含发布数据集结构、5 天比对结果与分段分析、**「输出是速度脊不是流线」的关键认知**、8 条假设的排查链、诊断开关（`kuroThreads`/`kuroCap`/`kuroDbg`/`kuroAvgZero`/`kuroAlpha1000`）
 
 - koa-connect wrapper caused ctx leaks, so native rewrite is required

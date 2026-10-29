@@ -28,6 +28,8 @@
 #include <wx/file.h>
 #include <wx/filedlg.h>
 #include <wx/filename.h>
+#include <wx/ffile.h>
+#include "ncdf_uvfield.h"
 #include <wx/busyinfo.h>
 #include <cmath>
 
@@ -248,7 +250,14 @@ void MainDialog::setPlugIn(ncdf_pi *p)
 {
   this->pPlugIn = p;
   this->m_textCtrlDir->SetValue(pPlugIn->m_ncdf_dir);
-  fillDirTree(pPlugIn->m_ncdf_dir, true, 0);
+  // 自动化测试时跳过目录树扫描：addChildren 要读每个 nc 的元数据，
+  // 目录里有大文件（如 130 MB 的年度数据集）时会拖慢到把自动测试挤到超时。
+  // 自动测试直接 switchToFile 指定路径，用不到树。
+  if (wxFileExists(_T("C:\\ProgramData\\opencpn\\ncdf_seamt_auto.txt"))) {
+      ncdfLog("[seamtauto] request file present -> skipping fillDirTree\n");
+  } else {
+      fillDirTree(pPlugIn->m_ncdf_dir, true, 0);
+  }
   m_checkBoxDCurrent->SetValue(pPlugIn->m_bShowCurrentDir);
   m_checkBoxBmpCurrentForce->SetValue(pPlugIn->m_bShowCurrentForce);
   m_checkBoxParticles->SetValue(pPlugIn->m_bShowParticles);
@@ -274,6 +283,18 @@ void MainDialog::setPlugIn(ncdf_pi *p)
   m_choiceFeatROI->SetSelection(pPlugIn->m_iFeatROIType);
   m_checkBoxKuroshioShow->SetValue(pPlugIn->m_bShowKuroshio);
   m_checkBoxKuroshioBdy->SetValue(pPlugIn->m_bShowKuroshioBdy);
+  // SEAMT：显示开关与研究域参数都从配置恢复（memory 规则：设置必须跨重启持久化）
+  m_checkBoxSeamtShow->SetValue(pPlugIn->m_bShowSeamt);
+  m_checkBoxSeamtSubjets->SetValue(pPlugIn->m_bShowSeamtSubjets);
+  m_choiceSeamtPreset->SetSelection(pPlugIn->m_iSeamtPreset);
+  m_textSeamtLonIn->SetValue(wxString::Format(_T("%.2f"), pPlugIn->m_seamtLonIn));
+  m_textSeamtLonOut->SetValue(wxString::Format(_T("%.2f"), pPlugIn->m_seamtLonOut));
+  m_textSeamtNpts->SetValue(wxString::Format(_T("%d"), pPlugIn->m_seamtNpts));
+  m_textSeamtHalfWidth->SetValue(wxString::Format(_T("%.2f"), pPlugIn->m_seamtHalfWidth));
+  // 研究域纬度 / P0 带跟随预设；选"自定义"时沿用当前 m_seamt.params（默认日本以南）
+  if (pPlugIn->m_iSeamtPreset == 0 || pPlugIn->m_iSeamtPreset == 1)
+      applySeamtPreset(pPlugIn->m_iSeamtPreset);
+  syncSeamtParamsFromUi();
   m_textFeatLatMin->SetValue(wxString::Format(_T("%.2f"), pPlugIn->m_featROILatMin));
   m_textFeatLatMax->SetValue(wxString::Format(_T("%.2f"), pPlugIn->m_featROILatMax));
   m_textFeatLonMin->SetValue(wxString::Format(_T("%.2f"), pPlugIn->m_featROILonMin));
@@ -282,6 +303,10 @@ void MainDialog::setPlugIn(ncdf_pi *p)
   if (pPlugIn) pPlugIn->loadLandMaskFiles(false);
   updateLandMaskStatus();
   syncFeatureEngine();
+
+  // 自动化测试：启动时发现请求文件就自动跑一遍 SEAMT + 全套自检。
+  // 用 CallAfter 等构造完全结束再跑，避免 switchToFile 碰到未就绪的渲染状态。
+  CallAfter(&MainDialog::maybeRunSeamtAutoTest);
 }
 
 void MainDialog::SetCursorLatLon(double lat, double lon)
@@ -521,6 +546,7 @@ void MainDialog::readData(wxTreeItemId itemId) {
 	
 	m_lastSelectedTimeIndex = idx;
 	m_kuroshioResult.clear();   // 黑潮主轴针对特定时间步，切换后作废
+	m_seamtResult.clear();      // SEAMT 同理：冻结场换了，集合比选结果作废
 	// 掩膜按"当前文件覆盖 ∩ 黑潮流区"按需载入（不重复读已覆盖的范围）
 	ensureLandMaskForCurrentFile(myDataVector[idx]);
 
@@ -602,6 +628,12 @@ void MainDialog::onDirChanged(wxCommandEvent& event)
 	wxString std = std_path.GetDocumentsDir();
 
 	if(this->m_textCtrlDir->GetValue().length() != 0 && pPlugIn->m_ncdf_dir != std_path.GetDocumentsDir()){
+		// 自动化测试期间不扫目录树（大文件会让 addChildren 拖慢到超时）。
+		// setPlugIn 里的 SetValue 会触发本事件，所以这里也必须挡。
+	    if (wxFileExists(_T("C:\\ProgramData\\opencpn\\ncdf_seamt_auto.txt"))) {
+	        ncdfLog("[seamtauto] request file present -> onDirChanged skips fillDirTree\n");
+	        return;
+	    }
 	    ncdfLog("[ncdf] onDirChanged: calling fillDirTree\n");
 		fillDirTree(this->m_textCtrlDir->GetValue(), true, 0);
 	    ncdfLog("[ncdf] onDirChanged: fillDirTree returned\n");
@@ -1612,25 +1644,21 @@ bool MainDialog::runKuroshioExtract()
 	}
 
 	// 提取必须有 U/V：置标志让 readTimeStepData 无论如何都读入流场
-	// （否则“显示流速”未勾选时 ucurr 为空，提取会误报无数据）
 	m_kuroshioNeedUV = true;
 
-	// 需要当前时间步的 U/V；缺失时按特征刷新的 phase-3 模式补读
 	if (!myMessage.hasCurrent()) {
 		if (m_lastSelectedTimeIndex < 0) {
 			m_textCtrlFeatReadout->SetValue(wxString::FromUTF8("请先在左侧目录树选择一个时间步"));
 			return false;
 		}
-		ncdfOverlayFactory *pof = pPlugIn ? pPlugIn->GetncdfOverlayFactory() : NULL;
-		if (pof) pof->m_bReadyToRender = false;
-		bool rd = readTimeStepData(myMessage);
-		if (pof && rd) {
-			pof->setData(this, pPlugIn, myMessage, myMessage.numberOfPoints,
-			             myMessage.firstGridPointLat, myMessage.firstGridPointLong,
-			             myMessage.lastGridPointLat, myMessage.lastGridPointLong);
-		}
-		if (pof) pof->m_bReadyToRender = true;
-		if (!rd || !myMessage.hasCurrent()) {
+		// 【只读 U/V，绝不碰颜色图】
+		// 这里原先调 setData()，而 dataChanged 默认 true -> clearCoefficients()
+		// 删掉四层 GPU 纹理、gridReady=false；重建只在 onTreeSelectionChanged 的
+		// Phase 2 做，提取路径不走那里，于是颜色图直接消失（2026-10-29 实测）。
+		// 而且 Phase 2 会把 myMessage.ucurr/vcurr swap 释放（数据活在 float 网格里），
+		// hasCurrent() 因此恒为假 —— 这个分支**每次点提取都会进**。
+		// 也不动 m_bReadyToRender：提取期间渲染该继续用已有的 float 网格。
+		if (!readTimeStepData(myMessage) || !myMessage.hasCurrent()) {
 			m_textCtrlFeatReadout->SetValue(wxString::FromUTF8("当前文件/时间步没有可用的 U/V 流场"));
 			return false;
 		}
@@ -1652,6 +1680,7 @@ bool MainDialog::runKuroshioExtract()
 	m_textCtrlFeatReadout->SetValue(m_kuroshioResult.message);
 	ncdfLog("[kuro] runKuroshioExtract: ok=%d %s\n", (int)m_kuroshioResult.ok,
 	        (const char*)m_kuroshioResult.message.mb_str(wxConvUTF8));
+	releaseRawUv();                 // 归还提取用的双精度内存，颜色图不受影响
 	RequestRefresh(m_parent);
 	return m_kuroshioResult.ok;
 }
@@ -1727,6 +1756,522 @@ bool MainDialog::exportKuroshioCsv()
 	m_textCtrlFeatReadout->SetValue(
 		wxString::FromUTF8("已导出 ") << (int)N << wxString::FromUTF8(" 点到\n") << dlg.GetPath());
 	return true;
+}
+
+// ===========================================================================
+// SEAMT 急流核心提取（流线集合分析求最小 T 参数，Udalov2026）
+// 适用域是黑潮**下游**（日本以南 / 延伸体），与上面的 Wang2026（上游）不混用。
+// ===========================================================================
+void MainDialog::applySeamtPreset(int which)
+{
+	if (which < 0 || which > 1) return;   // 2 = 自定义，不动框
+	SeamtParams p;
+	if (which == 0) SeamtParams::presetJapanSouth(p);
+	else            SeamtParams::presetPaperDomain(p);
+
+	m_textSeamtLonIn->SetValue(wxString::Format(_T("%.2f"), p.lonIn));
+	m_textSeamtLonOut->SetValue(wxString::Format(_T("%.2f"), p.lonOut));
+	// 研究域纬度与 P0 搜索带跟随预设（本期不开放到 UI）
+	m_seamt.params.latDomMin = p.latDomMin;
+	m_seamt.params.latDomMax = p.latDomMax;
+	m_seamt.params.latP0Min  = p.latP0Min;
+	m_seamt.params.latP0Max  = p.latP0Max;
+}
+
+void MainDialog::syncSeamtParamsFromUi()
+{
+	double v = 0.0;
+	if (m_textSeamtLonIn->GetValue().ToDouble(&v))     m_seamt.params.lonIn = v;
+	if (m_textSeamtLonOut->GetValue().ToDouble(&v))    m_seamt.params.lonOut = v;
+	if (m_textSeamtHalfWidth->GetValue().ToDouble(&v)) m_seamt.params.halfWidthDeg = v;
+	long n = 0;
+	if (m_textSeamtNpts->GetValue().ToLong(&n))        m_seamt.params.nPts = (int)n;
+	m_seamt.params.normalize();
+	// 同步到插件配置，SaveConfig 时落盘（memory 规则：设置必须跨重启持久化）
+	if (pPlugIn) {
+		pPlugIn->m_seamtLonIn     = m_seamt.params.lonIn;
+		pPlugIn->m_seamtLonOut    = m_seamt.params.lonOut;
+		pPlugIn->m_seamtNpts      = m_seamt.params.nPts;
+		pPlugIn->m_seamtHalfWidth = m_seamt.params.halfWidthDeg;
+	}
+}
+
+void MainDialog::onSeamtPresetChoice(wxCommandEvent& event)
+{
+	int sel = m_choiceSeamtPreset->GetSelection();
+	applySeamtPreset(sel);
+	syncSeamtParamsFromUi();
+	if (pPlugIn) pPlugIn->m_iSeamtPreset = sel;
+	m_seamtResult.clear();          // 域变了，旧结果作废
+	RequestRefresh(m_parent);
+	event.Skip();
+}
+
+void MainDialog::onSeamtParamChanged(wxCommandEvent& event)
+{
+	syncSeamtParamsFromUi();
+	m_choiceSeamtPreset->SetSelection(2);   // 手改参数即视为自定义
+	m_seamtResult.clear();
+	RequestRefresh(m_parent);
+	event.Skip();
+}
+
+void MainDialog::onSeamtExtractClick(wxCommandEvent& event)
+{
+	runSeamtExtract();
+	releaseRawUv();     // runSeamtExtract 自己不释放：自动测试要用它做多次对照
+	RequestRefresh(m_parent);
+}
+void MainDialog::onSeamtExportClick(wxCommandEvent& event)  { exportSeamtCsv(); }
+
+void MainDialog::onSeamtShowClick(wxCommandEvent& event)
+{
+	pPlugIn->m_bShowSeamt = m_checkBoxSeamtShow->GetValue();
+	RequestRefresh(m_parent);
+	event.Skip();
+}
+
+void MainDialog::onSeamtSubjetsClick(wxCommandEvent& event)
+{
+	pPlugIn->m_bShowSeamtSubjets = m_checkBoxSeamtSubjets->GetValue();
+	RequestRefresh(m_parent);
+	event.Skip();
+}
+
+bool MainDialog::runSeamtExtract()
+{
+	ncdfLog("[seamt] runSeamtExtract: start\n");
+	if (m_isLoading) {
+		m_textCtrlFeatReadout->SetValue(wxString::FromUTF8("正在加载数据，请稍候再提取"));
+		return false;
+	}
+
+	// 提取必须有 U/V：置标志让 readTimeStepData 无论如何都读入流场
+	m_kuroshioNeedUV = true;
+
+	if (!myMessage.hasCurrent()) {
+		if (m_lastSelectedTimeIndex < 0) {
+			m_textCtrlFeatReadout->SetValue(wxString::FromUTF8("请先在左侧目录树选择一个时间步"));
+			return false;
+		}
+		// 【只读 U/V，绝不碰颜色图】理由同 runKuroshioExtract：
+		// setData(dataChanged=true) 会 clearCoefficients() 删掉四层 GPU 纹理，
+		// 而重建只在 onTreeSelectionChanged 的 Phase 2 做 —— 颜色图会直接消失。
+		if (!readTimeStepData(myMessage) || !myMessage.hasCurrent()) {
+			m_textCtrlFeatReadout->SetValue(wxString::FromUTF8("当前文件/时间步没有可用的 U/V 流场"));
+			return false;
+		}
+	}
+
+	syncSeamtParamsFromUi();
+	m_seamt.setLandMask((pPlugIn && pPlugIn->m_landMask.valid()) ? &pPlugIn->m_landMask : NULL);
+
+	// 先算进局部结果，算完再整体替换：期间重绘不应看到空结果
+	SeamtResult fresh;
+	{
+		wxBusyCursor busy;
+		wxBusyInfo info(wxString::FromUTF8("正在提取急流核心（SEAMT 最小 T 参数法）…"));
+		m_seamt.extract(myMessage, fresh);
+	}
+	m_seamtResult = fresh;
+
+	m_textCtrlFeatReadout->SetValue(m_seamtResult.message);
+	ncdfLog("[seamt] runSeamtExtract: ok=%d %s\n", (int)m_seamtResult.ok,
+	        (const char*)m_seamtResult.message.mb_str(wxConvUTF8));
+	// 颜色图状态自检：提取**不应**改变 overlay 的就绪状态。
+	// 若这里出现 ready=0 或 dataReady 掉 0，说明提取又动了颜色图（回归）。
+	{
+		ncdfOverlayFactory *pof = pPlugIn ? pPlugIn->GetncdfOverlayFactory() : NULL;
+		if (pof) ncdfLog("[seamt] overlay after extract: ready=%d curr=%d sst=%d sal=%d zos=%d\n",
+		        (int)pof->m_bReadyToRender,
+		        (int)pof->m_currentOverlay.dataReady, (int)pof->m_seaTempOverlay.dataReady,
+		        (int)pof->m_salinityOverlay.dataReady, (int)pof->m_zosOverlay.dataReady);
+	}
+	RequestRefresh(m_parent);
+	return m_seamtResult.ok;
+}
+
+bool MainDialog::exportSeamtCsv()
+{
+	if (m_seamtResult.tCurve.empty() && m_seamtResult.core.empty()) {
+		wxMessageBox(wxString::FromUTF8("尚无提取结果，请先点击“提取核心”。"),
+		             wxString::FromUTF8("导出 SEAMT 急流核心"), wxOK | wxICON_INFORMATION, this);
+		return false;
+	}
+
+	wxString defName = wxString::Format(_T("seamt_core_%s.csv"),
+		(myMessage.dataDateTime.IsValid()
+			? myMessage.dataDateTime.Format(_T("%Y%m%d_%H%M"))
+			: wxString::Format(_T("t%d"), myMessage.timeIndex)));
+	wxFileDialog dlg(this, wxString::FromUTF8("导出 SEAMT 急流核心结果"),
+	                 wxEmptyString, defName, _T("CSV files (*.csv)|*.csv|All files (*.*)|*.*"),
+	                 wxFD_SAVE | wxFD_OVERWRITE_PROMPT);
+	if (dlg.ShowModal() != wxID_OK) return false;
+
+	wxFile fout(dlg.GetPath(), wxFile::write);
+	if (!fout.IsOpened()) {
+		wxMessageBox(wxString::FromUTF8("无法写入文件：") + dlg.GetPath(),
+		             wxString::FromUTF8("导出 SEAMT 急流核心"), wxOK | wxICON_ERROR, this);
+		return false;
+	}
+
+	const SeamtParams &p = m_seamt.params;
+	const SeamtResult &r = m_seamtResult;
+	wxString head;
+	head += _T("# SEAMT jet core -- streamline ensemble analysis for minimum T-parameter\n");
+	head += _T("# Udalov (2026) Ocean Modelling 202, 102730, ncdf_pi extraction\n");
+	head += _T("# source_file,") + myMessage.fileName + _T("\n");
+	head += wxString::Format(_T("# time,%s\n"),
+		(myMessage.dataDateTime.IsValid()
+			? myMessage.dataDateTime.Format(_T("%Y-%m-%d %H:%M:%S"))
+			: wxString::Format(_T("index %d"), myMessage.timeIndex)));
+	head += wxString::Format(_T("# domain,gin=%.4f,gout=%.4f,p0band=%.3f,%.3f,latdom=%.3f,%.3f\n"),
+		p.lonIn, p.lonOut, p.latP0Min, p.latP0Max, p.latDomMin, p.latDomMax);
+	head += wxString::Format(_T("# params,npts=%d,halfwidth=%.3f,dt=%.6fd,nmax=%d,cfl=%.3f\n"),
+		p.nPts, p.halfWidthDeg, r.dtDays,
+		(int)std::ceil(300.0 / (r.dtDays > 1e-9 ? r.dtDays : 0.03)), r.cfl);
+	head += _T("# integrator,RK4 + bilinear, fixed time step\n");
+	head += wxString::Format(_T("# stats,T=%.4fd,L=%.2fkm,ubar=%.4fm/s,G=%d/%d,latIn=%.4f,latOut=%.4f,varLatOut=%.5f\n"),
+		r.minT, r.lengthKm, r.meanSpeed, r.nSuccess, r.nTotal, r.latIn, r.latOut, r.varLatOut);
+	head += wxString::Format(_T("# tcheck,rel_diff=%.4f%%\n"), r.tHavCheck * 100.0);
+	head += wxString::Format(_T("# reasons,EXIT=%d OUTDOMAIN=%d AGROUND=%d MAXSTEP=%d\n"),
+		r.reasonCount[SEAMT_EXIT], r.reasonCount[SEAMT_OUTDOMAIN],
+		r.reasonCount[SEAMT_AGROUND], r.reasonCount[SEAMT_MAXSTEP]);
+	head += wxString::Format(_T("# subjets,n=%u\n"), (unsigned)r.subjets.size());
+	head += _T("# NOTE,T is a formal line integral, NOT a transit time. Values are NOT comparable across domains.\n");
+	fout.Write(head);
+
+	// 核心线
+	fout.Write(_T("[core]\nlon,lat\n"));
+	size_t nCore = r.core.size() / 2;
+	for (size_t i = 0; i < nCore; i++) {
+		fout.Write(wxString::Format(_T("%.6f,%.6f\n"), r.core[2 * i], r.core[2 * i + 1]));
+	}
+
+	// T(φ_out) 表
+	fout.Write(_T("[tcurve]\nlatOut,T_days,nSteps,reason\n"));
+	size_t nRows = r.tCurve.size() / 4;
+	for (size_t i = 0; i < nRows; i++) {
+		fout.Write(wxString::Format(_T("%.6f,%.4f,%d,%d\n"),
+			r.tCurve[4 * i], r.tCurve[4 * i + 1],
+			(int)r.tCurve[4 * i + 2], (int)r.tCurve[4 * i + 3]));
+	}
+
+	// 子射流
+	fout.Write(_T("[subjets]\nlatOut,T_days,isPrimary\n"));
+	for (size_t i = 0; i < r.subjets.size(); i++) {
+		bool primary = (nCore > 0 && std::fabs(r.subjets[i].latOut - r.latOut) < 1.0e-6);
+		fout.Write(wxString::Format(_T("%.6f,%.4f,%d\n"),
+			r.subjets[i].latOut, r.subjets[i].TDays, primary ? 1 : 0));
+	}
+	fout.Close();
+
+	m_textCtrlFeatReadout->SetValue(
+		wxString::FromUTF8("已导出 ") << (int)nCore << wxString::FromUTF8(" 点到\n") << dlg.GetPath());
+	return true;
+}
+
+// ===========================================================================
+// SEAMT 自动化测试入口
+//
+// 触发：启动时若存在 C:\ProgramData\opencpn\ncdf_seamt_auto.txt，就自动
+//       「加载文件 -> 读时间步 -> 跑 SEAMT -> 跑全套自检 -> 写结果文件」。
+// 目的：把"手动点界面看日志"的往返压成「写请求文件 -> 启动 OpenCPN -> 读结果」，
+//       改算法后一条命令就能回归。
+//
+// 请求文件（一行一个 key=value，# 开头为注释）：
+//   file=E:\nc1\海流1.nc     必填
+//   time=0                   时间步下标，默认 0
+//   lonin=131.0 lonout=142.0 npts=141 halfwidth=0.70   可选
+//
+// 结果写 ncdf_seamt_auto_result.txt；请求文件改名 .done，防止重复触发。
+// ===========================================================================
+void MainDialog::maybeRunSeamtAutoTest()
+{
+	static const wxChar *kReq = _T("C:\\ProgramData\\opencpn\\ncdf_seamt_auto.txt");
+	if (!wxFileExists(kReq)) return;
+	runSeamtAutoTest(kReq);
+}
+
+void MainDialog::runSeamtAutoTest(const wxString &reqPath)
+{
+	static const wxChar *kRes = _T("C:\\ProgramData\\opencpn\\ncdf_seamt_auto_result.txt");
+	ncdfLog("[seamtauto] ===== auto test start =====\n");
+
+	// ---- 解析请求文件 ----
+	wxString srcFile;
+	int timeIdx = 0;
+	wxString mode = _T("seamt");      // seamt | kuro
+	SeamtParams prm;
+	SeamtParams::presetJapanSouth(prm);
+
+	{
+		wxFFile f(reqPath, _T("r"));
+		if (!f.IsOpened()) {
+			ncdfLog("[seamtauto] FAIL: cannot open request %s\n",
+			        (const char*)reqPath.mb_str(wxConvUTF8));
+			return;
+		}
+		wxString content;
+		f.ReadAll(&content);
+		f.Close();
+
+		for (size_t pos = 0; pos < content.length(); ) {
+			size_t nl = content.find(_T('\n'), pos);
+			wxString ln = (nl == wxString::npos)
+			            ? content.Mid(pos) : content.Mid(pos, nl - pos);
+			pos = (nl == wxString::npos) ? content.length() : nl + 1;
+			ln.Trim(true).Trim(false);
+			if (ln.IsEmpty() || ln.StartsWith(_T("#"))) continue;
+			int eq = ln.Find(_T('='));
+			if (eq == wxNOT_FOUND) continue;
+			wxString key = ln.Left(eq).Trim(true).Lower();
+			wxString val = ln.Mid(eq + 1).Trim(true).Trim(false);
+
+			if      (key == _T("file"))      srcFile = val;
+			else if (key == _T("mode"))      mode = val.Lower();
+			else if (key == _T("time"))      timeIdx = wxAtoi(val);
+			else if (key == _T("lonin"))     prm.lonIn = wxAtof(val);
+			else if (key == _T("lonout"))    prm.lonOut = wxAtof(val);
+			else if (key == _T("npts"))      prm.nPts = wxAtoi(val);
+			else if (key == _T("halfwidth")) prm.halfWidthDeg = wxAtof(val);
+			else if (key == _T("dt"))        prm.dtDays = wxAtof(val);   // <=0 = 自动
+			else if (key == _T("latdomin"))  prm.latDomMin = wxAtof(val);
+			else if (key == _T("latdommax")) prm.latDomMax = wxAtof(val);
+			else if (key == _T("p0min"))     prm.latP0Min = wxAtof(val);
+			else if (key == _T("p0max"))     prm.latP0Max = wxAtof(val);
+		}
+	}
+
+	if (srcFile.IsEmpty()) {
+		ncdfLog("[seamtauto] FAIL: request has no file= entry\n");
+		return;
+	}
+	ncdfLog("[seamtauto] file=%s time=%d lonin=%.3f lonout=%.3f npts=%d halfwidth=%.3f dt=%.6f latdom=%.2f..%.2f\n",
+	        (const char*)srcFile.mb_str(wxConvUTF8), timeIdx,
+	        prm.lonIn, prm.lonOut, prm.nPts, prm.halfWidthDeg, prm.dtDays,
+	        prm.latDomMin, prm.latDomMax);
+
+	// ---- 加载文件 + 时间步 ----
+	{
+		wxBusyCursor busy;
+		wxString fn = wxFileName(srcFile).GetFullName();
+		int idx = timeIdx;
+		if (!switchToFile(srcFile, fn, idx)) {
+			ncdfLog("[seamtauto] FAIL: switchToFile failed\n");
+			return;
+		}
+		if (idx < 0 || idx >= (int)myDataVector.size()) idx = 0;
+		m_lastSelectedTimeIndex = idx;
+
+		// 【关键】把元数据灌进 myMessage。readTimeStepData 的契约是"入参已带坐标 /
+		// 文件名 / 时间下标，只负责读 U/V"；不灌的话它会以 latValues 为 NULL 直接失败。
+		// 正常流程在 onTreeSelectionChanged 的 Phase 1 做同一件事。
+		// 此处 myDataVector[idx] 只有元数据（数据数组为空），复制是廉价的，
+		// sharedCoords 走 shared_ptr，坐标数组不重复分配。
+		myMessage = myDataVector[idx];
+	}
+
+	// ---- mode=kuro：跑 Wang2026 流线约束最大流速法（用于提速回归 / 与数据集比对）----
+	if (mode == _T("kuro")) {
+		{
+			wxBusyCursor busy;
+			m_kuroshioNeedUV = true;
+			runKuroshioExtract();
+		}
+		releaseRawUv();
+		FILE *rf = _wfopen(kRes, L"w");
+		if (rf) {
+			const KuroshioAxisResult &k = m_kuroshioResult;
+			fprintf(rf, "Wang2026 (streamline-constrained max velocity) auto test report\n");
+			fprintf(rf, "file,%s\n", (const char*)srcFile.mb_str(wxConvUTF8));
+			fprintf(rf, "time_index,%d\n\n[result]\n", m_lastSelectedTimeIndex);
+			fprintf(rf, "ok,%d\n", (int)k.ok);
+			fprintf(rf, "n_axis,%d\n", k.nAxis);
+			fprintf(rf, "length_km,%.2f\n", k.lengthKm);
+			fprintf(rf, "mean_speed_ms,%.4f\n", k.meanSpeed);
+			fprintf(rf, "max_speed_ms,%.4f\n", k.maxSpeed);
+			fprintf(rf, "segments,");
+			for (int s = 0; s < 5; s++) fprintf(rf, "%s%d", s ? " " : "", k.segFound[s]);
+			fprintf(rf, "\nelapsed_ms,%.0f\n", k.elapsedMs);
+			fprintf(rf, "\n[core]\nlon,lat\n");
+			for (size_t i = 0; i + 1 < k.axis.size(); i += 2)
+				fprintf(rf, "%.6f,%.6f\n", k.axis[i], k.axis[i + 1]);
+			fclose(rf);
+		}
+		ncdfLog("[seamtauto] kuro report written: %s\n", (const char*)wxString(kRes).mb_str());
+		ncdfLog("[seamtauto] ===== auto test done =====\n");
+		wxRenameFile(reqPath, reqPath + _T(".done"), true);
+		return;
+	}
+
+	// 参数既写进 UI 框（runSeamtExtract 会从框里同步），也直接写进 m_seamt.params
+	// （研究域纬度 / P0 带不在 UI 上）
+	m_textSeamtLonIn->SetValue(wxString::Format(_T("%.3f"), prm.lonIn));
+	m_textSeamtLonOut->SetValue(wxString::Format(_T("%.3f"), prm.lonOut));
+	m_textSeamtNpts->SetValue(wxString::Format(_T("%d"), prm.nPts));
+	m_textSeamtHalfWidth->SetValue(wxString::Format(_T("%.3f"), prm.halfWidthDeg));
+	m_seamt.params = prm;
+
+	// ---- 主运行 ----
+	// 必须走 runSeamtExtract()：它会在 U/V 未加载时先调 readTimeStepData，
+	// 还会带上掩膜设置。直接调 m_seamt.extract() 会拿到空的 myMessage。
+	SeamtResult base;
+	{
+		wxBusyCursor busy;
+		syncSeamtParamsFromUi();
+		runSeamtExtract();
+	}
+	base = m_seamtResult;
+
+	// ---- 自检（docs/SEAMT… §8.1）----
+	// [1] 切向一致性：核心线必须是流线
+	double tangDeg = seamtTangentCheck(myMessage, base.core);
+
+	// [3] 步长收敛：Δt/2 重算，核心线移动应 < 1 网格距
+	SeamtResult halfDt;
+	double distHalfDt = -1.0;
+	if (base.ok) {
+		SeamtParams saved = m_seamt.params;
+		m_seamt.params.dtDays = base.dtDays * 0.5;
+		m_seamt.extract(myMessage, halfDt);
+		m_seamt.params = saved;
+		distHalfDt = seamtCoreDistance(base.core, halfDt.core);
+	}
+
+	// [5] 集合收敛：**必须用基线集合的超集**，即间距减半
+	//   nPts' = 2*(nPts-1)+1。这样 min-T 只能降不能升，检验才有意义。
+	//   （2026-10-29 踩过：用 nPts=201 时间距 0.007°，种子集不是 141 点的超集，
+	//     恰好错过最优起点所在的窄带，min-T 反而从 11.68 跳到 33.39，检验失效。）
+	SeamtResult densEns;
+	double distEns = -1.0;
+	int densN = 2 * (m_seamt.params.nPts - 1) + 1;
+	if (base.ok) {
+		SeamtParams saved = m_seamt.params;
+		m_seamt.params.nPts = densN;
+		m_seamt.extract(myMessage, densEns);
+		m_seamt.params = saved;
+		distEns = seamtCoreDistance(base.core, densEns.core);
+	}
+	releaseRawUv();     // 所有对照跑完才释放（tangent/halfDt/densEns 都要用 U/V）
+
+	// [6] 度量对称：haversine 正反算应一致
+	double metricRel = -1.0;
+	if (base.core.size() >= 8) {
+		size_t n = base.core.size() / 2;
+		double d1 = haversineKm(base.core[0], base.core[1],
+		                        base.core[2 * (n - 1)], base.core[2 * (n - 1) + 1]);
+		double d2 = haversineKm(base.core[2 * (n - 1)], base.core[2 * (n - 1) + 1],
+		                        base.core[0], base.core[1]);
+		metricRel = (d1 > 1.0e-9) ? std::fabs(d1 - d2) / d1 : 0.0;
+	}
+	double gRatio = base.nTotal ? (double)base.nSuccess / (double)base.nTotal : -1.0;
+
+	// ---- 写结果 ----
+	FILE *rf = _wfopen(kRes, L"w");
+	if (!rf) {
+		ncdfLog("[seamtauto] FAIL: cannot write %s\n", (const char*)wxString(kRes).mb_str());
+		return;
+	}
+	fprintf(rf, "SEAMT auto test report\n");
+	fprintf(rf, "file,%s\n", (const char*)srcFile.mb_str(wxConvUTF8));
+	fprintf(rf, "time_index,%d\n", m_lastSelectedTimeIndex);
+	fprintf(rf, "domain,gin=%.4f,gout=%.4f,latdom=%.3f,%.3f,p0band=%.3f,%.3f\n",
+	        m_seamt.params.lonIn, m_seamt.params.lonOut,
+	        m_seamt.params.latDomMin, m_seamt.params.latDomMax,
+	        m_seamt.params.latP0Min, m_seamt.params.latP0Max);
+	fprintf(rf, "params,npts=%d,halfwidth=%.3f,dt=%.6fd,cfl=%.3f\n",
+	        m_seamt.params.nPts, m_seamt.params.halfWidthDeg, base.dtDays, base.cfl);
+	fprintf(rf, "\n[result]\n");
+	fprintf(rf, "ok,%d\n", (int)base.ok);
+	fprintf(rf, "T_days,%.4f\n", base.minT);
+	fprintf(rf, "length_km,%.2f\n", base.lengthKm);
+	fprintf(rf, "mean_speed_ms,%.4f\n", base.meanSpeed);
+	fprintf(rf, "lat_in,%.4f\n", base.latIn);
+	fprintf(rf, "lat_out,%.4f\n", base.latOut);
+	fprintf(rf, "var_lat_out,%.6f\n", base.varLatOut);
+	fprintf(rf, "G,%d/%d\n", base.nSuccess, base.nTotal);
+	fprintf(rf, "reasons,EXIT=%d OUTDOMAIN=%d AGROUND=%d MAXSTEP=%d\n",
+	        base.reasonCount[SEAMT_EXIT], base.reasonCount[SEAMT_OUTDOMAIN],
+	        base.reasonCount[SEAMT_AGROUND], base.reasonCount[SEAMT_MAXSTEP]);
+	fprintf(rf, "subjets,%u\n", (unsigned)base.subjets.size());
+	fprintf(rf, "near_miss,%d   # >0 = domain boundary is clipping the flow\n", base.nNearMiss);
+	fprintf(rf, "elapsed_ms,%.1f\n", base.elapsedMs);
+
+	fprintf(rf, "\n[checks]  (see docs/SEAMT  8.1 for the thresholds)\n");
+	fprintf(rf, "1_tangent_deg,%.4f              # expect <5   core must be a streamline\n", tangDeg);
+	fprintf(rf, "2_t_hav_rel_pct,%.4f            # expect <1%%  T=sum(dt) vs sum(ds/|u|)\n", base.tHavCheck * 100.0);
+	fprintf(rf, "3_halfdt_dist_km,%.4f           # expect <1 grid  step-size convergence\n", distHalfDt);
+	fprintf(rf, "5_dense_dist_km,%.4f          # expect small   ensemble convergence (superset)\n", distEns);
+	fprintf(rf, "5b_dense_npts,%d\n", densN);
+	fprintf(rf, "5c_dense_T_days,%.4f          # should be <= T_days\n", densEns.minT);
+	fprintf(rf, "6_metric_rel_pct,%.6f           # expect <0.1%%  haversine symmetric\n", metricRel * 100.0);
+	// [7] 集合健康。**不用 G/总数 做通过判据**：G 由流场决定，不是撒点决定的。
+	// 实测四种集合宽度下 G 只随种子数线性增长（9/141、16/281、23/421、32/561），
+	// 原来的 ">0.5" 阈值是拍脑袋定的，恒不满足也说明不了问题。
+	// 真正有意义的是 |G| 够不够画 T(φ_out) 并检出局部极小。
+	fprintf(rf, "7_g_count,%d                    # expect >=5     need enough points for T(phi_out) minima\n", base.nSuccess);
+	fprintf(rf, "7b_g_ratio,%.4f                 # info only -- G is flow-determined, not a pass/fail\n", gRatio);
+	fprintf(rf, "dx_min_km,%.3f                  # expect <30     resolution floor\n", base.dxMinKm);
+	fprintf(rf, "8_axisfit_ratio_avg,%.4f        # <1.0 = core is off the speed ridge\n", base.axisFit.ratioAvg);
+	fprintf(rf, "8_axisfit_ratio_min,%.4f\n", base.axisFit.ratioMin);
+	fprintf(rf, "8_axisfit_offset_signed_km,%.2f # ~0 and +-mixed = meander cutting (by design);\n", base.axisFit.offsetSignedKm);
+	fprintf(rf, "8_axisfit_offset_abs_km,%.2f    #  consistently one side = one-sided ensemble (bug)\n", base.axisFit.offsetAbsKm);
+
+	fprintf(rf, "\n[axisfit]  lat,core_over_max_speed,signed_offset_km,core_turn_deg,ridge_turn_deg\n");
+	for (size_t i = 0; i + 4 < base.axisFit.profile.size(); i += 5)
+		fprintf(rf, "%.4f,%.4f,%.2f,%.2f,%.2f\n", base.axisFit.profile[i],
+		        base.axisFit.profile[i + 1], base.axisFit.profile[i + 2],
+		        base.axisFit.profile[i + 3], base.axisFit.profile[i + 4]);
+
+	fprintf(rf, "\n[traces]  seedLat,reason,nSteps,T_days,latOut,endLon,endLat  (0=EXIT 1=OUTDOMAIN 2=AGROUND 3=MAXSTEP)\n");
+	for (size_t i = 0; i + 6 < base.traceTable.size(); i += 7)
+		fprintf(rf, "%.4f,%d,%d,%.4f,%.6f,%.4f,%.4f\n", base.traceTable[i],
+		        (int)base.traceTable[i + 1], (int)base.traceTable[i + 2],
+		        base.traceTable[i + 3], base.traceTable[i + 4],
+		        base.traceTable[i + 5], base.traceTable[i + 6]);
+
+	fprintf(rf, "\n[ridge]  lon,lat   (max-speed ridge along the core's cross-sections)\n");
+	for (size_t i = 0; i + 1 < base.axisFit.ridge.size(); i += 2)
+		fprintf(rf, "%.6f,%.6f\n", base.axisFit.ridge[i], base.axisFit.ridge[i + 1]);
+
+	fprintf(rf, "\n[core]\nlon,lat\n");
+	for (size_t i = 0; i + 1 < base.core.size(); i += 2)
+		fprintf(rf, "%.6f,%.6f\n", base.core[i], base.core[i + 1]);
+
+	fprintf(rf, "\n[subjets]  latOut,T_days,nSteps,rowInTcurve,isPrimary\n");
+	for (size_t i = 0; i < base.subjets.size(); i++) {
+		const SeamtSubjet &s = base.subjets[i];
+		bool primary = (!base.core.empty() && std::fabs(s.latOut - base.latOut) < 1.0e-6);
+		fprintf(rf, "%.6f,%.4f,%d,%d,%d\n", s.latOut, s.TDays, s.nSteps, s.row, primary ? 1 : 0);
+	}
+
+	fprintf(rf, "\n[tcurve]\nlatOut,T_days,nSteps,reason\n");
+	for (size_t i = 0; i + 3 < base.tCurve.size(); i += 4)
+		fprintf(rf, "%.6f,%.4f,%d,%d\n", base.tCurve[i], base.tCurve[i + 1],
+		        (int)base.tCurve[i + 2], (int)base.tCurve[i + 3]);
+	fclose(rf);
+
+	ncdfLog("[seamtauto] report written: %s\n", (const char*)wxString(kRes).mb_str());
+	ncdfLog("[seamtauto] checks: tangent=%.3fdeg tHav=%.4f%% halfDt=%.3fkm ens201=%.3fkm "
+	        "metric=%.6f%% gRatio=%.3f\n",
+	        tangDeg, base.tHavCheck * 100.0, distHalfDt, distEns,
+	        metricRel * 100.0, gRatio);
+	ncdfLog("[seamtauto] ===== auto test done =====\n");
+
+	// 请求文件改名，防止下次启动重复触发
+	wxRenameFile(reqPath, reqPath + _T(".done"), true);
+}
+
+void MainDialog::releaseRawUv()
+{
+	// 与 Phase 2 一致：clear() 不归还容量，必须 swap-with-empty。
+	// 这些双精度数组只给提取器用；渲染走 float 网格。
+	std::vector<double>().swap(myMessage.ucurr);
+	std::vector<double>().swap(myMessage.vcurr);
+	std::vector<double>().swap(myMessage.sst);
+	std::vector<double>().swap(myMessage.salinity);
+	std::vector<double>().swap(myMessage.zos);
 }
 
 // ---------------------------------------------------------------------------

@@ -310,6 +310,53 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 		m_checkBoxKuroshioBdy = new wxCheckBox( m_panelFeatSettings, wxID_ANY, _("显示左右边界 (蓝/红细线)") );
 		sizerFeat->Add( m_checkBoxKuroshioBdy, 0, wxALL, 3 );
 		sizerFeat->AddSpacer(0);
+		// --- SEAMT 急流核心提取（流线集合分析求最小 T 参数，Udalov2026） ---
+		// 适用域：黑潮下游。与上面的 Wang2026（上游 115–132°E）不混用。
+		{
+			wxStaticLine* lineSeamt = new wxStaticLine( m_panelFeatSettings );
+			sizerFeat->Add( lineSeamt, 0, wxEXPAND|wxALL, 3 );
+			sizerFeat->AddSpacer(0);
+			wxStaticText* lblSeamt = new wxStaticText( m_panelFeatSettings, wxID_ANY, _("SEAMT 急流核心 (下游)") );
+			sizerFeat->Add( lblSeamt, 0, wxALIGN_CENTER_VERTICAL|wxALL, 3 );
+
+			wxBoxSizer* sizerSeamt1 = new wxBoxSizer( wxHORIZONTAL );
+			m_choiceSeamtPreset = new wxChoice( m_panelFeatSettings, wxID_ANY );
+			m_choiceSeamtPreset->Append( _("日本以南 (130→142E)") );
+			m_choiceSeamtPreset->Append( _("论文原域 (130→160E)") );
+			m_choiceSeamtPreset->Append( _("自定义") );
+			m_choiceSeamtPreset->SetSelection( 0 );
+			sizerSeamt1->Add( m_choiceSeamtPreset, 1, wxALIGN_CENTER_VERTICAL|wxRIGHT, 5 );
+			m_btnSeamtExtract = new wxButton( m_panelFeatSettings, wxID_ANY, _("提取核心"), wxDefaultPosition, wxSize( 64,-1 ) );
+			sizerSeamt1->Add( m_btnSeamtExtract, 0, wxALIGN_CENTER_VERTICAL|wxRIGHT, 5 );
+			m_btnSeamtExport = new wxButton( m_panelFeatSettings, wxID_ANY, _("导出CSV"), wxDefaultPosition, wxSize( 64,-1 ) );
+			sizerSeamt1->Add( m_btnSeamtExport, 0, wxALIGN_CENTER_VERTICAL, 0 );
+			sizerFeat->Add( sizerSeamt1, 0, wxEXPAND, 0 );
+
+			wxBoxSizer* sizerSeamt2 = new wxBoxSizer( wxHORIZONTAL );
+			sizerSeamt2->Add( new wxStaticText( m_panelFeatSettings, wxID_ANY, _("入口") ), 0, wxALIGN_CENTER_VERTICAL|wxRIGHT, 2 );
+			m_textSeamtLonIn = new wxTextCtrl( m_panelFeatSettings, wxID_ANY, _("131.0"), wxDefaultPosition, wxSize( 46,-1 ), wxTE_PROCESS_ENTER );
+			sizerSeamt2->Add( m_textSeamtLonIn, 0, wxALIGN_CENTER_VERTICAL|wxRIGHT, 6 );
+			sizerSeamt2->Add( new wxStaticText( m_panelFeatSettings, wxID_ANY, _("出口") ), 0, wxALIGN_CENTER_VERTICAL|wxRIGHT, 2 );
+			m_textSeamtLonOut = new wxTextCtrl( m_panelFeatSettings, wxID_ANY, _("142.0"), wxDefaultPosition, wxSize( 46,-1 ), wxTE_PROCESS_ENTER );
+			sizerSeamt2->Add( m_textSeamtLonOut, 0, wxALIGN_CENTER_VERTICAL|wxRIGHT, 6 );
+			sizerSeamt2->Add( new wxStaticText( m_panelFeatSettings, wxID_ANY, _("集合") ), 0, wxALIGN_CENTER_VERTICAL|wxRIGHT, 2 );
+			m_textSeamtNpts = new wxTextCtrl( m_panelFeatSettings, wxID_ANY, _("281"), wxDefaultPosition, wxSize( 38,-1 ), wxTE_PROCESS_ENTER );
+			sizerSeamt2->Add( m_textSeamtNpts, 0, wxALIGN_CENTER_VERTICAL|wxRIGHT, 6 );
+			sizerSeamt2->Add( new wxStaticText( m_panelFeatSettings, wxID_ANY, _("半宽") ), 0, wxALIGN_CENTER_VERTICAL|wxRIGHT, 2 );
+			m_textSeamtHalfWidth = new wxTextCtrl( m_panelFeatSettings, wxID_ANY, _("0.70"), wxDefaultPosition, wxSize( 38,-1 ), wxTE_PROCESS_ENTER );
+			sizerSeamt2->Add( m_textSeamtHalfWidth, 0, wxALIGN_CENTER_VERTICAL, 0 );
+			sizerFeat->Add( sizerSeamt2, 0, wxEXPAND, 0 );
+
+			m_checkBoxSeamtShow = new wxCheckBox( m_panelFeatSettings, wxID_ANY, _("显示核心 (绿色粗线)") );
+			sizerFeat->Add( m_checkBoxSeamtShow, 0, wxALL, 3 );
+			sizerFeat->AddSpacer(0);
+			m_checkBoxSeamtSubjets = new wxCheckBox( m_panelFeatSettings, wxID_ANY, _("显示子射流 (T曲线极小)") );
+			sizerFeat->Add( m_checkBoxSeamtSubjets, 0, wxALL, 3 );
+			sizerFeat->AddSpacer(0);
+			wxStaticText* lblSeamtNote = new wxStaticText( m_panelFeatSettings, wxID_ANY,
+				_("T 为形式积分量，非输运时间；单时次未做时间持续性过滤；T 值跨域不可比") );
+			sizerFeat->Add( lblSeamtNote, 0, wxALIGN_CENTER_VERTICAL|wxALL, 3 );
+		}
 		// 高分辨率陆海掩膜（自动加载，仅显示状态）
 		wxStaticText* lblMask = new wxStaticText( m_panelFeatSettings, wxID_ANY, _("陆海掩膜") );
 		sizerFeat->Add( lblMask, 0, wxALIGN_CENTER_VERTICAL|wxALL, 3 );
@@ -369,6 +416,15 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	m_btnKuroshioExport->Connect( wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler( ncdfDialog::onKuroshioExportClick ), NULL, this );
 	m_checkBoxKuroshioShow->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onKuroshioShowClick ), NULL, this );
 	m_checkBoxKuroshioBdy->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onKuroshioBdyClick ), NULL, this );
+	m_choiceSeamtPreset->Connect( wxEVT_COMMAND_CHOICE_SELECTED, wxCommandEventHandler( ncdfDialog::onSeamtPresetChoice ), NULL, this );
+	m_btnSeamtExtract->Connect( wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler( ncdfDialog::onSeamtExtractClick ), NULL, this );
+	m_btnSeamtExport->Connect( wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler( ncdfDialog::onSeamtExportClick ), NULL, this );
+	m_textSeamtLonIn->Connect( wxEVT_COMMAND_TEXT_ENTER, wxCommandEventHandler( ncdfDialog::onSeamtParamChanged ), NULL, this );
+	m_textSeamtLonOut->Connect( wxEVT_COMMAND_TEXT_ENTER, wxCommandEventHandler( ncdfDialog::onSeamtParamChanged ), NULL, this );
+	m_textSeamtNpts->Connect( wxEVT_COMMAND_TEXT_ENTER, wxCommandEventHandler( ncdfDialog::onSeamtParamChanged ), NULL, this );
+	m_textSeamtHalfWidth->Connect( wxEVT_COMMAND_TEXT_ENTER, wxCommandEventHandler( ncdfDialog::onSeamtParamChanged ), NULL, this );
+	m_checkBoxSeamtShow->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSeamtShowClick ), NULL, this );
+	m_checkBoxSeamtSubjets->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onSeamtSubjetsClick ), NULL, this );
 	m_checkBoxAnimate->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onAnimateClick ), NULL, this );
 
 }

@@ -22,6 +22,7 @@
 #include "gui.h"
 #include "ncdf_reader.h"
 #include "ncdf_kuroshio.h"
+#include "ncdf_seamt.h"
 #include "ncdf_landmask.h"
 #include "wx/wfstream.h"
 #include <wx/datetime.h>
@@ -211,11 +212,36 @@ protected:
 	virtual void onKuroshioExportClick( wxCommandEvent& event );
 	virtual void onKuroshioShowClick( wxCommandEvent& event );
 	virtual void onKuroshioBdyClick( wxCommandEvent& event );
+	virtual void onSeamtPresetChoice( wxCommandEvent& event );
+	virtual void onSeamtExtractClick( wxCommandEvent& event );
+	virtual void onSeamtExportClick( wxCommandEvent& event );
+	virtual void onSeamtParamChanged( wxCommandEvent& event );
+	virtual void onSeamtShowClick( wxCommandEvent& event );
+	virtual void onSeamtSubjetsClick( wxCommandEvent& event );
 public:
 	// 黑潮主轴提取结果（每次提取覆盖；渲染线程只读）
 	KuroshioExtractor m_kuroshio;
 	KuroshioAxisResult m_kuroshioResult;
 	bool m_kuroshioNeedUV = false;      // 为提取主轴强制读入 U/V（不依赖“显示流速”勾选）
+
+	// SEAMT 急流核心提取（Udalov2026，黑潮**下游**：日本以南 / 延伸体）。
+	// 与上面的 Wang2026（上游 115–132°E，A–E 断面硬编码）完全独立，
+	// 适用域不重叠，**不要混用**。见 docs/SEAMT急流核心提取-方法论与实现方案.md §0.2
+	SeamtExtractor m_seamt;
+	SeamtResult    m_seamtResult;
+	bool runSeamtExtract();
+	bool exportSeamtCsv();
+	void syncSeamtParamsFromUi();       // 读 UI 框 -> m_seamt.params
+	void applySeamtPreset(int which);   // 0=日本以南 1=论文原域 2=自定义（只填框）
+	// 提取用完后归还 U/V 原始双精度内存（与 Phase 2 的内存纪律一致）。
+	// 渲染用的是 float 网格，这些双精度数组只给提取器；必须 swap-with-empty，
+	// clear() 不归还容量（CLAUDE.md 已记该坑）。
+	void releaseRawUv();
+
+	// 自动化测试：启动时发现请求文件就自动跑一遍 SEAMT + 全套自检，
+	// 结果写 ncdf_seamt_auto_result.txt。见 docs/SEAMT急流核心提取-方法论与实现方案.md
+	void maybeRunSeamtAutoTest();
+	void runSeamtAutoTest(const wxString &reqPath);
 	// 陆海掩膜实体在 ncdf_pi::m_landMask（含粗层回退），跟随面板显示加载
 	bool loadLandMask(bool verbose);
 	bool ensureLandMaskVisible();   // 面板打开时调用：载入并刷新状态

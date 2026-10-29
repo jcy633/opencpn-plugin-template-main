@@ -163,6 +163,23 @@ class ncdfDialog : public wxDialog
 		virtual void onKuroshioShowClick( wxCommandEvent& event ) { event.Skip(); }
 		wxCheckBox* m_checkBoxKuroshioBdy;
 		virtual void onKuroshioBdyClick( wxCommandEvent& event ) { event.Skip(); }
+		// SEAMT 急流核心提取（流线集合分析求最小 T 参数，Udalov2026）
+		// 适用域是黑潮**下游**（日本以南 / 延伸体），与上面的 Wang2026（上游 115–132°E）不混用
+		wxChoice* m_choiceSeamtPreset;
+		virtual void onSeamtPresetChoice( wxCommandEvent& event ) { event.Skip(); }
+		wxButton* m_btnSeamtExtract;
+		virtual void onSeamtExtractClick( wxCommandEvent& event ) { event.Skip(); }
+		wxButton* m_btnSeamtExport;
+		virtual void onSeamtExportClick( wxCommandEvent& event ) { event.Skip(); }
+		wxTextCtrl* m_textSeamtLonIn;
+		wxTextCtrl* m_textSeamtLonOut;
+		wxTextCtrl* m_textSeamtNpts;
+		wxTextCtrl* m_textSeamtHalfWidth;
+		virtual void onSeamtParamChanged( wxCommandEvent& event ) { event.Skip(); }
+		wxCheckBox* m_checkBoxSeamtShow;
+		virtual void onSeamtShowClick( wxCommandEvent& event ) { event.Skip(); }
+		wxCheckBox* m_checkBoxSeamtSubjets;
+		virtual void onSeamtSubjetsClick( wxCommandEvent& event ) { event.Skip(); }
 		// 高分辨率陆海掩膜（自动加载，无需手动选择）
 		wxStaticText* m_staticEtopoStatus;
 		wxTextCtrl* m_textCtrlFeatReadout;

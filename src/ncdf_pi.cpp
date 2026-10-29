@@ -167,6 +167,14 @@ int ncdf_pi::Init(void)
 		  (new wxMenuItem(&dummy_menu, -1, _("Drop Tidal Arrow")), this);
 	  SetCanvasContextMenuItemViz(m_position_menu_id, true);
 
+      // 自动化测试：存在请求文件时自动打开面板。面板构造完成后会跑 SEAMT 自测
+      // （见 MainDialog::maybeRunSeamtAutoTest）。这样外部脚本只需
+      // 「写请求文件 -> 启动 OpenCPN -> 等 -> 读结果文件」，不必手动点界面。
+      if (wxFileExists(_T("C:\\ProgramData\\opencpn\\ncdf_seamt_auto.txt"))) {
+          ncdfLog("[seamtauto] request file found at plugin init -> opening panel\n");
+          OnToolbarToolCallback(0);
+      }
+
       return (WANTS_OVERLAY_CALLBACK |
            WANTS_OPENGL_OVERLAY_CALLBACK |
            WANTS_CURSOR_LATLON       |
@@ -551,6 +559,13 @@ bool ncdf_pi::LoadConfig(void)
             pConf->Read ( _T( "FeatShear" ), &m_bFeatShear, 0 );
             pConf->Read ( _T( "ShowKuroshio" ), &m_bShowKuroshio, 1 );
             pConf->Read ( _T( "ShowKuroshioBdy" ), &m_bShowKuroshioBdy, 1 );
+            pConf->Read ( _T( "ShowSeamt" ), &m_bShowSeamt, 1 );
+            pConf->Read ( _T( "ShowSeamtSubjets" ), &m_bShowSeamtSubjets, 0 );
+            pConf->Read ( _T( "SeamtPreset" ), &m_iSeamtPreset, 0 );
+            pConf->Read ( _T( "SeamtLonIn" ), &m_seamtLonIn, 131.0 );
+            pConf->Read ( _T( "SeamtLonOut" ), &m_seamtLonOut, 142.0 );
+            pConf->Read ( _T( "SeamtNpts" ), &m_seamtNpts, 281 );
+            pConf->Read ( _T( "SeamtHalfWidth" ), &m_seamtHalfWidth, 0.70 );
             pConf->Read ( _T( "FeatSensitivity" ), &m_iFeatSensitivity, 60 );
             pConf->Read ( _T( "FeatROIType" ), &m_iFeatROIType, 0 );
             pConf->Read ( _T( "FeatROILatMin" ), &m_featROILatMin, 15.0 );
@@ -612,6 +627,13 @@ bool ncdf_pi::SaveConfig(void)
             pConf->Write ( _T ( "FeatShear" ), m_bFeatShear );
             pConf->Write ( _T ( "ShowKuroshio" ), m_bShowKuroshio );
             pConf->Write ( _T ( "ShowKuroshioBdy" ), m_bShowKuroshioBdy );
+            pConf->Write ( _T ( "ShowSeamt" ), m_bShowSeamt );
+            pConf->Write ( _T ( "ShowSeamtSubjets" ), m_bShowSeamtSubjets );
+            pConf->Write ( _T ( "SeamtPreset" ), m_iSeamtPreset );
+            pConf->Write ( _T ( "SeamtLonIn" ), m_seamtLonIn );
+            pConf->Write ( _T ( "SeamtLonOut" ), m_seamtLonOut );
+            pConf->Write ( _T ( "SeamtNpts" ), m_seamtNpts );
+            pConf->Write ( _T ( "SeamtHalfWidth" ), m_seamtHalfWidth );
             pConf->Write ( _T ( "FeatSensitivity" ), m_iFeatSensitivity );
             pConf->Write ( _T ( "FeatROIType" ), m_iFeatROIType );
             pConf->Write ( _T ( "FeatROILatMin" ), m_featROILatMin );

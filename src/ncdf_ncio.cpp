@@ -20,6 +20,31 @@ extern void ncdfLog(const char* format, ...);
 
 /* Helper: read a text attribute from a variable. Caller must delete[] the result. */
 static char* read_var_att_text(int ncid, int varid, const char* attname) {
+    nc_type xtype;
+    if (nc_inq_atttype(ncid, varid, attname, &xtype) != NC_NOERR) return NULL;
+
+    // 【NetCDF-4 的字符串属性是 NC_STRING（变长），不是 NC_CHAR】
+    // 用 nc_inq_attlen + nc_get_att_text 读会得到 attlen=1（串的个数）并以
+    // 类型不匹配失败返回 NULL，导致 standard_name 全部读不出来，
+    // 只能退到变量名匹配（2026-10-29 下载 AVISO L4 后实测踩到）。
+    if (xtype == NC_STRING) {
+        size_t n = 0;
+        if (nc_inq_attlen(ncid, varid, attname, &n) != NC_NOERR || n == 0) return NULL;
+        // nc_get_att_string 的参数是 char** —— 调用方分配指针数组，库分配每个串
+        char **vals = new char*[n];
+        if (nc_get_att_string(ncid, varid, attname, vals) != NC_NOERR) {
+            delete[] vals;
+            return NULL;
+        }
+        size_t len = (vals[0] && vals[0][0]) ? strlen(vals[0]) : 0;
+        char *text = new char[len + 1];
+        if (len) memcpy(text, vals[0], len);
+        text[len] = '\0';
+        nc_free_string(n, vals);
+        delete[] vals;
+        return text;
+    }
+
     size_t attlen;
     if (nc_inq_attlen(ncid, varid, attname, &attlen) != NC_NOERR) return NULL;
     char* text = new char[attlen + 1];
@@ -311,16 +336,16 @@ MainDialog::FileMetadata MainDialog::nc_read_metadata(const wxString &fileName) 
 
 	// Check data availability and cache variable IDs
 	{
-		const char* alt_std[] = {"surface_eastward_sea_water_velocity", NULL};
+		const char* alt_std[] = {"surface_geostrophic_eastward_sea_water_velocity", "surface_eastward_sea_water_velocity", NULL};
 		const char* long_hints[] = {"Eastward Current Velocity", NULL};
-		const char* var_hints[] = {"u", "uo", "current_u", NULL};
+		const char* var_hints[] = {"u", "uo", "ugos", "current_u", NULL};
 		meta.cached_u_varid = find_var_by_cf(ncid, "eastward_sea_water_velocity", alt_std, long_hints, var_hints);
 		meta.hasCurrent = (meta.cached_u_varid != -1);
 	}
 	{
-		const char* alt_std[] = {"surface_northward_sea_water_velocity", NULL};
+		const char* alt_std[] = {"surface_geostrophic_northward_sea_water_velocity", "surface_northward_sea_water_velocity", NULL};
 		const char* long_hints[] = {"Northward Current Velocity", NULL};
-		const char* var_hints[] = {"v", "vo", "current_v", NULL};
+		const char* var_hints[] = {"v", "vo", "vgos", "current_v", NULL};
 		meta.cached_v_varid = find_var_by_cf(ncid, "northward_sea_water_velocity", alt_std, long_hints, var_hints);
 	}
 	{
@@ -525,17 +550,17 @@ int MainDialog::nc_get(wxString filestr){
 
 	/* u: eastward_sea_water_velocity */
 	{
-		const char* alt_std[] = {"surface_eastward_sea_water_velocity", NULL};
+		const char* alt_std[] = {"surface_geostrophic_eastward_sea_water_velocity", "surface_eastward_sea_water_velocity", NULL};
 		const char* long_hints[] = {"Eastward Current Velocity", "u-velocity component of current", NULL};
-		const char* var_hints[] = {"u", "uo", "current_u", "curr_u", "u10", "u100", NULL};
+		const char* var_hints[] = {"u", "uo", "ugos", "current_u", "curr_u", "u10", "u100", NULL};
 		u_varid = find_var_by_cf(ncid, "eastward_sea_water_velocity", alt_std, long_hints, var_hints);
 	}
 	
 	/* v: northward_sea_water_velocity */
 	{
-		const char* alt_std[] = {"surface_northward_sea_water_velocity", NULL};
+		const char* alt_std[] = {"surface_geostrophic_northward_sea_water_velocity", "surface_northward_sea_water_velocity", NULL};
 		const char* long_hints[] = {"Northward Current Velocity", "v-velocity component of current", NULL};
-		const char* var_hints[] = {"v", "vo", "current_v", "curr_v", "v10", "v100", NULL};
+		const char* var_hints[] = {"v", "vo", "vgos", "current_v", "curr_v", "v10", "v100", NULL};
 		v_varid = find_var_by_cf(ncid, "northward_sea_water_velocity", alt_std, long_hints, var_hints);
 	}
 	
@@ -980,6 +1005,18 @@ static bool readUVFromNC(int ncid, int u_varid, int v_varid, ncdfDataMessage& da
 		}
 	}
 
+	// 【scale_factor / add_offset 必须自己应用】netCDF C API 只做数值类型转换，
+	// **不会**按 CF 约定解包。AVISO L4 的 ugos/vgos 是 int32 + scale_factor=0.0001，
+	// 不解包就会把 -9830000 当成 -9830000 m/s 用（2026-10-29 实测 uMax=1316 m/s）。
+	double scale_u = 1.0, offset_u = 0.0;
+	double scale_v = 1.0, offset_v = 0.0;
+	if (nc_get_att_double(ncid, u_varid, "scale_factor", &scale_u) != NC_NOERR) scale_u = 1.0;
+	if (nc_get_att_double(ncid, u_varid, "add_offset",   &offset_u) != NC_NOERR) offset_u = 0.0;
+	if (nc_get_att_double(ncid, v_varid, "scale_factor", &scale_v) != NC_NOERR) scale_v = 1.0;
+	if (nc_get_att_double(ncid, v_varid, "add_offset",   &offset_v) != NC_NOERR) offset_v = 0.0;
+	ncdfLog("[ncdf] readUVFromNC: scale_u=%.8g offset_u=%.8g scale_v=%.8g offset_v=%.8g\n",
+	        scale_u, offset_u, scale_v, offset_v);
+
 	VarDimInfo dims = discover_var_dims(ncid, u_varid);
 	if (!dims.valid) return false;
 
@@ -1071,8 +1108,8 @@ static bool readUVFromNC(int ncid, int u_varid, int v_varid, ncdfDataMessage& da
 			for (size_t k = 0; k < dataMessage.lonLength; k++) {
 				if (!isMissing(u_vals[count_records], fill_value_u) &&
 				    !isMissing(v_vals[count_records], fill_value_v)) {
-					dataMessage.ucurr[count_records] = (double)u_vals[count_records];
-					dataMessage.vcurr[count_records] = (double)v_vals[count_records];
+					dataMessage.ucurr[count_records] = (double)u_vals[count_records] * scale_u + offset_u;
+					dataMessage.vcurr[count_records] = (double)v_vals[count_records] * scale_v + offset_v;
 				}
 				count_records++;
 			}
@@ -1082,8 +1119,8 @@ static bool readUVFromNC(int ncid, int u_varid, int v_varid, ncdfDataMessage& da
 			for (size_t j = 0; j < dataMessage.latLength; j++) {
 				if (!isMissing(u_vals[count_records], fill_value_u) &&
 				    !isMissing(v_vals[count_records], fill_value_v)) {
-					dataMessage.ucurr[count_records] = (double)u_vals[count_records];
-					dataMessage.vcurr[count_records] = (double)v_vals[count_records];
+					dataMessage.ucurr[count_records] = (double)u_vals[count_records] * scale_u + offset_u;
+					dataMessage.vcurr[count_records] = (double)v_vals[count_records] * scale_v + offset_v;
 				}
 				count_records++;
 			}
@@ -1469,15 +1506,15 @@ bool MainDialog::readTimeStepData(ncdfDataMessage& dataMessage) {
 	if (u_varid < 0 || v_varid < 0) {
 		ncdfLog("[ncdf] readTimeStepData: cache miss, falling back to CF discovery\n");
 		{
-			const char* alt_std[] = {"surface_eastward_sea_water_velocity", NULL};
+			const char* alt_std[] = {"surface_geostrophic_eastward_sea_water_velocity", "surface_eastward_sea_water_velocity", NULL};
 			const char* long_hints[] = {"Eastward Current Velocity", "u-velocity component of current", NULL};
-			const char* var_hints[] = {"u", "uo", "current_u", "curr_u", "u10", "u100", NULL};
+			const char* var_hints[] = {"u", "uo", "ugos", "current_u", "curr_u", "u10", "u100", NULL};
 			u_varid = find_var_by_cf(ncid, "eastward_sea_water_velocity", alt_std, long_hints, var_hints);
 		}
 		{
-			const char* alt_std[] = {"surface_northward_sea_water_velocity", NULL};
+			const char* alt_std[] = {"surface_geostrophic_northward_sea_water_velocity", "surface_northward_sea_water_velocity", NULL};
 			const char* long_hints[] = {"Northward Current Velocity", "v-velocity component of current", NULL};
-			const char* var_hints[] = {"v", "vo", "current_v", "curr_v", "v10", "v100", NULL};
+			const char* var_hints[] = {"v", "vo", "vgos", "current_v", "curr_v", "v10", "v100", NULL};
 			v_varid = find_var_by_cf(ncid, "northward_sea_water_velocity", alt_std, long_hints, var_hints);
 		}
 	}

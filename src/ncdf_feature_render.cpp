@@ -22,6 +22,7 @@
 #include "ncdf_feature.h"
 #include "ncdf_feature_render.h"
 #include "ncdf_kuroshio.h"
+#include "ncdf_seamt.h"
 #include "ncdfoverlayfactory.h"
 
 extern void ncdfLog(const char* format, ...);
@@ -613,12 +614,11 @@ void FeatureRender::drawAll(const FeatureSet &fs, PlugIn_ViewPort *vp,
 // ---------------------------------------------------------------------------
 // 黑潮主轴 / 左右边界绘制（流线约束最大流速法）
 // 主轴：深色描边 + 黄色主线 + 流向人字标；左右边界：蓝 / 红细线（NaN 处断开）。
-static void drawLatLonPolyline(PlugIn_ViewPort *vp, const std::vector<double> &xy,
-                               float r, float g, float b, float a, float width,
-                               bool brokenAtNaN)
+static void drawLatLonPolylineRaw(PlugIn_ViewPort *vp, const double *xy, size_t n,
+                                  float r, float g, float b, float a, float width,
+                                  bool brokenAtNaN)
 {
-    size_t n = xy.size() / 2;
-    if (n < 2) return;
+    if (!xy || n < 2) return;
     glColor4f(r, g, b, a);
     glLineWidth(width);
     glBegin(GL_LINE_STRIP);
@@ -641,6 +641,14 @@ static void drawLatLonPolyline(PlugIn_ViewPort *vp, const std::vector<double> &x
     }
     glEnd();
     glLineWidth(1.0f);
+}
+
+static void drawLatLonPolyline(PlugIn_ViewPort *vp, const std::vector<double> &xy,
+                               float r, float g, float b, float a, float width,
+                               bool brokenAtNaN)
+{
+    drawLatLonPolylineRaw(vp, xy.empty() ? NULL : &xy[0], xy.size() / 2,
+                          r, g, b, a, width, brokenAtNaN);
 }
 
 void FeatureRender::drawKuroshioAxis(const KuroshioAxisResult &k, PlugIn_ViewPort *vp,
@@ -690,6 +698,69 @@ void FeatureRender::drawKuroshioAxis(const KuroshioAxisResult &k, PlugIn_ViewPor
             glVertex2i(sx1, sy1); glVertex2i((int)(bx - px * 4), (int)(by - py * 4));
         }
         glEnd();
+        glLineWidth(1.0f);
+    }
+
+    glDisable(GL_LINE_SMOOTH);
+    glDisable(GL_BLEND);
+    glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+// ---------------------------------------------------------------------------
+// SEAMT 急流核心（Udalov2026 最小 T 参数法）
+// 核心绿色粗线（与 Wang2026 的黄线区分，同论文图 2）+ 子射流着色线与出口标记。
+// 只画核心与少量子射流线（几百点量级），不画 141 条集合 —— 那是纯诊断，
+// 全画约 17 万顶点/帧，违反"平移缩放绝不卡顿"的硬约束。
+void FeatureRender::drawSeamtCore(const SeamtResult &s, PlugIn_ViewPort *vp,
+                                  bool showCore, bool showSubjets)
+{
+    if (!vp) return;
+    if (!showCore && !showSubjets) return;
+    if (s.core.size() < 4) return;
+
+    glDisable(GL_TEXTURE_2D);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glEnable(GL_LINE_SMOOTH);
+    glHint(GL_LINE_SMOOTH_HINT, GL_NICEST);
+
+    // 子射流线先画（压在核心下面）。冷 -> 暖按序号着色
+    if (showSubjets && !s.subjetLines.empty()) {
+        size_t off = 0;
+        size_t nSub = s.subjetLineLen.size();
+        for (size_t k = 0; k < nSub; k++) {
+            int npts = s.subjetLineLen[k];
+            if (npts >= 2 && off + (size_t)npts * 2 <= s.subjetLines.size()) {
+                float t = (nSub > 1) ? (float)k / (float)(nSub - 1) : 0.5f;
+                drawLatLonPolylineRaw(vp, &s.subjetLines[off], (size_t)npts,
+                                      0.30f + 0.55f * t, 0.60f - 0.35f * t,
+                                      0.95f - 0.75f * t, 0.85f, 1.8f, false);
+            }
+            off += (size_t)npts * 2;
+        }
+    }
+
+    // 核心线：深色描边提高在彩色流场上的对比度
+    if (showCore) {
+        drawLatLonPolyline(vp, s.core, 0.10f, 0.10f, 0.10f, 0.55f, 6.0f, false);
+        drawLatLonPolyline(vp, s.core, 0.25f, 0.85f, 0.35f, 0.95f, 3.0f, false);
+    }
+
+    // 子射流出口标记（小菱形）
+    if (showSubjets && !s.subjets.empty()) {
+        glLineWidth(1.8f);
+        size_t nSub = s.subjets.size();
+        for (size_t k = 0; k < nSub; k++) {
+            int sx, sy;
+            if (!projectPoint(vp, (float)s.subjets[k].lonOut, (float)s.subjets[k].latOut, sx, sy))
+                continue;
+            float t = (nSub > 1) ? (float)k / (float)(nSub - 1) : 0.5f;
+            glColor4f(0.30f + 0.55f * t, 0.60f - 0.35f * t, 0.95f - 0.75f * t, 0.95f);
+            glBegin(GL_LINE_LOOP);
+            glVertex2i(sx, sy - 6); glVertex2i(sx + 6, sy);
+            glVertex2i(sx, sy + 6); glVertex2i(sx - 6, sy);
+            glEnd();
+        }
         glLineWidth(1.0f);
     }
 

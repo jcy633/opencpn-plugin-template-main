@@ -518,6 +518,13 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
         FeatureRender::drawKuroshioAxis(gui->m_kuroshioResult, vp,
                                         plugin->m_bShowKuroshio, plugin->m_bShowKuroshioBdy);
 
+    // ---- SEAMT 急流核心（Udalov2026 最小 T 参数法）----
+    // 与上面的 Wang2026 并列但互不影响；两法适用域不重叠（上游 vs 下游）。
+    // 只画核心与少量子射流线，不画 141 条集合（性能约束，见 ncdf_feature_render.cpp）。
+    if (gui && gui->IsShown() && plugin && (plugin->m_bShowSeamt || plugin->m_bShowSeamtSubjets))
+        FeatureRender::drawSeamtCore(gui->m_seamtResult, vp,
+                                     plugin->m_bShowSeamt, plugin->m_bShowSeamtSubjets);
+
     if (renderSelectionRectangle && rect) RenderSelectionRectangle();
 
     if (gui) gui->updateFeaturePopupPos(vp);   // popup follows its feature anchor
