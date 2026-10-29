@@ -56,11 +56,33 @@ static double haversineKm(double lon1, double lat1, double lon2, double lat2)
 // ===========================================================================
 // U/V 场：双线性插值 + 陆海掩膜
 // ===========================================================================
+// 求覆盖 [lo,hi] 的最小下标区间，并各外扩 1 格（双线性插值要取 i0/i1 两个格点）。
+// 数组单调即可（升/降序都行）。找不到交集时返回 false。
+static bool uvfCoverRange(const double *a, size_t n,
+                          double lo, double hi, size_t &o0, size_t &o1) {
+    if (lo > hi) { double t = lo; lo = hi; hi = t; }
+    size_t first = n, last = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (a[i] >= lo - 1e-9 && a[i] <= hi + 1e-9) {
+            if (first > i) first = i;
+            last = i;
+        }
+    }
+    if (first > last) return false;
+    o0 = (first == 0) ? 0 : first - 1;
+    o1 = (last == n - 1) ? n - 1 : last + 1;
+    return true;
+}
+
 struct UVField {
     const double *u, *v;
     const double *lat, *lon;
     const NcdfLandMask *lm;     // 高分辨率掩膜；可为 NULL
     size_t nlat, nlon;
+    // 行跨度：u/v 是二维数组，第 j 行第 i 列在 u[j*stride + i]。
+    // 不裁剪时 stride == nlon；window() 裁出子矩形后 stride 保持原行宽，
+    // 而 nlon 只表示窗口宽度 —— 子矩形在内存里不是连续的。
+    size_t stride;
     bool latAsc, lonAsc;
     bool latUni, lonUni;
     double dLat, dLon;
@@ -76,6 +98,7 @@ struct UVField {
         lat = msg.latValues; lon = msg.lonValues;
         lm = NULL;
         nlat = msg.latLength; nlon = msg.lonLength;
+        stride = nlon;
         latAsc = lonAsc = true;
         latUni = lonUni = false;
         dLat = dLon = 0.0; cellDeg = 0.1;
@@ -156,10 +179,10 @@ struct UVField {
         if (!locate(lat, nlat, latAsc, latUni, dLat, latq, j0, j1, tj)) return false;
         if (!locate(lon, nlon, lonAsc, lonUni, dLon, lonq, i0, i1, ti)) return false;
 
-        double u00 = u[j0 * nlon + i0], u01 = u[j0 * nlon + i1];
-        double u10 = u[j1 * nlon + i0], u11 = u[j1 * nlon + i1];
-        double v00 = v[j0 * nlon + i0], v01 = v[j0 * nlon + i1];
-        double v10 = v[j1 * nlon + i0], v11 = v[j1 * nlon + i1];
+        double u00 = u[j0 * stride + i0], u01 = u[j0 * stride + i1];
+        double u10 = u[j1 * stride + i0], u11 = u[j1 * stride + i1];
+        double v00 = v[j0 * stride + i0], v01 = v[j0 * stride + i1];
+        double v10 = v[j1 * stride + i0], v11 = v[j1 * stride + i1];
         if (!finiteSpeed(u00) || !finiteSpeed(u01) || !finiteSpeed(u10) || !finiteSpeed(u11)) return false;
         if (!finiteSpeed(v00) || !finiteSpeed(v01) || !finiteSpeed(v10) || !finiteSpeed(v11)) return false;
 
@@ -193,16 +216,37 @@ struct UVField {
             double x = a[j * stride + i];
             return finiteSpeed(x) ? x : 0.0;
         };
-        double u00 = cell(u, j0, i0, nlon), u01 = cell(u, j0, i1, nlon);
-        double u10 = cell(u, j1, i0, nlon), u11 = cell(u, j1, i1, nlon);
-        double v00 = cell(v, j0, i0, nlon), v01 = cell(v, j0, i1, nlon);
-        double v10 = cell(v, j1, i0, nlon), v11 = cell(v, j1, i1, nlon);
+        double u00 = cell(u, j0, i0, stride), u01 = cell(u, j0, i1, stride);
+        double u10 = cell(u, j1, i0, stride), u11 = cell(u, j1, i1, stride);
+        double v00 = cell(v, j0, i0, stride), v01 = cell(v, j0, i1, stride);
+        double v10 = cell(v, j1, i0, stride), v11 = cell(v, j1, i1, stride);
 
         double u0 = u00 + (u01 - u00) * ti, u1 = u10 + (u11 - u10) * ti;
         double v0 = v00 + (v01 - v00) * ti, v1 = v10 + (v11 - v10) * ti;
         uo = u0 + (u1 - u0) * tj;
         vo = v0 + (v1 - v0) * tj;
         return true;      // 恒成功：无效处返回 0 而不是失败
+    }
+
+    // 把视野裁到 [latMin,latMax] x [lonMin,lonMax]。
+    // 【纯性能，不改语义】全球 2041x4320 网格的 u/v 各 70 MB，流线每步插值要读
+    // 8 个格点，全在 cache 外；而提取全程只碰研究域那一小块（±4° 追踪边界）。
+    // 裁完工作集降到 1 MB 量级，插值才跑得进 L2 —— 同样的算法能快好几倍。
+    // 只改指针和计数，不做任何数值变换，结果与不裁时逐位一致。
+    // 注意：窗口是原数组的子矩形，各行之间仍隔 stride 个元素，
+    // 所以 stride 保持原行宽不变，nlon 只表示窗口宽度。
+    void window(double latMin, double latMax, double lonMin, double lonMax) {
+        if (!u || !v || !lat || !lon || nlat < 2 || nlon < 2) return;
+        size_t j0 = 0, j1 = nlat - 1, i0 = 0, i1 = nlon - 1;
+        if (!uvfCoverRange(lat, nlat, latMin, latMax, j0, j1)) return;
+        if (!uvfCoverRange(lon, nlon, lonMin, lonMax, i0, i1)) return;
+        u   += j0 * stride + i0;
+        v   += j0 * stride + i0;
+        lat += j0;
+        lon += i0;
+        nlat = j1 - j0 + 1;
+        nlon = i1 - i0 + 1;
+        // dLat/dLon/latAsc/lonAsc/latUni/lonUni 都是整列性质，子区间不变
     }
 
     // 陆海判定 = 有数据 且 高分辨率掩膜认为是海。

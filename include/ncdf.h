@@ -266,7 +266,22 @@ public:
 	void fillDirTree(wxString dir, bool start, wxTreeItemId id);
 	void addChildren(wxTreeItemId id, wxString s);
 	void readData(wxTreeItemId itemId);
+	// 目录树懒加载：文件节点先只列名字，展开时才读该 nc 的元数据。
+	// 不这么做的话，面板一打开就要 nc_open 目录里每一个文件 ——
+	// 2026-10-29 实测某个 130 MB 的 HDF5 文件（76863 个数据集）一次 nc_open
+	// 就吃掉 1.3 GB 虚拟地址空间，把 Win32 的 2 GB 打穿后抛 bad_alloc，
+	// 之后所有 nc_open 全废，进而把整个面板拖死。
+	void onTreeItemExpanding(wxTreeEvent& event);
 
+};
+
+// MyTreeItemData::m_index 的语义：
+//   >=0  时间步下标（myDataVector 的下标）
+//   kFileNodeUnloaded  文件节点，元数据尚未读取
+//   kFileNodeLoaded    文件节点，元数据已读取
+enum {
+	kFileNodeUnloaded = -2,
+	kFileNodeLoaded   = -3
 };
 
 class MyTreeItemData : public wxTreeItemData

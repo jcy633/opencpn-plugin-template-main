@@ -55,10 +55,55 @@ using namespace std;
 // （guard + TLS）；ncdfLog 在插件加载期就会被调用，那套机制尚未就绪会直接挂死
 // ——实测「加载插件卡死」就是它。volatile LONG 是 POD，无动态初始化，安全。
 static volatile LONG s_logLock = 0;
-static void ncdfLogLock() {
-    while (InterlockedCompareExchange(&s_logLock, 1, 0) != 0) Sleep(0);
-}
 static void ncdfLogUnlock() { InterlockedExchange(&s_logLock, 0); }
+
+// 加锁有超时：日志锁一旦因为某次调用中途出事（坏 %s 指针、持锁期间抛异常）
+// 没释放，后面每一次 ncdfLog 都会原地自旋 -> 整个 OpenCPN 冻结、日志永久停止。
+// 实测「点插件按钮就卡死」正是这个形态：日志停在半句，界面僵死。
+// 超时后改写到旁路文件 ncdf_debug_stuck.log 并放行 —— 日志花一点无所谓，程序不能死。
+// 返回 true 表示拿到了主锁；false 表示走了旁路，调用方不得再 Unlock。
+static bool ncdfLogLockBounded() {
+    const DWORD kTimeoutMs = 3000;
+    DWORD t0 = GetTickCount();
+    for (;;) {
+        if (InterlockedCompareExchange(&s_logLock, 1, 0) == 0) return true;
+        if (GetTickCount() - t0 > kTimeoutMs) return false;
+        Sleep(0);
+    }
+}
+
+// SEH 包一层：%s 传到坏指针时 vfprintf 会触发访问违例。
+// 若不兜住，异常会带着日志锁一路抛出去 -> 锁永不释放 -> 上面那个死锁。
+// 单独成函数：MSVC 不允许 __try 与需要析构的 C++ 对象同处一个函数（C2712）。
+static bool ncdfSafeWrite(FILE *f, const char *fmt, va_list ap) {
+    __try {
+        vfprintf(f, fmt, ap);
+        fflush(f);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+static bool ncdfSafeWriteW(FILE *f, const wchar_t *fmt, va_list ap) {
+    __try {
+        vfwprintf(f, fmt, ap);
+        fflush(f);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// 旁路日志：主锁拿不到时把这条写进独立文件，谁卡住了锁一目了然
+static void ncdfLogFallback(const char *fmt, va_list ap) {
+    FILE *f = fopen("C:\\ProgramData\\opencpn\\ncdf_debug_stuck.log", "a");
+    if (!f) return;
+    fprintf(f, "[stuck tid=%lu t=%lu] ", (unsigned long)GetCurrentThreadId(), (unsigned long)GetTickCount());
+    vfprintf(f, fmt, ap);
+    fflush(f);
+    fclose(f);
+}
 
 // 常驻日志句柄：原来每次调用都 fopen+fclose，prepareData 里密集调用，
 // 纯 I/O 浪费。改为函数内 static 懒加载。保留 fflush —— 崩溃后取证要用。
@@ -74,15 +119,20 @@ static FILE *ncdfLogFileLocked() {
 }
 
 void ncdfLog(const char* format, ...) {
-    ncdfLogLock();
-    FILE *logFile = ncdfLogFileLocked();
-    if (!logFile) { ncdfLogUnlock(); return; }   // 必须释放锁，否则死锁
+    bool locked = ncdfLogLockBounded();
     va_list args;
     va_start(args, format);
-    vfprintf(logFile, format, args);
-    va_end(args);
-    fflush(logFile);
+    if (!locked) {
+        // 主锁被别人（或被自己重入）占死：绕开写旁路文件，绝不原地自旋
+        ncdfLogFallback(format, args);
+        va_end(args);
+        return;
+    }
+    FILE *logFile = ncdfLogFileLocked();
+    if (!logFile) { ncdfLogUnlock(); va_end(args); return; }   // 必须释放锁，否则死锁
+    ncdfSafeWrite(logFile, format, args);
     ncdfLogUnlock();
+    va_end(args);
 }
 
 // Memory tracker: log estimated memory usage from vector/overlay sizes
@@ -136,19 +186,74 @@ static void ncdfLogMem(MainDialog *dlg, const char* tag) {
 }
 
 static void ncdfLogW(const wchar_t* format, ...) {
-    ncdfLogLock();
-    FILE *logFile = ncdfLogFileLocked();
-    if (!logFile) { ncdfLogUnlock(); return; }   // 必须释放锁，否则死锁
+    bool locked = ncdfLogLockBounded();
     va_list args;
     va_start(args, format);
-    vfwprintf(logFile, format, args);
-    va_end(args);
-    fflush(logFile);
+    if (!locked) {
+        FILE *f = fopen("C:\\ProgramData\\opencpn\\ncdf_debug_stuck.log", "a");
+        if (f) {
+            fprintf(f, "[stuck tid=%lu t=%lu] ", (unsigned long)GetCurrentThreadId(), (unsigned long)GetTickCount());
+            vfwprintf(f, format, args);
+            fflush(f);
+            fclose(f);
+        }
+        va_end(args);
+        return;
+    }
+    FILE *logFile = ncdfLogFileLocked();
+    if (!logFile) { ncdfLogUnlock(); va_end(args); return; }   // 必须释放锁，否则死锁
+    ncdfSafeWriteW(logFile, format, args);
     ncdfLogUnlock();
+    va_end(args);
 }
 
 // forward decl (used by MainDialog's feature-debounce timer lambda below)
 static void refreshFeatures(MainDialog *dlg, int waves);
+
+// ===========================================================================
+// 测试型 / 使用型 开关
+//
+// 文件：C:\ProgramData\opencpn\ncdf_mode.txt
+//   test  -> 测试型：自动化测试入口生效（出现请求文件就自动跑）
+//   use   -> 使用型（默认）：自动化测试入口完全不生效，哪怕残留了请求文件
+//
+// 立这个开关的原因：自动化测试会在插件加载期强行构造面板跑算法，
+// 一旦有请求文件残留就可能把插件的日常使用整个弄坏（点按钮卡死）。
+// 用一个开关把「测试入口」和「日常使用」彻底隔开 —— 不是把测试删掉，
+// 而是让它只在显式声明 test 时才存在。
+// 不缓存文件内容，改完存盘即生效，不用重启 OpenCPN。
+// ===========================================================================
+static bool ncdfModeFileSays(const char *word) {
+	FILE *f = fopen("C:\\ProgramData\\opencpn\\ncdf_mode.txt", "r");
+	if (!f) return false;
+	char buf[128] = {0};
+	size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+	fclose(f);
+	buf[n] = '\0';
+	char w[32] = {0};
+	size_t wn = strlen(word);
+	if (wn >= sizeof(w)) wn = sizeof(w) - 1;
+	for (size_t i = 0; i < wn; i++) {
+		char c = word[i];
+		if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+		w[i] = c;
+	}
+	for (size_t i = 0; i < n; i++) {
+		if (buf[i] >= 'A' && buf[i] <= 'Z') buf[i] = (char)(buf[i] - 'A' + 'a');
+	}
+	return strstr(buf, w) != NULL;
+}
+
+bool ncdfIsTestMode() {
+	return ncdfModeFileSays("test");
+}
+
+// 自动化测试是否被请求：既要是测试型，又要有请求文件。
+// 使用型下即使残留了 ncdf_seamt_auto.txt 也一概不理。
+bool ncdfAutoTestRequested() {
+	return ncdfIsTestMode() &&
+	       wxFileExists(_T("C:\\ProgramData\\opencpn\\ncdf_seamt_auto.txt"));
+}
 
 MainDialog::MainDialog(wxWindow *parent) : ncdfDialog( parent ), m_isTreeUpdating(false)
 {
@@ -203,6 +308,10 @@ MainDialog::MainDialog(wxWindow *parent) : ncdfDialog( parent ), m_isTreeUpdatin
 			refreshFeatures(this, wv);
 		}
 	});
+
+	// 目录树懒加载：展开文件节点时才读该 nc 的元数据（见 onTreeItemExpanding）。
+	// 面板打开阶段不碰任何 nc 文件，避免被大元数据文件拖垮。
+	m_treeCtrl->Bind(wxEVT_TREE_ITEM_EXPANDING, &MainDialog::onTreeItemExpanding, this);
 }
 
 MainDialog::~MainDialog()
@@ -249,13 +358,18 @@ MainDialog::~MainDialog()
 void MainDialog::setPlugIn(ncdf_pi *p)
 {
   this->pPlugIn = p;
-  this->m_textCtrlDir->SetValue(pPlugIn->m_ncdf_dir);
+  // 用 ChangeValue 而不是 SetValue：SetValue 会触发 onDirChanged -> fillDirTree，
+  // 下面又显式调一次，等于把目录树（含每个 nc 的元数据读取）扫两遍。
+  // 第 2 次的 DeleteAllItems() 还可能落在第 1 次 addChildren 中途，直接毁掉正用着的树项。
+  // （同 CLAUDE.md 里 onFileButtonClick 那条规矩，这里当时漏了。）
+  this->m_textCtrlDir->ChangeValue(pPlugIn->m_ncdf_dir);
   // 自动化测试时跳过目录树扫描：addChildren 要读每个 nc 的元数据，
   // 目录里有大文件（如 130 MB 的年度数据集）时会拖慢到把自动测试挤到超时。
   // 自动测试直接 switchToFile 指定路径，用不到树。
-  if (wxFileExists(_T("C:\\ProgramData\\opencpn\\ncdf_seamt_auto.txt"))) {
+  if (ncdfAutoTestRequested()) {
       ncdfLog("[seamtauto] request file present -> skipping fillDirTree\n");
   } else {
+      ncdfLog("[ncdf] setPlugIn: fillDirTree (the only call from here)\n");
       fillDirTree(pPlugIn->m_ncdf_dir, true, 0);
   }
   m_checkBoxDCurrent->SetValue(pPlugIn->m_bShowCurrentDir);
@@ -630,7 +744,7 @@ void MainDialog::onDirChanged(wxCommandEvent& event)
 	if(this->m_textCtrlDir->GetValue().length() != 0 && pPlugIn->m_ncdf_dir != std_path.GetDocumentsDir()){
 		// 自动化测试期间不扫目录树（大文件会让 addChildren 拖慢到超时）。
 		// setPlugIn 里的 SetValue 会触发本事件，所以这里也必须挡。
-	    if (wxFileExists(_T("C:\\ProgramData\\opencpn\\ncdf_seamt_auto.txt"))) {
+	    if (ncdfAutoTestRequested()) {
 	        ncdfLog("[seamtauto] request file present -> onDirChanged skips fillDirTree\n");
 	        return;
 	    }
@@ -820,6 +934,14 @@ bool MainDialog::switchToFile(const wxString &fileName, const wxString &fn, int 
 	return true;
 }
 
+// 文件节点判定：m_index < 0 是文件节点（懒加载），>=0 是时间步下标。
+// 不能用 HasChildren —— 懒加载下未展开的文件节点还没有子项。
+static bool isFileNode(wxTreeCtrl *tree, const wxTreeItemId &item) {
+	if (!tree || !item.IsOk()) return false;
+	MyTreeItemData *d = (MyTreeItemData *)tree->GetItemData(item);
+	return d != NULL && d->m_index < 0;
+}
+
 void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 {
     ncdfLog("[ncdf] onTreeSelectionChanged: started\n");
@@ -840,8 +962,11 @@ void MainDialog::onTreeSelectionChanged(wxTreeEvent& event)
 		return;
 	}
 	
-	if (this->m_treeCtrl->HasChildren(event.GetItem())){
+	// 文件节点判定改用 m_index 而不是 HasChildren：
+	// 懒加载下未展开的文件节点还没有子项，HasChildren 会误判成时间步节点。
+	if (isFileNode(this->m_treeCtrl, event.GetItem())){
 	    // File node clicked: just expand/collapse (same as clicking the expand button)
+	    // 展开时 onTreeItemExpanding 会去读这个 nc 的元数据（懒加载）
 	    if (m_treeCtrl->IsExpanded(event.GetItem()))
 	        m_treeCtrl->Collapse(event.GetItem());
 	    else
@@ -1673,7 +1798,26 @@ bool MainDialog::runKuroshioExtract()
 	{
 		wxBusyCursor busy;
 		wxBusyInfo info(wxString::FromUTF8("正在提取黑潮主轴（流线约束最大流速法）…"));
-		m_kuroshio.extract(myMessage, fresh);
+		// 【绝不能让 C++ 异常逃进 wx 事件处理器】
+		// 逃出去会走到 std::terminate -> abort -> OpenCPN 当场闪退，连崩溃对话框都没有
+		// （2026-10-29 实测：全球 2041x4320 数据上点提取按钮就退，日志停在撒种子处）。
+		// 兜住后把失败显示给用户，插件和 OpenCPN 都活着。
+		try {
+			m_kuroshio.extract(myMessage, fresh);
+		}
+		catch (const std::exception &e) {
+			ncdfLog("[kuro] extract THREW: %s\n", e.what());
+			m_textCtrlFeatReadout->SetValue(
+				wxString::FromUTF8("提取失败（已捕获异常，插件未崩溃）: ") +
+				wxString::FromUTF8(e.what()));
+			return false;
+		}
+		catch (...) {
+			ncdfLog("[kuro] extract THREW: unknown exception\n");
+			m_textCtrlFeatReadout->SetValue(
+				wxString::FromUTF8("提取失败（已捕获未知异常，插件未崩溃）"));
+			return false;
+		}
 	}
 	m_kuroshioResult = fresh;
 
@@ -1871,7 +2015,23 @@ bool MainDialog::runSeamtExtract()
 	{
 		wxBusyCursor busy;
 		wxBusyInfo info(wxString::FromUTF8("正在提取急流核心（SEAMT 最小 T 参数法）…"));
-		m_seamt.extract(myMessage, fresh);
+		// 同 runKuroshioExtract：异常绝不能逃进 wx 事件处理器，否则 std::terminate 直接闪退
+		try {
+			m_seamt.extract(myMessage, fresh);
+		}
+		catch (const std::exception &e) {
+			ncdfLog("[seamt] extract THREW: %s\n", e.what());
+			m_textCtrlFeatReadout->SetValue(
+				wxString::FromUTF8("提取失败（已捕获异常，插件未崩溃）: ") +
+				wxString::FromUTF8(e.what()));
+			return false;
+		}
+		catch (...) {
+			ncdfLog("[seamt] extract THREW: unknown exception\n");
+			m_textCtrlFeatReadout->SetValue(
+				wxString::FromUTF8("提取失败（已捕获未知异常，插件未崩溃）"));
+			return false;
+		}
 	}
 	m_seamtResult = fresh;
 
@@ -1989,7 +2149,8 @@ bool MainDialog::exportSeamtCsv()
 void MainDialog::maybeRunSeamtAutoTest()
 {
 	static const wxChar *kReq = _T("C:\\ProgramData\\opencpn\\ncdf_seamt_auto.txt");
-	if (!wxFileExists(kReq)) return;
+	// 使用型下一律不跑（见 ncdfAutoTestRequested）：测试入口不能影响日常使用
+	if (!ncdfAutoTestRequested()) return;
 	runSeamtAutoTest(kReq);
 }
 
@@ -2134,7 +2295,15 @@ void MainDialog::runSeamtAutoTest(const wxString &reqPath)
 	if (base.ok) {
 		SeamtParams saved = m_seamt.params;
 		m_seamt.params.dtDays = base.dtDays * 0.5;
-		m_seamt.extract(myMessage, halfDt);
+		try {
+			m_seamt.extract(myMessage, halfDt);
+		}
+		catch (const std::exception &e) {
+			ncdfLog("[seamt][selftest] halfDt extract THREW: %s\n", e.what());
+		}
+		catch (...) {
+			ncdfLog("[seamt][selftest] halfDt extract THREW: unknown\n");
+		}
 		m_seamt.params = saved;
 		distHalfDt = seamtCoreDistance(base.core, halfDt.core);
 	}
@@ -2149,7 +2318,15 @@ void MainDialog::runSeamtAutoTest(const wxString &reqPath)
 	if (base.ok) {
 		SeamtParams saved = m_seamt.params;
 		m_seamt.params.nPts = densN;
-		m_seamt.extract(myMessage, densEns);
+		try {
+			m_seamt.extract(myMessage, densEns);
+		}
+		catch (const std::exception &e) {
+			ncdfLog("[seamt][selftest] densEns extract THREW: %s\n", e.what());
+		}
+		catch (...) {
+			ncdfLog("[seamt][selftest] densEns extract THREW: unknown\n");
+		}
 		m_seamt.params = saved;
 		distEns = seamtCoreDistance(base.core, densEns.core);
 	}
@@ -2478,11 +2655,22 @@ bool MainDialog::hitTestFeatureAt(int sx, int sy, wxString &panel)
 	return true;
 }
 
+// 重入保护：日志实测出现过「第 2 次 fillDirTree 在第 1 次 addChildren 中间闯进来，
+// 随即 DeleteAllItems() 把外层还握着的 wxTreeItemId 全销毁」。必须拒绝嵌套调用。
+// 用 POD 标志，不用非平凡 static（加载期不安全，见 CLAUDE.md）。
+static volatile LONG s_fillDirTreeBusy = 0;
+
 void MainDialog::fillDirTree(wxString path, bool start, wxTreeItemId id)
 {
     ncdfLogW(L"[ncdf] fillDirTree: started, path=%ls, start=%d\n", (const wchar_t*)path.c_str(), (int)start);
 
-	if(start == true)
+	if (InterlockedCompareExchange(&s_fillDirTreeBusy, 1, 0) != 0) {
+		ncdfLog("[ncdf] fillDirTree: **REENTRANT call REJECTED** (another fillDirTree is running)\n");
+		return;
+	}
+
+	const bool froze = (start == true);
+	if (froze)
 	{
 		ncdfLog("[ncdf] fillDirTree: deleting all tree items\n");
 
@@ -2497,32 +2685,42 @@ void MainDialog::fillDirTree(wxString path, bool start, wxTreeItemId id)
 		ncdfLog("[ncdf] fillDirTree: root item created\n");
 	}
 
-	wxDir dir(path);
-	if(dir.IsOpened() && dir.HasFiles())
-	{
-		ncdfLog("[ncdf] fillDirTree: directory opened successfully\n");
+	// 异常安全：中途抛异常也必须 Thaw() 并复位标志，否则树永久冻结、
+	// m_isTreeUpdating 卡在 true，后续所有选择事件都被挡掉。
+	try {
+		wxDir dir(path);
+		if(dir.IsOpened() && dir.HasFiles())
+		{
+			ncdfLog("[ncdf] fillDirTree: directory opened successfully\n");
 
-		wxString s;
-		if (dir.GetFirst(&s, wxEmptyString, wxDIR_FILES)) {
-			do {
-				wxString ext = s.Mid(s.find_last_of('.') + 1).Lower();
-				if (ext == "nc" || ext == "nc4") {
-					ncdfLogW(L"[ncdf] fillDirTree: adding file: %ls\n", (const wchar_t*)s.c_str());
+			wxString s;
+			if (dir.GetFirst(&s, wxEmptyString, wxDIR_FILES)) {
+				do {
+					wxString ext = s.Mid(s.find_last_of('.') + 1).Lower();
+					if (ext == "nc" || ext == "nc4") {
+						ncdfLogW(L"[ncdf] fillDirTree: adding file: %ls\n", (const wchar_t*)s.c_str());
 
-					wxTreeItemId iid = this->m_treeCtrl->AppendItem(id, s);
-
-					ncdfLogW(L"[ncdf] fillDirTree: calling addChildren for %ls\n", (const wchar_t*)s.c_str());
-					addChildren(iid, s);
-
-					ncdfLog("[ncdf] fillDirTree: addChildren returned\n");
-				}
-			} while (dir.GetNext(&s));
+						wxTreeItemId iid = this->m_treeCtrl->AppendItem(id, s);
+						// 【懒加载】只登记文件节点，不读元数据。
+						// SetItemHasChildren 让它先显示「+」号，展开时才真去 nc_open。
+						this->m_treeCtrl->SetItemData(iid, new MyTreeItemData(kFileNodeUnloaded));
+						this->m_treeCtrl->SetItemHasChildren(iid, true);
+					}
+				} while (dir.GetNext(&s));
+			}
 		}
+	}
+	catch (const std::exception &e) {
+		ncdfLog("[ncdf] fillDirTree: EXCEPTION (%s)\n", e.what());
+	}
+	catch (...) {
+		ncdfLog("[ncdf] fillDirTree: UNKNOWN EXCEPTION\n");
 	}
 
 	// Release tree update guard and thaw display
 	m_isTreeUpdating = false;
-	if (start) m_treeCtrl->Thaw();
+	if (froze) m_treeCtrl->Thaw();
+	InterlockedExchange(&s_fillDirTreeBusy, 0);
 
 	ncdfLog("[ncdf] fillDirTree: completed\n");
 }
@@ -2534,10 +2732,32 @@ void MainDialog::addChildren(wxTreeItemId id, wxString fn)
 	wxString fileName = this->m_textCtrlDir->GetValue()+_("\\")+fn;
 	ncdfLogW(L"[ncdf] addChildren: fileName=%ls\n", (const wchar_t*)fileName.c_str());
 
+	// 进来就把节点标成「已加载」：失败也要标，否则用户会一直点一个死节点反复 nc_open。
+	{
+		MyTreeItemData *d = (MyTreeItemData *)this->m_treeCtrl->GetItemData(id);
+		if (d) d->m_index = kFileNodeLoaded;
+		this->m_treeCtrl->SetItemHasChildren(id, false);
+	}
+
 	// Lightweight metadata read — no myDataVector allocation, no nc_get overhead
-	FileMetadata meta = nc_read_metadata(fileName);
+	// 异常兜底：日志显示卡点就在这一句之后，抛出的异常必须留在本函数里被记录，
+	// 不能一路穿过 fillDirTree 逃到 wx 事件边界（会留下冻结的树 + 卡 true 的标志）。
+	FileMetadata meta;
+	try {
+		meta = nc_read_metadata(fileName);
+	}
+	catch (const std::exception &e) {
+		ncdfLog("[ncdf] addChildren: nc_read_metadata EXCEPTION (%s) for %s\n",
+			e.what(), (const char*)fileName.ToUTF8());
+		return;
+	}
+	catch (...) {
+		ncdfLogW(L"[ncdf] addChildren: nc_read_metadata UNKNOWN EXCEPTION for %ls\n",
+			(const wchar_t*)fileName.c_str());
+		return;
+	}
 	if (!meta.valid) {
-		ncdfLog("[ncdf] addChildren: nc_read_metadata failed for %s\n", (const char*)fileName.mb_str());
+		ncdfLog("[ncdf] addChildren: nc_read_metadata failed for %s\n", (const char*)fileName.ToUTF8());
 		return;
 	}
 	ncdfLog("[ncdf] addChildren: metadata OK, timelength=%zu hasCurrent=%d hasSST=%d hasSal=%d\n",
@@ -2556,7 +2776,26 @@ void MainDialog::addChildren(wxTreeItemId id, wxString fn)
 		this->m_treeCtrl->SetItemData(itemId, treeItemData);
 	}
 
+	this->m_treeCtrl->SetItemHasChildren(id, meta.timelength > 0);
 	ncdfLog("[ncdf] addChildren: completed, %zu tree items created\n", meta.timelength);
+}
+
+// 目录树懒加载的入口：展开一个还没读过元数据的文件节点时，才去 nc_open 它。
+// 这样面板打开时不碰任何 nc 文件，单个文件出问题也只影响它自己。
+void MainDialog::onTreeItemExpanding(wxTreeEvent& event)
+{
+	if (m_isTreeUpdating) { event.Skip(); return; }
+
+	wxTreeItemId id = event.GetItem();
+	if (!id.IsOk()) { event.Skip(); return; }
+
+	MyTreeItemData *d = (MyTreeItemData *)this->m_treeCtrl->GetItemData(id);
+	if (!d || d->m_index != kFileNodeUnloaded) { event.Skip(); return; }
+
+	wxString fn = this->m_treeCtrl->GetItemText(id);
+	ncdfLogW(L"[ncdf] onTreeItemExpanding: lazy load %ls\n", (const wchar_t*)fn.c_str());
+	addChildren(id, fn);
+	event.Skip();
 }
 
 void MainDialog::OnContextMenu(double m_lat, double m_lon){

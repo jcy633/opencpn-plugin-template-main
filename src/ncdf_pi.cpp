@@ -45,6 +45,8 @@
 #include "ncdf.h"
 
 extern void ncdfLog(const char* format, ...);
+// 测试型/使用型判定（实现在 ncdf.cpp）：使用型下自动化测试入口完全不生效
+extern bool ncdfAutoTestRequested();
 
 // Crash dump handler — generates minidump on access violation
 #include <dbghelp.h>
@@ -167,10 +169,11 @@ int ncdf_pi::Init(void)
 		  (new wxMenuItem(&dummy_menu, -1, _("Drop Tidal Arrow")), this);
 	  SetCanvasContextMenuItemViz(m_position_menu_id, true);
 
-      // 自动化测试：存在请求文件时自动打开面板。面板构造完成后会跑 SEAMT 自测
+      // 自动化测试：【仅测试型】存在请求文件时自动打开面板。面板构造完成后会跑 SEAMT 自测
       // （见 MainDialog::maybeRunSeamtAutoTest）。这样外部脚本只需
       // 「写请求文件 -> 启动 OpenCPN -> 等 -> 读结果文件」，不必手动点界面。
-      if (wxFileExists(_T("C:\\ProgramData\\opencpn\\ncdf_seamt_auto.txt"))) {
+      // 使用型（ncdf_mode.txt 不含 test）下这一段完全不生效 —— 测试不该影响日常使用。
+      if (ncdfAutoTestRequested()) {
           ncdfLog("[seamtauto] request file found at plugin init -> opening panel\n");
           OnToolbarToolCallback(0);
       }
@@ -482,11 +485,32 @@ bool ncdf_pi::loadLandMaskFiles(bool force)
         return false;
     }
 
-    // 名字含 30s/15s 的排前面当精细层；含 60s/1min 的当粗层
+    // 2026-10-29 用户决定：陆海判定统一用 30" 掩膜，不再用 15" 那份。
+    // 15" 那份只有 24°×24° 的区域裁剪，全球数据上反而不如 30" 全球层可靠；
+    // 颜色图一直用 30" 跑全球数据也没问题，撒种子没理由另用一套。
+    // 只在还有别的候选时才丢 15"，免得只剩它一个时反而没掩膜可用。
+    {
+        size_t nonFine = 0;
+        for (size_t i = 0; i < cands.GetCount(); i++) {
+            wxString n = cands[i].Lower();
+            if (n.Find(_T("15s")) == wxNOT_FOUND && n.Find(_T("15sec")) == wxNOT_FOUND) nonFine++;
+        }
+        if (nonFine > 0) {
+            for (size_t i = cands.GetCount(); i-- > 0; ) {
+                wxString n = cands[i].Lower();
+                if (n.Find(_T("15s")) != wxNOT_FOUND || n.Find(_T("15sec")) != wxNOT_FOUND) {
+                    ncdfLog("[landmask] skip 15s layer (30s preferred): %s\n",
+                            (const char*)cands[i].mb_str());
+                    cands.RemoveAt(i);
+                }
+            }
+        }
+    }
+
+    // 名字含 30s 的排前面当精细层；含 60s/1min 的当粗层
     auto rank = [](const wxString &p) {
         wxString n = p.Lower();
-        if (n.Find(_T("15s")) != wxNOT_FOUND || n.Find(_T("30s")) != wxNOT_FOUND ||
-            n.Find(_T("15sec")) != wxNOT_FOUND) return 0;
+        if (n.Find(_T("30s")) != wxNOT_FOUND || n.Find(_T("30sec")) != wxNOT_FOUND) return 0;
         if (n.Find(_T("60s")) != wxNOT_FOUND || n.Find(_T("1min")) != wxNOT_FOUND) return 2;
         return 1;
     };

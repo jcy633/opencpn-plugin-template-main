@@ -281,6 +281,19 @@ static CFTimeInfo ParseCFTimeUnits(const char* unitsStr) {
     return info;
 }
 
+// 【探针】Win32 进程只有 2 GB 地址空间（CLAUDE.md 反复记过这个坑）。
+// 报告可用虚拟地址空间：nc_open 抛 bad_alloc 时，要么是地址空间被吃穿，
+// 要么是 HDF5 的大块 VirtualAlloc 失败后被 /EHa 翻成 std::bad_alloc。
+static void ncdfLogAddrSpace(const char *tag) {
+	MEMORYSTATUSEX ms;
+	ms.dwLength = sizeof(ms);
+	if (!GlobalMemoryStatusEx(&ms)) return;
+	ncdfLog("[addr] %s: availVirtual=%.0fMB availPageFile=%.0fMB availPhys=%.0fMB\n",
+		tag, ms.ullAvailVirtual / (1024.0 * 1024.0),
+		ms.ullAvailPageFile / (1024.0 * 1024.0),
+		ms.ullAvailPhys / (1024.0 * 1024.0));
+}
+
 // Lightweight metadata reader for tree building — no data allocation, no myDataVector modification.
 // Returns date labels and data type availability for each timestep.
 MainDialog::FileMetadata MainDialog::nc_read_metadata(const wxString &fileName) {
@@ -288,11 +301,22 @@ MainDialog::FileMetadata MainDialog::nc_read_metadata(const wxString &fileName) 
 	const wxCharBuffer mbBuf = fileName.mb_str();
 	const char* filename = mbBuf.data();
 
+	// 【探针】日志显示卡死点就落在本函数里（进来后既没走到 valid=true 也没走到
+	// 返回空 meta）。逐段打点，下次一点按钮就能点名到具体哪一步。
+	ncdfLog("[ncdfmeta] enter\n");
+	ncdfLogAddrSpace("before nc_open");
+
 	int ncid;
 	int retval = nc_open(filename, NC_NOWRITE, &ncid);
-	if (retval != NC_NOERR)
+	ncdfLog("[ncdfmeta] nc_open(NC_NOWRITE) returned %d\n", retval);
+	if (retval != NC_NOERR) {
+		ncdfLogAddrSpace("after failed open 1");
 		retval = nc_open(filename, NC_NOWRITE | NC_NETCDF4, &ncid);
-	if (retval != NC_NOERR) return meta;
+		ncdfLog("[ncdfmeta] nc_open(NC_NOWRITE|NC_NETCDF4) returned %d\n", retval);
+	}
+	ncdfLogAddrSpace("after nc_open");
+	if (retval != NC_NOERR) { ncdfLog("[ncdfmeta] nc_open FAILED retval=%d\n", retval); return meta; }
+	ncdfLog("[ncdfmeta] nc_open ok, ncid=%d\n", ncid);
 
 	// Discover time variable
 	int time_varid;
@@ -302,16 +326,20 @@ MainDialog::FileMetadata MainDialog::nc_read_metadata(const wxString &fileName) 
 		const char* var_hints[] = {"time", "t", "Time", NULL};
 		time_varid = find_var_by_cf(ncid, "time", alt_std, long_hints, var_hints);
 	}
+	ncdfLog("[ncdfmeta] time_varid=%d\n", time_varid);
 	if (time_varid == -1) { nc_close(ncid); return meta; }
 
 	int timeid = find_dim_by_var(ncid, time_varid, 0);
+	ncdfLog("[ncdfmeta] time dimid=%d\n", timeid);
 	if (timeid == -1) { nc_close(ncid); return meta; }
 
 	size_t timelength = 0;
 	if (nc_inq_dimlen(ncid, timeid, &timelength) != NC_NOERR || timelength == 0) {
+		ncdfLog("[ncdfmeta] time dimlen FAILED or 0 (=%zu)\n", timelength);
 		nc_close(ncid);
 		return meta;
 	}
+	ncdfLog("[ncdfmeta] timelength=%zu\n", timelength);
 
 	// Read time values
 	double* time_out = (double*)calloc(timelength, sizeof(double));
@@ -329,10 +357,13 @@ MainDialog::FileMetadata MainDialog::nc_read_metadata(const wxString &fileName) 
 	// Parse CF time units
 	CFTimeInfo timeInfo;
 	char* timeUnits = read_var_att_text(ncid, time_varid, "units");
+	ncdfLog("[ncdfmeta] time values read, timeUnits=%s\n", timeUnits ? timeUnits : "(none)");
 	if (timeUnits) {
 		timeInfo = ParseCFTimeUnits(timeUnits);
 		delete[] timeUnits;
 	}
+	ncdfLog("[ncdfmeta] CF units parsed: valid=%d secondsPerUnit=%g\n",
+		(int)timeInfo.valid, timeInfo.secondsPerUnit);
 
 	// Check data availability and cache variable IDs
 	{
@@ -369,6 +400,9 @@ MainDialog::FileMetadata MainDialog::nc_read_metadata(const wxString &fileName) 
 		meta.cached_zos_varid = find_var_by_cf(ncid, "sea_surface_height_above_geoid", alt_std, long_hints, var_hints);
 		meta.hasZos = (meta.cached_zos_varid != -1);
 	}
+	ncdfLog("[ncdfmeta] var discovery done: u=%d v=%d sst=%d sal=%d zos=%d\n",
+		meta.cached_u_varid, meta.cached_v_varid, meta.cached_sst_varid,
+		meta.cached_sal_varid, meta.cached_zos_varid);
 
 	// Read lat/lon coordinates and dimension sizes
 	{
@@ -430,16 +464,37 @@ MainDialog::FileMetadata MainDialog::nc_read_metadata(const wxString &fileName) 
 	}
 
 	// Store time values for later use
+	ncdfLog("[ncdfmeta] lat/lon done: latlen=%zu lonlen=%zu lat0=%g lon0=%g\n",
+		meta.latlength, meta.lonlength, meta.firstGridPointLat, meta.firstGridPointLong);
 	meta.timeValues.resize(timelength);
 	for (size_t i = 0; i < timelength; i++) meta.timeValues[i] = time_out[i];
 
 	// Build date list
+	// 防御性上限：time 维要是被认错成别的维（例如数据维），下面三个 resize 会按
+	// 上亿元素去分配，直接吃穿 Win32 的 2 GB 地址空间 -> bad_alloc -> 全局崩。
+	// 元数据用的日期表超过 10 万条没有意义，宁可判为无效文件。
+	if (timelength > 100000) {
+		ncdfLog("[ncdfmeta] timelength=%zu implausible for metadata, treating file as invalid\n", timelength);
+		free(time_out);
+		nc_close(ncid);
+		return meta;
+	}
+	ncdfLog("[ncdfmeta] building %zu date labels...\n", timelength);
 	meta.timelength = timelength;
 	meta.dates.resize(timelength);
 	meta.timeValid.resize(timelength);
 	for (size_t i = 0; i < timelength; i++) {
 		if (timeInfo.valid) {
-			wxTimeSpan span = wxTimeSpan::Seconds((long long)(time_out[i] * timeInfo.secondsPerUnit));
+			// 时间值若是 _FillValue/NaN，sec 会是 inf/NaN，强转 (long long) 是未定义
+			// 行为，wxTimeSpan 拿到天文数字后 wxDateTime::Add 会溢出 time_t。
+			// 这里先判有限性，不合法就标无效日期，绝不走进未定义行为。
+			double sec = time_out[i] * timeInfo.secondsPerUnit;
+			if (!(sec == sec) || sec <= -1.0e15 || sec >= 1.0e15) {
+				meta.dates[i] = wxDateTime();
+				meta.timeValid[i] = false;
+				continue;
+			}
+			wxTimeSpan span = wxTimeSpan::Seconds((long long)sec);
 			meta.dates[i] = timeInfo.baseDateTime;
 			meta.dates[i].Add(span);
 			meta.timeValid[i] = true;
@@ -471,9 +526,11 @@ MainDialog::FileMetadata MainDialog::nc_read_metadata(const wxString &fileName) 
 		}
 	}
 
+	ncdfLog("[ncdfmeta] date labels built, valid=1\n");
 	meta.valid = true;
 	free(time_out);
 	nc_close(ncid);
+	ncdfLog("[ncdfmeta] done\n");
 	return meta;
 }
 

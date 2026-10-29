@@ -216,11 +216,18 @@ void BuildLandLayers(NcdfLandMask &fine, NcdfLandMask *coarse,
         lonMax = wxMax(lonMax, 180.0);
     }
 
-    // [步骤4] 停用精层，只建粗层 —— 验证「陆地不正常」是否由此引起
-    bool hasFine = false;
-    (void)hasFine;
-    if (coarse && coarse->valid()) {
-        BuildLandLayer(*coarse, latMin, latMax, lonMin, lonMax, s_landLayer);
+    // [步骤4] 只建一层（两层挖空接缝的问题见 CLAUDE.md，不走精层+粗层互补）。
+    // 【2026-10-29 修】这里原先写死成「只建 coarse、fine 一律不用」（db59067
+    // 验证「陆地不正常」时留下的调试代码，忘了回退）。掩膜只剩一份（30" 全球层）
+    // 之后 coarse 是 NULL，于是**一个图层都没建**：active=0 hasTex=0，
+    // 补空白在没掩膜的情况下把陆地涂成了海底色。
+    // 改成「有 coarse 用 coarse，否则用 fine」——两份都在时行为与原来一致。
+    NcdfLandMask *src = (coarse && coarse->valid()) ? coarse
+                     : (fine.valid() ? &fine : NULL);
+    if (src) {
+        BuildLandLayer(*src, latMin, latMax, lonMin, lonMax, s_landLayer);
+    } else {
+        ncdfLog("[landlayer] WARN: no land mask available, land layer not built\n");
     }
     s_landBuilt = true;
     ncdfLog("[landlayer] active=%d hasTex=%d\n",

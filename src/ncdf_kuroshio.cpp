@@ -28,25 +28,62 @@
 
 extern void ncdfLog(const char* format, ...);
 
+// 【探针】Win32 进程只有 2 GB 地址空间。全球 2041x4320 网格上单是 myMessage 的
+// 五份 double 就 353 MB，撒种子再切一块 8.8 MB 的标记数组就可能顶到上限。
+// 一旦 bad_alloc，要能一眼分清是"空间没了"还是"单次申请过大"。
+static void kuroLogAddr(const char *tag) {
+    MEMORYSTATUSEX ms;
+    ms.dwLength = sizeof(ms);
+    if (!GlobalMemoryStatusEx(&ms)) return;
+    ncdfLog("[kuro][addr] %s: availVirtual=%.0fMB\n", tag,
+            ms.ullAvailVirtual / (1024.0 * 1024.0));
+}
+
 // 诊断开关：C:\ProgramData\opencpn\ncdf_flags.txt 里写 kuroThreads=N。
 // N=1 强制串行，用于 A/B 对照排除并行化对结果的影响；未设或 N<=0 = 自动。
 // 与 ncdf_tilegrid.cpp 的 sea/land/fill 开关同一套文件、同一套用法。
 // 另可写 kuroCap=N 覆盖候选池上限（MATLAB 原版是不设上限的，见下）。
+// 诊断开关：C:\ProgramData\opencpn\ncdf_flags.txt
+//
+// 【2026-10-29 性能坑】原先每次调用都 fopen 一遍 flags 文件。而 kuroAvgZero()
+// 会在**每条候选段**上调用（实测 candSegs=687829，即每轮 68.8 万次 fopen/fclose），
+// 8 线程并发开关同一个文件把 CRT 文件锁踩爆：CPU 51 s -> 124 s，墙上时间几乎没降
+// （实测 1 线程 CPU 51437ms / 8 线程 CPU 124546ms，墙上都是 ~49 s）。
+// 现在缓存文件内容 2 秒：改完 flags 存盘后停 2 秒重跑即生效。
+// 锁用 POD 自旋锁（CLAUDE.md：非平凡 static 在插件加载期不安全）。
 static int kuroFlagInt(const char *key)
 {
-    FILE *fp = fopen("C:\\ProgramData\\opencpn\\ncdf_flags.txt", "r");
-    if (!fp) return 0;
-    char line[256];
+    static volatile LONG s_lock = 0;
+    static char  s_text[2048] = {0};
+    static DWORD s_tick = 0;
+    static bool  s_have = false;
+
+    while (InterlockedCompareExchange(&s_lock, 1, 0) != 0) Sleep(0);
     int n = 0;
+    if (!s_have || (GetTickCount() - s_tick) > 2000) {
+        s_text[0] = '\0';
+        FILE *fp = fopen("C:\\ProgramData\\opencpn\\ncdf_flags.txt", "r");
+        if (fp) {
+            size_t k = fread(s_text, 1, sizeof(s_text) - 1, fp);
+            s_text[k] = '\0';
+            fclose(fp);
+        }
+        s_tick = GetTickCount();
+        s_have = true;
+    }
     size_t klen = strlen(key);
-    while (fgets(line, sizeof(line), fp)) {
-        if (strncmp(line, key, klen) == 0) {
-            const char *eq = strchr(line, '=');
+    for (const char *p = s_text; *p; ) {
+        const char *nl = strchr(p, '\n');
+        size_t len = nl ? (size_t)(nl - p) : strlen(p);
+        if (len >= klen && strncmp(p, key, klen) == 0) {
+            const char *eq = (const char *)memchr(p, '=', len);
             if (eq) n = atoi(eq + 1);
             break;
         }
+        if (!nl) break;
+        p = nl + 1;
     }
-    fclose(fp);
+    InterlockedExchange(&s_lock, 0);
     return n;
 }
 static int kuroThreadsOverride() { return kuroFlagInt("kuroThreads"); }
@@ -60,12 +97,32 @@ static int kuroZeroFill()        { return kuroFlagInt("kuroZeroFill"); }
 
 // 统一取速度入口：按 F.zeroFillInvalid 分派到 sample / sampleZeroFill。
 // 参数顺序与 F.sample 保持一致，便于原地替换。
+// 【2026-10-29 修】这里原先写成 sampleF(F, ...) 调到了自己，零速格填充关闭时
+// 无限递归 -> 栈溢出 -> 访问违例 -> OpenCPN 当场闪退。必须调 F.sample。
 static inline bool sampleF(const UVField &F, double lonq, double latq,
                            double &uo, double &vo)
 {
     return F.zeroFillInvalid ? F.sampleZeroFill(lonq, latq, uo, vo)
-                             : sampleF(F, lonq, latq, uo, vo);
+                             : F.sample(lonq, latq, uo, vo);
 }
+// 工作量计数（定位热点用）：每条候选两次原子加，摊在几十微秒的工作上可忽略。
+static std::atomic<unsigned long long> g_kuroCandSegs(0);
+static std::atomic<unsigned long long> g_kuroSamplePts(0);
+static std::atomic<unsigned long long> g_kuroIntegSteps(0);
+static std::atomic<unsigned long long> g_kuroLoopPairs(0);
+
+// 进程累计 CPU 时间（所有线程之和，单位 ms）。
+// 和墙上时间一比就知道并行到底有没有跑起来：接近 = 线程在互相等（堆锁竞争等），
+// 接近 8 倍 = 真是计算量大，得往算法里找。
+static long long kuroProcCpuMs() {
+    FILETIME c, e, k, u;
+    if (!GetProcessTimes(GetCurrentProcess(), &c, &e, &k, &u)) return -1;
+    ULARGE_INTEGER ku, uu;
+    ku.LowPart = k.dwLowDateTime;  ku.HighPart = k.dwHighDateTime;
+    uu.LowPart = u.dwLowDateTime; uu.HighPart = u.dwHighDateTime;
+    return (long long)((ku.QuadPart + uu.QuadPart) / 10000ULL);
+}
+
 // 评分权重 alpha（×1000）。score = alpha*dist_norm + (1-alpha)*(1-spd_norm)。
 // MATLAB 取 alpha=0.5。alpha=1000 → 纯按"离上一段最近"选（诊断用）：
 //   若此时 D 段骨架贴近真脊、校正后与参考轴吻合，就证明原 0.5 权重
@@ -223,12 +280,21 @@ static bool detectLoops(const std::vector<double> &xy, int minPts, double distTh
 {
     int n = (int)(xy.size() / 2);
     if (n < minPts * 2) return false;
+    // 平方距离比较：sqrt(x) < t 与 x < t*t 等价（t > 0），
+    // 而这是 O(n^2) 的双重循环，把 sqrt 从内层去掉能省一个量级。
+    const double d2 = distThresh * distThresh;
+    unsigned long long pairs = 0;
     for (int i = 0; i < n - minPts; i++) {
         for (int j = i + minPts; j < n; j++) {
             double dx = xy[2 * i] - xy[2 * j], dy = xy[2 * i + 1] - xy[2 * j + 1];
-            if (std::sqrt(dx * dx + dy * dy) < distThresh) return true;
+            pairs++;
+            if (dx * dx + dy * dy < d2) {
+                g_kuroLoopPairs.fetch_add(pairs, std::memory_order_relaxed);
+                return true;
+            }
         }
     }
+    g_kuroLoopPairs.fetch_add(pairs, std::memory_order_relaxed);
     return false;
 }
 
@@ -468,6 +534,33 @@ struct TraceBounds {
     }
 };
 
+// 追踪边界 = 11 条断面 + 五段段盒，再外扩 4 度。流线一旦离开即截断——
+// 后续 validate_streamline 的盒约束必然失败，继续积分为纯浪费。
+// UVField 的视野也按它裁（见 F.window）：提取全程只碰这一小块。
+static TraceBounds kuroTraceBounds() {
+    TraceBounds tb = { 1e300, -1e300, 1e300, -1e300 };
+    for (int s = 0; s < 11; s++) {
+        for (int p = 0; p < 2; p++) {
+            double lo = (p == 0) ? kSections[s].lon1 : kSections[s].lon2;
+            double la = (p == 0) ? kSections[s].lat1 : kSections[s].lat2;
+            if (lo < tb.lonMin) tb.lonMin = lo;
+            if (lo > tb.lonMax) tb.lonMax = lo;
+            if (la < tb.latMin) tb.latMin = la;
+            if (la > tb.latMax) tb.latMax = la;
+        }
+    }
+    for (int s = 0; s < 5; s++) {
+        if (kSegs[s].lonRange[0] < tb.lonMin) tb.lonMin = kSegs[s].lonRange[0];
+        if (kSegs[s].lonRange[1] > tb.lonMax) tb.lonMax = kSegs[s].lonRange[1];
+        if (kSegs[s].latLim[0] < tb.latMin) tb.latMin = kSegs[s].latLim[0];
+        if (kSegs[s].latLim[1] > tb.latMax) tb.latMax = kSegs[s].latLim[1];
+    }
+    const double kTraceMargin = 4.0;
+    tb.lonMin -= kTraceMargin; tb.lonMax += kTraceMargin;
+    tb.latMin -= kTraceMargin; tb.latMax += kTraceMargin;
+    return tb;
+}
+
 static void integrateOneWay(const UVField &F, double lon0, double lat0,
                             double sign, int maxPts, const TraceBounds &tb,
                             std::vector<double> &out)
@@ -520,6 +613,8 @@ static void collectCandidates(const std::vector<double> &xy, const SegDef &seg,
                               CandList &out)
 {
     if (idxA.empty() || idxB.empty()) return;
+    // 口径开关一次读好：下面每条候选都要用，别在内层反复读 flags
+    const bool avgZero = (kuroAvgZero() != 0);
 
     // 诊断（kuroDbg=1）：候选为什么这么少 —— 卡在「没跨断面」还是「validate 被拒」，
     // 两者修法完全不同。B 段实测主路径只有 1 个候选，靠这个分类定位。
@@ -537,6 +632,9 @@ static void collectCandidates(const std::vector<double> &xy, const SegDef &seg,
 
         Cand c;
         c.xy.assign(xy.begin() + 2 * s, xy.begin() + 2 * e + 2);
+        g_kuroCandSegs.fetch_add(1, std::memory_order_relaxed);
+        g_kuroSamplePts.fetch_add((unsigned long long)(c.xy.size() / 2),
+                                  std::memory_order_relaxed);
 
         // validate_streamline：盒子约束 + 环流检测
         bool valid = true;
@@ -552,21 +650,22 @@ static void collectCandidates(const std::vector<double> &xy, const SegDef &seg,
         // **零填充**的网格上（sub_u(isnan|land)=0）—— 所以无效格点以 0 计入均值，
         // 不是被跳过。我们原先只统计有效点，口径不同，而 avgSpeed 正是
         // pickBest 评分的一项。kuroAvgZero=1 复刻 MATLAB 口径。
+        //
+        // 【2026-10-29】原先这里把同一段流线**采样两遍**：第一遍求和，第二遍只为
+        // 数有效点个数、结果全扔。collectCandidates 每条种子要调 15 次（5 段 × 3 表），
+        // 是全程序最热的路径，白扔一半算力。合并成一趟：语义完全不变
+        // （sampleF 是纯函数，重复调用结果相同）。
         double sum = 0.0;
-        int cnt = (int)(c.xy.size() / 2);
+        int validCnt = 0;
         for (size_t k = 0; k < c.xy.size() / 2; k++) {
             double uu, vv;
-            if (sampleF(F, c.xy[2 * k], c.xy[2 * k + 1], uu, vv)) sum += std::hypot(uu, vv);
+            if (sampleF(F, c.xy[2 * k], c.xy[2 * k + 1], uu, vv)) {
+                sum += std::hypot(uu, vv);
+                validCnt++;
+            }
             // 取不到速度的点：kuroAvgZero 时按 0 计（复刻 MATLAB）；否则不计分母
         }
-        if (!kuroAvgZero()) {
-            int valid = 0;
-            for (size_t k = 0; k < c.xy.size() / 2; k++) {
-                double uu, vv;
-                if (sampleF(F, c.xy[2 * k], c.xy[2 * k + 1], uu, vv)) valid++;
-            }
-            cnt = valid;
-        }
+        int cnt = avgZero ? (int)(c.xy.size() / 2) : validCnt;
         c.avgSpeed = (cnt > 0) ? sum / (double)cnt : 0.0;
         out.add(c);
         st.added++;
@@ -932,23 +1031,60 @@ bool KuroshioExtractor::extract(const ncdfDataMessage &msg, KuroshioAxisResult &
     ncdfLog("[kuro] extract: grid lat=%d lon=%d cell=%.4f deg latAsc=%d lonAsc=%d\n",
             (int)F.nlat, (int)F.nlon, F.cellDeg, (int)F.latAsc, (int)F.lonAsc);
 
-    // ---- [0] 种子点：规则网格 x 黑潮流廊道 x 海点 ----
+    // 【cache 局部性】把视野裁到追踪边界那一小块。全球 2041x4320 网格的 u/v 各
+    // 70 MB，流线每步插值读 8 个格点全在 cache 外；裁完工作集降到 1 MB 量级。
+    // 纯指针/计数变换，不做数值运算，结果与不裁时逐位一致。
+    {
+        TraceBounds w = kuroTraceBounds();
+        size_t oNlat = F.nlat, oNlon = F.nlon;
+        F.window(w.latMin, w.latMax, w.lonMin, w.lonMax);
+        ncdfLog("[kuro] uv window: %zu x %zu -> %zu x %zu  (lat %.2f..%.2f lon %.2f..%.2f)\n",
+                oNlat, oNlon, F.nlat, F.nlon,
+                w.latMin, w.latMax, w.lonMin, w.lonMax);
+    }
+
+    // ---- [0] 种子点：规则网格 x 研究域（段盒） x 海点 ----
     // 论文："seed points were placed on a regular grid with 1/12° spacing covering
     // the study domain" —— 即种子间距 = 数据网格距。seedSpacingDeg <= 0 时取该值
     // （官方 MATLAB 用 0.125°，比论文粗，属代码与正文的分歧）。
-    const double domLon0 = 115.0, domLon1 = 132.0, domLat0 = 15.0, domLat1 = 32.0;
+    //
+    // 【2026-10-29 收紧】"the study domain" = 11 条硬编码断面围成的 A–E 五个段盒
+    // （kSegs，坐标逐字取自论文 Table 1）。原先用 115~132E / 15~32N 的大框加
+    // L 形廊道，比研究域大一倍多，撒出 22292 个种子，双向流线积分要 47 s
+    // （GUI 全程阻塞，看着像卡死）。段盒之外的种子不可能产出合格候选
+    // ——validate_streamline 要求落在段盒内并跨断面——所以限制到这里不损失正确性，
+    // 反而更贴论文"covering the study domain"的原意。
+    double domLat0 = 1e30, domLat1 = -1e30, domLon0 = 1e30, domLon1 = -1e30;
+    for (int s = 0; s < 5; s++) {
+        domLat0 = std::min(domLat0, kSegs[s].latLim[0]);
+        domLat1 = std::max(domLat1, kSegs[s].latLim[1]);
+        domLon0 = std::min(domLon0, kSegs[s].lonRange[0]);
+        domLon1 = std::max(domLon1, kSegs[s].lonRange[1]);
+    }
+    // 五个段盒的并集才算研究域（A/B/C 在西侧，D/E 在东北侧，不是一个矩形）
+    auto inStudyDomain = [](double la, double lo) -> bool {
+        for (int s = 0; s < 5; s++) {
+            if (la >= kSegs[s].latLim[0]   && la <= kSegs[s].latLim[1] &&
+                lo >= kSegs[s].lonRange[0] && lo <= kSegs[s].lonRange[1])
+                return true;
+        }
+        return false;
+    };
+
     double pre = (seedSpacingDeg > 1e-4) ? seedSpacingDeg : F.cellDeg;
     if (!(pre > 1e-4) || pre > 1.0) pre = 0.125;
 
     // 最近格点索引：均匀网格用 O(1)，否则线性扫描（种子生成仅一次）
     std::vector<double> seeds;
     {
+        kuroLogAddr("before seed used[]");
         std::vector<char> used(F.nlat * F.nlon, 0);
+        kuroLogAddr("after  seed used[]");
+        ncdfLog("[kuro] seed domain: lat %.2f..%.2f lon %.2f..%.2f (A-E seg boxes), spacing=%.4f\n",
+                domLat0, domLat1, domLon0, domLon1, pre);
         for (double la = domLat0; la <= domLat1 + 1e-9; la += pre) {
             for (double lo = domLon0; lo <= domLon1 + 1e-9; lo += pre) {
-                bool inCorridor = (la < 24.0 && lo >= 115.0 && lo <= 124.0) ||
-                                  (la >= 24.0 && lo >= 120.0 && lo <= 132.0);
-                if (!inCorridor) continue;
+                if (!inStudyDomain(la, lo)) continue;
 
                 size_t bi = F.nearest(F.lon, F.nlon, F.lonAsc, F.lonUni, F.dLon, lo);
                 size_t bj = F.nearest(F.lat, F.nlat, F.latAsc, F.latUni, F.dLat, la);
@@ -974,28 +1110,9 @@ bool KuroshioExtractor::extract(const ncdfDataMessage &msg, KuroshioAxisResult &
     }
 
     // ---- [1] 双向流线追踪，逐条丢弃，只留候选子段 ----
-    // 追踪边界：11 条断面 + 五段段盒外扩 4 度。流线一旦离开即截断——
-    // 后续 validate_streamline 的盒约束必然失败，继续积分为纯浪费。
-    TraceBounds tb = { 1e300, -1e300, 1e300, -1e300 };
-    for (int s = 0; s < 11; s++) {
-        for (int p = 0; p < 2; p++) {
-            double lo = (p == 0) ? kSections[s].lon1 : kSections[s].lon2;
-            double la = (p == 0) ? kSections[s].lat1 : kSections[s].lat2;
-            if (lo < tb.lonMin) tb.lonMin = lo;
-            if (lo > tb.lonMax) tb.lonMax = lo;
-            if (la < tb.latMin) tb.latMin = la;
-            if (la > tb.latMax) tb.latMax = la;
-        }
-    }
-    for (int s = 0; s < 5; s++) {
-        if (kSegs[s].lonRange[0] < tb.lonMin) tb.lonMin = kSegs[s].lonRange[0];
-        if (kSegs[s].lonRange[1] > tb.lonMax) tb.lonMax = kSegs[s].lonRange[1];
-        if (kSegs[s].latLim[0] < tb.latMin) tb.latMin = kSegs[s].latLim[0];
-        if (kSegs[s].latLim[1] > tb.latMax) tb.latMax = kSegs[s].latLim[1];
-    }
-    const double kTraceMargin = 4.0;
-    tb.lonMin -= kTraceMargin; tb.lonMax += kTraceMargin;
-    tb.latMin -= kTraceMargin; tb.latMax += kTraceMargin;
+    // 追踪边界见 kuroTraceBounds()：11 条断面 + 五段段盒外扩 4 度。
+    // 流线一旦离开即截断——后续 validate_streamline 的盒约束必然失败，继续积分为纯浪费。
+    TraceBounds tb = kuroTraceBounds();
 
     CandList candsMain[5], candsSM[5], candsMN[5];
 
@@ -1052,6 +1169,7 @@ bool KuroshioExtractor::extract(const ncdfDataMessage &msg, KuroshioAxisResult &
     wout.reserve(nThreads);
     for (unsigned t = 0; t < nThreads; t++) wout.push_back(WorkerOut(candCap));
 
+    const long long kuroCpu0 = kuroProcCpuMs();
     {
         // 动态派发（原子计数器）而不是静态分块：各处流线长短差别很大，
         // 静态分块会让先做完的线程干等。合并是"取全体前 cap 条"，与派发顺序无关。
@@ -1073,6 +1191,8 @@ bool KuroshioExtractor::extract(const ncdfDataMessage &msg, KuroshioAxisResult &
 
                     integrateOneWay(F, sLon, sLat, +1.0, half, tb, fwd);
                     integrateOneWay(F, sLon, sLat, -1.0, half, tb, bwd);
+                    g_kuroIntegSteps.fetch_add((fwd.size() + bwd.size()) / 2,
+                                               std::memory_order_relaxed);
                     if (fwd.size() + bwd.size() < 8) continue;
 
                     full.clear();
@@ -1141,8 +1261,26 @@ bool KuroshioExtractor::extract(const ncdfDataMessage &msg, KuroshioAxisResult &
         mergeCapped(1, s, candsSM[s]);
         mergeCapped(2, s, candsMN[s]);
     }
-    ncdfLog("[kuro][perf] integrate+collect=%lldms (%u threads, %u seeds)\n",
-            phaseMs(), nThreads, (unsigned)nSeeds);
+    {
+        long long ms = phaseMs();
+        long long cpu = kuroProcCpuMs() - kuroCpu0;
+        unsigned long long nc  = g_kuroCandSegs.load();
+        unsigned long long np  = g_kuroSamplePts.load();
+        unsigned long long ni  = g_kuroIntegSteps.load();
+        unsigned long long nlp = g_kuroLoopPairs.load();
+        ncdfLog("[kuro][perf] integrate+collect=%lldms (%u threads, %u seeds)\n",
+                ms, nThreads, (unsigned)nSeeds);
+        // CPU/墙 = 并行效率。接近 1 说明线程没跑开（互相等，如堆锁竞争）；
+        // 接近线程数说明真是计算量大。
+        ncdfLog("[kuro][work] cpu=%lldms wall=%lldms -> parallel x%.2f (%u threads)\n",
+                cpu, ms, (ms > 0) ? (double)cpu / (double)ms : 0.0, nThreads);
+        ncdfLog("[kuro][work] integSteps=%llu candSegs=%llu samplePts=%llu loopPairs=%llu\n",
+                ni, nc, np, nlp);
+        ncdfLog("[kuro][work] per cand: %.1f pts, %.0f loopPairs; per seed: %.1f integSteps\n",
+                (nc > 0) ? (double)np / (double)nc : 0.0,
+                (nc > 0) ? (double)nlp / (double)nc : 0.0,
+                (nSeeds > 0) ? (double)ni / (double)nSeeds : 0.0);
+    }
 
     // ---- [2] 分段拼装：选优 + prev_end 接力 ----
     std::vector<double> segXY[5];

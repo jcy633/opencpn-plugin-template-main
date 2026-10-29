@@ -33,6 +33,7 @@ DLL_SRC="$ROOT/build/Release/ncdf_pi.dll"
 DLL_DST="C:/Users/季曹阳/AppData/Local/opencpn/plugins/ncdf_pi.dll"
 REQ="C:/ProgramData/opencpn/ncdf_seamt_auto.txt"
 RES="C:/ProgramData/opencpn/ncdf_seamt_auto_result.txt"
+MODEFILE="C:/ProgramData/opencpn/ncdf_mode.txt"
 LOG="C:/ProgramData/opencpn/ncdf_debug.log"
 OCPN="C:/Program Files (x86)/OpenCPN/opencpn.exe"
 
@@ -47,6 +48,14 @@ cp "$DLL_SRC" "$DLL_DST" || exit 1
 echo "   $(ls -la --time-style=full-iso "$DLL_DST" | awk '{print $6, $7}')"
 
 echo "== [2/4] 写请求文件 =="
+# 测试型/使用型开关：自动化测试入口只在 ncdf_mode.txt 含 test 时生效。
+# 这里临时切到 test，脚本退出时恢复原状（默认 use），
+# 免得跑完测试后插件一直处于测试型、影响日常使用。
+OLD_MODE="$(cat "$MODEFILE" 2>/dev/null || echo use)"
+trap 'printf "%s\n" "$OLD_MODE" > "$MODEFILE"' EXIT
+printf "test\n" > "$MODEFILE"
+echo "   ncdf_mode.txt -> test （脚本结束时恢复为 $OLD_MODE）"
+
 rm -f "$RES"
 cat > "$REQ" <<REQ_EOF
 file=$NCFILE
@@ -63,7 +72,7 @@ echo "== [3/4] 启动 OpenCPN 并等待自动测试 =="
 : > "$LOG"          # 清空日志，方便只看本次
 start "" "$OCPN"
 
-for i in $(seq 1 60); do
+for i in $(seq 1 ${WAIT:-60}); do
     sleep 2
     if [ -f "$RES" ]; then
         echo "   完成（约 $((i*2)) 秒）"
