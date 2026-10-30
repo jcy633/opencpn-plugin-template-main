@@ -2201,6 +2201,8 @@ void MainDialog::runSeamtAutoTest(const wxString &reqPath)
 			else if (key == _T("latdommax")) prm.latDomMax = wxAtof(val);
 			else if (key == _T("p0min"))     prm.latP0Min = wxAtof(val);
 			else if (key == _T("p0max"))     prm.latP0Max = wxAtof(val);
+			else if (key == _T("p0forced"))  prm.latP0Forced = wxAtof(val);  // 强制 P₀
+			else if (key == _T("splitlon"))  prm.splitLon = wxAtof(val);     // 分段拼接点
 		}
 	}
 
@@ -2371,6 +2373,8 @@ void MainDialog::runSeamtAutoTest(const wxString &reqPath)
 	fprintf(rf, "reasons,EXIT=%d OUTDOMAIN=%d AGROUND=%d MAXSTEP=%d\n",
 	        base.reasonCount[SEAMT_EXIT], base.reasonCount[SEAMT_OUTDOMAIN],
 	        base.reasonCount[SEAMT_AGROUND], base.reasonCount[SEAMT_MAXSTEP]);
+	fprintf(rf, "bridged,%d   # 跨过小岛/缺测缺口的次数（seamtBridgeKm 可调）\n", base.nBridged);
+	fprintf(rf, "degraded,%d   # RK4 中间采样点无效、退化为低阶步的次数\n", base.nDegraded);
 	fprintf(rf, "subjets,%u\n", (unsigned)base.subjets.size());
 	fprintf(rf, "near_miss,%d   # >0 = domain boundary is clipping the flow\n", base.nNearMiss);
 	fprintf(rf, "elapsed_ms,%.1f\n", base.elapsedMs);

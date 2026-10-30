@@ -1043,36 +1043,29 @@ bool KuroshioExtractor::extract(const ncdfDataMessage &msg, KuroshioAxisResult &
                 w.latMin, w.latMax, w.lonMin, w.lonMax);
     }
 
-    // ---- [0] 种子点：规则网格 x 研究域（段盒） x 海点 ----
+    // ---- [0] 种子点：规则网格 x 黑潮流廊道 x 海点 ----
     // 论文："seed points were placed on a regular grid with 1/12° spacing covering
     // the study domain" —— 即种子间距 = 数据网格距。seedSpacingDeg <= 0 时取该值
     // （官方 MATLAB 用 0.125°，比论文粗，属代码与正文的分歧）。
     //
-    // 【2026-10-29 收紧】"the study domain" = 11 条硬编码断面围成的 A–E 五个段盒
-    // （kSegs，坐标逐字取自论文 Table 1）。原先用 115~132E / 15~32N 的大框加
-    // L 形廊道，比研究域大一倍多，撒出 22292 个种子，双向流线积分要 47 s
-    // （GUI 全程阻塞，看着像卡死）。段盒之外的种子不可能产出合格候选
-    // ——validate_streamline 要求落在段盒内并跨断面——所以限制到这里不损失正确性，
-    // 反而更贴论文"covering the study domain"的原意。
-    double domLat0 = 1e30, domLat1 = -1e30, domLon0 = 1e30, domLon1 = -1e30;
-    for (int s = 0; s < 5; s++) {
-        domLat0 = std::min(domLat0, kSegs[s].latLim[0]);
-        domLat1 = std::max(domLat1, kSegs[s].latLim[1]);
-        domLon0 = std::min(domLon0, kSegs[s].lonRange[0]);
-        domLon1 = std::max(domLon1, kSegs[s].lonRange[1]);
-    }
-    // 五个段盒的并集才算研究域（A/B/C 在西侧，D/E 在东北侧，不是一个矩形）
-    auto inStudyDomain = [](double la, double lo) -> bool {
-        for (int s = 0; s < 5; s++) {
-            if (la >= kSegs[s].latLim[0]   && la <= kSegs[s].latLim[1] &&
-                lo >= kSegs[s].lonRange[0] && lo <= kSegs[s].lonRange[1])
-                return true;
-        }
-        return false;
-    };
-
+    // 【2026-10-29 撤销一次错误收紧】曾把种子域从下面这个大框+L形廊道收紧到
+    // A–E 五个段盒的并集（22292 -> 9257 个种子），理由是"段盒外的种子不可能产出
+    // 合格候选"。**这个理由是错的**：种子是双向积分的（每方向最多 400 点），
+    // 段盒外的种子完全可以流进段盒、被断面截出合格子段——追踪边界比段盒外扩 4°
+    // 正是为了让它们流进来。实测 5 天中位偏差从 1.88 km 恶化到 15.15 km（8 倍）。
+    // 撒点范围仍然不是全图，就是下面这个黑潮流廊道。
+    const double domLon0 = 115.0, domLon1 = 132.0, domLat0 = 15.0, domLat1 = 32.0;
     double pre = (seedSpacingDeg > 1e-4) ? seedSpacingDeg : F.cellDeg;
     if (!(pre > 1e-4) || pre > 1.0) pre = 0.125;
+    {
+        // kuroSeedSpacing=N（毫度）：复刻官方 MATLAB 的 pre=0.125（写 125）。
+        // 默认 0 = 用数据网格距（论文口径）。两者种子数差一倍，候选池构成不同。
+        int ovr = kuroFlagInt("kuroSeedSpacing");
+        if (ovr > 0) {
+            pre = (double)ovr / 1000.0;
+            ncdfLog("[kuro] seedSpacing forced to %.4f deg by ncdf_flags.txt (kuroSeedSpacing)\n", pre);
+        }
+    }
 
     // 最近格点索引：均匀网格用 O(1)，否则线性扫描（种子生成仅一次）
     std::vector<double> seeds;
@@ -1080,11 +1073,13 @@ bool KuroshioExtractor::extract(const ncdfDataMessage &msg, KuroshioAxisResult &
         kuroLogAddr("before seed used[]");
         std::vector<char> used(F.nlat * F.nlon, 0);
         kuroLogAddr("after  seed used[]");
-        ncdfLog("[kuro] seed domain: lat %.2f..%.2f lon %.2f..%.2f (A-E seg boxes), spacing=%.4f\n",
+        ncdfLog("[kuro] seed domain: lat %.2f..%.2f lon %.2f..%.2f (Kuroshio corridor), spacing=%.4f\n",
                 domLat0, domLat1, domLon0, domLon1, pre);
         for (double la = domLat0; la <= domLat1 + 1e-9; la += pre) {
             for (double lo = domLon0; lo <= domLon1 + 1e-9; lo += pre) {
-                if (!inStudyDomain(la, lo)) continue;
+                bool inCorridor = (la < 24.0 && lo >= 115.0 && lo <= 124.0) ||
+                                  (la >= 24.0 && lo >= 120.0 && lo <= 132.0);
+                if (!inCorridor) continue;
 
                 size_t bi = F.nearest(F.lon, F.nlon, F.lonAsc, F.lonUni, F.dLon, lo);
                 size_t bj = F.nearest(F.lat, F.nlat, F.latAsc, F.latUni, F.dLat, la);

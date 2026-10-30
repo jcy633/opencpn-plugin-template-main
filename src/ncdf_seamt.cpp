@@ -60,6 +60,23 @@ static void rhsDeg(const UVField &F, double lon, double lat,
 // 起点取不到速度 → 返回 false（搁浅）
 // 中间采样点（k2/k3/k4）取不到 → 退化为端点速度的低阶步，只降精度不伪造流线
 // ===========================================================================
+// 逐条流线诊断开关：C:\ProgramData\opencpn\ncdf_flags.txt 里写 seamtTrace=1。
+// 每轮读一次（不在热路径），避免给 281 条种子各 fopen 一遍文件。
+static bool seamtTraceEnabled()
+{
+    static int cached = -1;              // -1=未读 0=关 1=开；只读一次，改完重启才生效
+    if (cached >= 0) return cached != 0;
+    cached = 0;
+    FILE *fp = fopen("C:\\ProgramData\\opencpn\\ncdf_flags.txt", "r");
+    if (fp) {
+        char line[256];
+        while (fgets(line, sizeof(line), fp))
+            if (strstr(line, "seamtTrace")) { cached = 1; break; }
+        fclose(fp);
+    }
+    return cached != 0;
+}
+
 static bool rk4Advance(const UVField &F, double lon0, double lat0, double dtSec,
                        double &lon1, double &lat1, int &nDegraded)
 {
@@ -92,7 +109,55 @@ struct SeamtTrace {
     int    reason;
     double lonOut, latOut;
     int    nDegraded;
+    int    nBridged;           // 跨过小岛/缺测缺口的次数（2026-10-30 加）
 };
+
+// ---------------------------------------------------------------------------
+// 小缺口桥接（2026-10-30）
+//
+// 【为什么需要】GLORYS 1/12° 分辨得出小岛，那些格点是 NaN。急流贴岸走，
+// 一步（|u|·Δt ≈ 3 km）就可能踩进一个 NaN 格点，整条流线被判 AGROUND 丢弃 ——
+// 实测 Γ_in=130°E 时 degraded=116、AGROUND=63、种子 noData=200，三处都在被
+// 小岛打散，而 AVISO 是平滑地转流场、没有这个问题。
+//
+// 【为什么不是零填充】MATLAB 的 sub_u(isnan|mask<1)=0 只是让场连续，
+// 零速会让流线停住（Δt 固定、位移 0）最终撞 nMax 判 MAXSTEP。我们要的是「跨过去」。
+//
+// 【语义】沿上一步的流速方向外推，逐格前进寻找最近的有效点；超过 maxBridgeKm
+// 仍找不到才判 AGROUND。桥接段每前进一步按一个 Δt 计入 T，与正常积分同口径。
+// 大陆/大岛（尺度 > maxBridgeKm）依然会正常终止。
+// ---------------------------------------------------------------------------
+static bool bridgeGap(const UVField &F,
+                      double lon0, double lat0,
+                      double uDir, double vDir,      // 上一步流速（m/s），定方向
+                      double maxBridgeKm, double stepKm,
+                      double &lon1, double &lat1, int &nSub)
+{
+    nSub = 0;
+    lon1 = lon0; lat1 = lat0;
+    double sp = std::hypot(uDir, vDir);
+    if (!(sp > 1.0e-9)) return false;                 // 没有方向可循
+    if (!(maxBridgeKm > 0.0)) return false;
+    if (!(stepKm > 0.0)) stepKm = 1.0;
+    double nx = uDir / sp, ny = vDir / sp;             // 单位方向（物理空间）
+    int maxSub = (int)std::ceil(maxBridgeKm / stepKm);
+    if (maxSub < 1) maxSub = 1;
+    if (maxSub > 64) maxSub = 64;
+
+    double lo = lon0, la = lat0;
+    for (int k = 1; k <= maxSub; k++) {
+        la += (ny * stepKm * 1000.0) / kMPerDegLat;
+        double cLat = std::cos(la * M_PI / 180.0);
+        if (!(std::fabs(cLat) > 1.0e-6)) return false;
+        lo += (nx * stepKm * 1000.0) / (kMPerDegLat * cLat);
+        double u, v;
+        if (F.sample(lo, la, u, v)) {                 // 找到有效点
+            lon1 = lo; lat1 = la; nSub = k;
+            return true;
+        }
+    }
+    return false;
+}
 
 static void traceOne(const UVField &F,
                      double lonIn, double lonOut,
@@ -100,6 +165,7 @@ static void traceOne(const UVField &F,
                      double lonDomMin, double lonDomMax,
                      double lon0, double lat0,
                      double dtSec, double dtDays, int nMax,
+                     double maxBridgeKm, double dirSign,
                      SeamtTrace &t)
 {
     t.pts.clear();
@@ -107,28 +173,59 @@ static void traceOne(const UVField &F,
     t.pts.push_back(lon0);
     t.pts.push_back(lat0);
     t.T = 0.0; t.tHav = 0.0;
-    t.nSteps = 0; t.nDegraded = 0;
+    t.nSteps = 0; t.nDegraded = 0; t.nBridged = 0;
     t.reason = SEAMT_MAXSTEP;
     t.lonOut = t.latOut = nanD();
 
     double lon = lon0, lat = lat0;
+    double lastU = 0.0, lastV = 0.0;   // 上一步流速，供桥接定向（0 = 还没走过）
+
+    // 小缺口桥接：沿上一步流速方向外推找最近有效点（见 bridgeGap 注释）
+    auto tryBridge = [&](double fromLon, double fromLat, double &outLon, double &outLat) -> int {
+        int nSub = 0;
+        double sp = std::hypot(lastU, lastV);
+        if (!(sp > 1.0e-9) || !(maxBridgeKm > 0.0)) return 0;
+        double stepKm = sp * std::fabs(dtSec) / 1000.0;
+        if (!(stepKm > 0.0)) stepKm = 1.0;
+        // 桥接方向 = 积分方向（dirSign=-1 时逆着流向走）
+        return bridgeGap(F, fromLon, fromLat, lastU * dirSign, lastV * dirSign,
+                         maxBridgeKm, stepKm, outLon, outLat, nSub) ? nSub : 0;
+    };
 
     for (int n = 0; n < nMax; n++) {
+        {   // 记录当前点流速供桥接定向；取不到就沿用上一步的方向
+            double su, sv;
+            if (F.sample(lon, lat, su, sv) && std::hypot(su, sv) > 1.0e-9) { lastU = su; lastV = sv; }
+        }
         double lon1, lat1;
-        if (!rk4Advance(F, lon, lat, dtSec, lon1, lat1, t.nDegraded)) {
-            t.reason = SEAMT_AGROUND;
-            break;
+        // dirSign = -1 时按 (-u,-v) 积分，即逆着流向反推（用于从 P* 向西补出上游段）。
+        // 路径点的物理量仍取真实 (u,v)，T 照常累加正的 dtDays。
+        if (!rk4Advance(F, lon, lat, dtSec * dirSign, lon1, lat1, t.nDegraded)) {
+            // 当前点取不到速度（踩进 NaN 小岛）：先试桥接，跨不过才判 AGROUND
+            int sub = tryBridge(lon, lat, lon1, lat1);
+            if (sub <= 0) { t.reason = SEAMT_AGROUND; break; }
+            t.nBridged++;
+            t.T += (double)sub * dtDays;
+            t.pts.push_back(lon1); t.pts.push_back(lat1);
+            lon = lon1; lat = lat1;
+            continue;
         }
 
-        // ---- 出口判定：本步东向跨越 Γ_out ----
+        // ---- 出口判定：本步跨越 Γ_out ----
         //
-        // 【必须在域判定之前】Γ_out 就是研究域的东边界，跨过它的那一步落点必然
-        // lon1 >= lonOut，会同时满足"越过 Γ_out"与"出域"两个条件。先判域的话
+        // 【必须在域判定之前】Γ_out 就是研究域的边界，跨过它的那一步落点必然
+        // 越界，会同时满足"越过 Γ_out"与"出域"两个条件。先判域的话
         // 每一条成功流线都会被记成 OUTDOMAIN，EXIT 恒为 0（2026-10-28 实测踩到）。
         //
         // 论文未写方向判定，但再循环里的西向流会被误判为"到达出口"，必须加。
-        if (lon < lonOut && lon1 >= lonOut && lon1 > lon) {
-            double f = (lonOut - lon) / (lon1 - lon);
+        //
+        // 【2026-10-30 支持双向】原先只判东向（lon < lonOut && lon1 >= lonOut），
+        // 西向段（反推段）会被判成永远到不了出口。按 Γ_in → Γ_out 的方向判。
+        const bool eastward = (lonOut > lonIn);
+        const bool crossed = eastward ? (lon < lonOut && lon1 >= lonOut && lon1 > lon)
+                                      : (lon > lonOut && lon1 <= lonOut && lon1 < lon);
+        if (crossed) {
+            double f = (lonOut - lon) / (lon1 - lon);   // 西向时分子分母同号，仍在 [0,1]
             t.latOut = lat + f * (lat1 - lat);
             t.lonOut = lonOut;
             t.pts.push_back(lonOut);
@@ -155,8 +252,14 @@ static void traceOne(const UVField &F,
             break;
         }
         if (!F.isSea(lon1, lat1)) {
-            t.reason = SEAMT_AGROUND;
-            break;
+            // 落点踩进小岛 / 缺测：先试桥接跨过去，跨不过才判 AGROUND
+            int sub = tryBridge(lon1, lat1, lon1, lat1);
+            if (sub <= 0) { t.reason = SEAMT_AGROUND; break; }
+            t.nBridged++;
+            t.T += (double)sub * dtDays;
+            t.pts.push_back(lon1); t.pts.push_back(lat1);
+            lon = lon1; lat = lat1;
+            continue;
         }
 
         // ---- T 累加 ----
@@ -250,13 +353,15 @@ static double findP0(const UVField &F, double lonIn,
     double step = dLat * 0.5;
     const double downStreamSign = (lonOut > lonIn) ? 1.0 : -1.0;
 
-    std::vector<double> lats, sp, ds;
+    std::vector<double> lats, sp, ds, us, vs;
     for (double la = latMin; la <= latMax + 1.0e-9; la += step) {
         double u, v;
         if (!F.sample(lonIn, la, u, v)) continue;
         lats.push_back(la);
         sp.push_back(std::hypot(u, v));
         ds.push_back(downStreamSign * u);      // 下游方向的流速分量
+        us.push_back(u);                       // 用于流向角判定（2026-10-30）
+        vs.push_back(v);
     }
     if (sp.empty()) return -1.0;
 
@@ -269,23 +374,45 @@ static double findP0(const UVField &F, double lonIn,
         dm[i] = 0.25 * ds[im] + 0.5 * ds[i] + 0.25 * ds[ip];
     }
 
-    // 优先：下游分量最大的点（即射流）
+    // 【2026-10-30 流向判据】按模长从大到小挑，取第一个"大致往东"的点：
+    // 射流核是东向流；模长最大的点若朝北/朝西（被岛屿切碎的假峰值、
+    // 或黑潮逆流）就跳过，找下一个模长稍小的再判方向。
+    // 判据：u > 0 且 |atan2(v,u)| <= 45°，即 u > |v|。
+    //
+    // 【为什么不用"下游分量最大"】那会偏向"纯东向但弱"的点，而且挡不住
+    // 朝北的假峰值。实测 5 个时次：130°E 断面模长最大点流向 55–71°（偏北，
+    // 不是黑潮核）、132°E 是 33–47°，两者都会被错误选中；而 133/135/136°E
+    // 的核在 33°N、流向 1–15°，才是真射流（见 docs/SEAMT…md §17）。
+    const double kJetAngMaxDeg = 45.0;
     size_t best = sp.size();
-    for (size_t i = 0; i < dm.size(); i++) {
-        if (dm[i] <= 0.0) continue;
-        if (best == sp.size() || dm[i] > dm[best]) best = i;
+    {
+        std::vector<size_t> order(sm.size());
+        for (size_t i = 0; i < order.size(); i++) order[i] = i;
+        std::sort(order.begin(), order.end(),
+                  [&](size_t a, size_t b) { return sm[a] > sm[b]; });
+        int nSkipped = 0;
+        for (size_t k = 0; k < order.size(); k++) {
+            size_t i = order[k];
+            double ang = std::atan2(vs[i], us[i]) * 180.0 / M_PI;
+            if (us[i] > 0.0 && std::fabs(ang) <= kJetAngMaxDeg) { best = i; break; }
+            nSkipped++;
+            if (nSkipped <= 5)
+                ncdfLog("[seamt] P0: skip lat=%.3f |u|=%.3f ang=%.1f deg (not eastward)\n",
+                        lats[i], sp[i], ang);
+        }
+        if (nSkipped > 0)
+            ncdfLog("[seamt] P0: skipped %d larger-|u| points for wrong direction\n", nSkipped);
     }
-    // 退回：纯 |u| 最大
+    // 退回：整条断面没有一个东向点，取纯 |u| 最大
     if (best == sp.size()) {
         best = 0;
         for (size_t i = 1; i < sm.size(); i++) if (sm[i] > sm[best]) best = i;
-        ncdfLog("[seamt] P0: no downstream-directed point on gamma_in, "
-                "falling back to max |u|\n");
+        ncdfLog("[seamt] P0: no eastward point on gamma_in, falling back to max |u|\n");
     }
 
     latOut = lats[best];
-    ncdfLog("[seamt] P0: lat=%.4f |u|=%.3f down=%.3f (jet criterion)\n",
-            latOut, sp[best], ds[best]);
+    ncdfLog("[seamt] P0: lat=%.4f |u|=%.3f ang=%.1f deg down=%.3f (eastward-jet criterion)\n",
+            latOut, sp[best], std::atan2(vs[best], us[best]) * 180.0 / M_PI, ds[best]);
     return sp[best];
 }
 
@@ -460,7 +587,9 @@ SeamtParams::SeamtParams()
     // 取 281（间距 0.005°，是 141 的超集，min-T 只会更优），耗时约 2 倍。
     nPts          = 281;
     halfWidthDeg  = 0.70;
-    dtDays        = 0.0;     // auto
+    latP0Forced   = nanD();  // NaN = 自动找 P₀（findP0）
+    splitLon      = nanD();  // NaN = 不分段
+    dtDays        = 0.03;    // 论文原始参数（固定步长）。<=0 才走 CFL 自动
     nMaxSteps     = 0;       // auto
     cflTarget     = 0.50;
     minSepDeg     = 0.05;
@@ -479,13 +608,31 @@ void SeamtParams::presetJapanSouth(SeamtParams &p)
     // 黑潮下游·日本以南。Γ_out 放在脱离点附近（房总半岛以东），
     // T(φ_out) 的极小值正好对应 Kawabe 的近岸 / 离岸 / 大弯曲三种路径态。
     //
-    // 【与论文的两处差异，都是数据适配】论文用 AVISO L4（1/8°、平滑过），
+    // 【与论文的差异，是数据适配】论文用 AVISO L4（1/8°、平滑过），
     // Γ_in = 130°E 时黑潮干净地穿过、且在 28–31°N 内。本插件用 1/12° 模式数据，
-    // 岛屿被分辨出来：130°E 正好从土噶喇列岛中间穿过，那一列最强只有 0.8 m/s；
-    // 实测黑潮是从 (131.0°E, 31.0°N) 进入本域（1.4 m/s），且 131→133°E 段位于
-    // 31–32.5°N —— 已经压到论文 28–31°N 搜索带的边缘甚至带外。
-    // 所以：Γ_in 取 131.0°E，P₀ 搜索带放宽到整个研究域纬度范围。
-    p.lonIn  = 131.0;
+    // 岛屿被分辨出来，130°E 正好从土噶喇列岛中间穿过。
+    //
+    // 【2026-10-30 定量选点】入口断面被岛屿堵死是"轴跑偏"的主因：种子在 Γ_in 上
+    // 取不到速度就直接判 AGROUND 丢弃，急流核心那条流线根本不进 G 集合，min-T
+    // 只能在剩下的里挑 → 轴拐进慢水。实测各断面（28–33°N 带 / 最长无效缺口）：
+    //     130.0E : 88/101   gap 0.25°     G=133/281（86 出域 + 62 触底）
+    //     131.0E : 52/101   gap 1.85°     G=244/281（37 触底）  ← 原值，最差之一
+    //     132.0E : 101/101  gap 0.00°     G=273/281  P0=27.9N（!不是黑潮核）
+    //     133.0E : 101/101  gap 0.00°     G=246/281  P0=32.4N  ubar=0.80
+    //     135.0E : 101/101  gap 0.00°     G=175/281  P0=33.0N  ubar=0.87
+    //     136.0E : 101/101  gap 0.00°     G=200/281  P0=33.3N  ubar=0.87
+    //
+    // 【2026-10-30 第二轮：光"无缺口"还不够】132°E 虽然断面最干净，但那里
+    // 的断面最大流速在 28°N（是别的流，不是黑潮核），findP0 于是把 P0 定在
+    // 27.92，而种子只布在 P0±halfWidthDeg=±0.70°（27.2–28.6°N）——
+    // **够不到 32–33°N 的沿岸急流**，min-T 只能在种子带边缘挑（lat_in=28.6164
+    // 正好是 27.9164+0.70）。所以选点必须同时看「断面无缺口」和「急流核在
+    // 断面上的哪一纬度」。135/136°E 两条件都满足（急流核 33.0–33.3°N、无缺口）。
+    //
+    // 取 135.0°E：与论文的 130°E 最近，L=3227 km 最接近论文的 3314，
+    // ubar 在两个域上都最好（Γ_out=142 时 1.107，与论文 1.10 一致）。
+    // P₀ 搜索带仍放宽到整个研究域纬度范围。
+    p.lonIn  = 130.0;   // 2026-10-30 用户定：回到论文的 130
     p.lonOut = 142.0;
     // 域纬度必须给出口留足余量。实测（2026-10-29，海流1.nc）：核心在
     // (141.96°E, 35.999°N) 就被北墙 latDomMax=36.0 剪断 —— 离 142°E 只差 0.04°。
@@ -499,8 +646,10 @@ void SeamtParams::presetJapanSouth(SeamtParams &p)
 void SeamtParams::presetPaperDomain(SeamtParams &p)
 {
     // Udalov 2026 原域：覆盖黑潮延伸体，可做分叉 / 出口纬度方差 / 北移趋势。
-    // Γ_in 与 P₀ 带的取值同上，理由见 presetJapanSouth 的注释。
-    p.lonIn  = 131.0;
+    // Γ_in 与 P₀ 带的取值同上，理由见 presetJapanSouth 的注释
+    // （2026-10-30：Γ_in 131→135，两轮适配：先避开岛屿带，再让 findP0
+    //   落在沿岸急流核上，见 presetJapanSouth 的注释）。
+    p.lonIn  = 130.0;   // 2026-10-30 用户定：回到论文的 130
     p.lonOut = 160.0;
     p.latDomMin = 27.0;  p.latDomMax = 41.0;
     p.latP0Min  = p.latDomMin;
@@ -541,7 +690,7 @@ void SeamtResult::clear()
     latIn = latOut = varLatOut = 0.0;
     tHavCheck = 0.0;
     dtDays = uMaxEst = dxMinKm = cfl = 0.0;
-    nSuccess = nTotal = nDegraded = nNearMiss = 0;
+    nSuccess = nTotal = nDegraded = nNearMiss = nBridged = 0;
     for (int i = 0; i < SEAMT_STOP_COUNT; i++) reasonCount[i] = 0;
     elapsedMs = 0.0;
 }
@@ -558,6 +707,115 @@ bool SeamtExtractor::extract(const ncdfDataMessage &msg, SeamtResult &out)
 
     out.clear();
     params.normalize();
+
+    // ================= 分段拼接（2026-10-30）=================
+    // splitLon 有效时把 [lonIn, lonOut] 拆成两段，**共用右段轴的起始点 P\***：
+    //   右段 splitLon → lonOut：正常流程自动找 P₀，得轴；P* = 该轴在 splitLon 上的起点
+    //   左段 lonIn → splitLon：以 P*（或其集合里能到达 lonIn 者）为起点，**逆流向反推**
+    //
+    // 【为什么共用 P* 而不是共用 P₀】P₀ 是断面上"东向最强"的点，而 P* 是
+    // 右段最终选中的那条流线的起点，两者不等（实测 135°E 上 P₀=33.04、P*=33.21）。
+    // 两段要无缝对接，公共点必须是 P*。
+    //
+    // 【P* 不行就用它的集合】P* 若反推不到 lonIn（被岛屿/弱流挡住），
+    // 就在 P* ± halfWidth 的集合里找能到达的最近点 P'，取 **(P*+P')/2** 作公共点。
+    //
+    // 【★ 流速方向要翻转】左段是逆流向反推（dirSign=-1，用 (-u,-v) 积分），
+    // 因为黑潮向东流，不取反根本走不到 lonIn。反推段的**点顺序要反转**后再接，
+    // 且后续若在这些点上插值/取流速，必须用真实的 (u,v)，不能用积分时的 (-u,-v)。
+    if (!isNanD(params.splitLon)) {
+        SeamtParams full = params;
+        const double lonA = params.lonIn, lonB = params.splitLon, lonC = params.lonOut;
+
+        auto runSeg = [&](double lo0, double lo1, double forcedP0, SeamtResult &r) -> bool {
+            params = full;
+            params.splitLon = nanD();
+            params.lonIn = lo0;
+            params.lonOut = lo1;
+            params.latP0Forced = forcedP0;   // NaN = 自动找
+            return extract(msg, r);
+        };
+
+        // ---- [1] 右段：splitLon → lonOut，自动找 P₀ ----
+        SeamtResult right;
+        if (!runSeg(lonB, lonC, nanD(), right) || right.core.size() < 4) {
+            params = full;
+            out.message = wxString::FromUTF8("分段拼接：右段（分段点→终止面）提取失败");
+            return false;
+        }
+        const double Pstar = right.core[1];      // 右段轴在 splitLon 上的起点纬度
+        ncdfLog("[seamt][split] right OK, P* = %.4f N at lon=%.3f  (n=%zu)\n",
+                Pstar, lonB, right.core.size() / 2);
+
+        // ---- [2] 在 P* 及其邻域找能反推到 lonIn 的起点 ----
+        const double stepDeg = full.halfWidthDeg / (double)std::max(1, (full.nPts - 1) / 2);
+        double chosen = nanD(), common = nanD();
+        for (int k = 0; k <= 3 && isNanD(common); k++) {
+            for (int s = 0; s < 2; s++) {
+                if (k == 0 && s == 1) continue;          // P* 只试一次
+                const double cand = Pstar + (double)(s == 0 ? -k : k) * stepDeg;
+                if (cand < full.latDomMin || cand > full.latDomMax) continue;
+                SeamtResult probe;
+                if (runSeg(lonB, lonA, cand, probe) && probe.core.size() >= 4) {
+                    chosen = cand;
+                    // P* 本身可行就用 P*；邻域点可行则取两者中点作共有点
+                    common = (k == 0) ? cand : 0.5 * (Pstar + cand);
+                    ncdfLog("[seamt][split] reach lonIn from %.4f N%s -> common=%.4f N\n",
+                            cand, (k == 0) ? " (P* itself)" : " (neighbour)", common);
+                    break;
+                }
+            }
+        }
+        if (isNanD(common)) {
+            params = full;
+            out.message = wxString::FromUTF8("分段拼接：P* 及其邻域都反推不到起始经度");
+            return false;
+        }
+
+        // ---- [3] 左段：common → lonIn（逆流向反推）----
+        SeamtResult left;
+        if (!runSeg(lonB, lonA, common, left) || left.core.size() < 4) {
+            params = full;
+            out.message = wxString::FromUTF8("分段拼接：左段（起始经度→分段点）提取失败");
+            return false;
+        }
+
+        // ---- [4] 拼接 ----
+        // 左段点序是 lonB→lonA（向西），反转成 lonA→lonB 再接右段。
+        // ★ 这些点上若要取流速/插值，用真实 (u,v)（左段积分时用的是 -u,-v）。
+        params = full;
+        out.core.clear();
+        out.core.reserve(left.core.size() + right.core.size());
+        for (size_t i = left.core.size(); i >= 2; i -= 2) {
+            out.core.push_back(left.core[i - 2]);
+            out.core.push_back(left.core[i - 1]);
+        }
+        for (size_t i = 2; i < right.core.size(); i++) out.core.push_back(right.core[i]);
+
+        out.ok = true;
+        out.latIn  = left.latOut;          // 本段在 lonA 上的起点（左段的出口）
+        out.latOut = right.latOut;
+        out.lengthKm = left.lengthKm + right.lengthKm;
+        out.minT   = left.minT + right.minT;
+        out.meanSpeed = (out.minT > 0.0)
+            ? (out.lengthKm * 1000.0) / (out.minT * 86400.0) : 0.0;
+        out.nSuccess = left.nSuccess + right.nSuccess;
+        out.nTotal   = left.nTotal + right.nTotal;
+        out.nBridged = left.nBridged + right.nBridged;
+        out.nDegraded = left.nDegraded + right.nDegraded;
+        out.nNearMiss = left.nNearMiss + right.nNearMiss;
+        for (int i = 0; i < SEAMT_STOP_COUNT; i++)
+            out.reasonCount[i] = left.reasonCount[i] + right.reasonCount[i];
+        out.elapsedMs = (double)std::chrono::duration_cast<std::chrono::milliseconds>(clk::now() - t0).count();
+        out.message = wxString::Format(
+            wxString::FromUTF8("分段拼接：%.1f→%.1f→%.1f，共有点 %.3fN（%s）"),
+            lonA, lonB, lonC, common,
+            (chosen == Pstar) ? "P* 本身" : "P* 邻域中点");
+        ncdfLog("[seamt][split] joined: core=%zu  L=%.2fkm  T=%.4fd  common=%.4fN (%s)\n",
+                out.core.size() / 2, out.lengthKm, out.minT, common,
+                (chosen == Pstar) ? "P* itself" : "midpoint");
+        return true;
+    }
 
     // ---------------- 前置检查 ----------------
     if (!msg.hasCurrent()) {
@@ -631,8 +889,17 @@ bool SeamtExtractor::extract(const ncdfDataMessage &msg, SeamtResult &out)
 
     // ---------------- [1] P₀ 与起点集合 ----------------
     double latP0 = nanD();
-    double spP0 = findP0(F, params.lonIn, params.latP0Min, params.latP0Max,
-                         params.lonOut, latP0);
+    double spP0 = nanD();
+    if (!isNanD(params.latP0Forced)) {
+        // 强制 P₀：分段拼接时两段必须共用同一个 P₀（否则反推段会选到黑潮逆流）
+        latP0 = params.latP0Forced;
+        double fu, fv;
+        if (F.sample(params.lonIn, latP0, fu, fv)) spP0 = std::hypot(fu, fv);
+        ncdfLog("[seamt] P0 FORCED to %.4f N (|u|=%.3f m/s)\n", latP0, spP0);
+    } else {
+        spP0 = findP0(F, params.lonIn, params.latP0Min, params.latP0Max,
+                      params.lonOut, latP0);
+    }
     if (isNanD(latP0) || spP0 < 0.0) {
         out.message = wxString::Format(
             _T("Γ_in 上 %.1f~%.1f°N 取不到有效流速，无法布撒种子"),
@@ -741,12 +1008,47 @@ bool SeamtExtractor::extract(const ncdfDataMessage &msg, SeamtResult &out)
     }
 
     std::vector<SeamtTrace> traces(seedLat.size());
+    // 小缺口桥接的最大距离（km）。ncdf_flags.txt 写 seamtBridgeKm=N 可调，0=关闭。
+    // 默认 25 km ≈ 3 个 1/12° 格距 —— 够跨小岛缺口，跨不过大陆/大岛。
+    double maxBridgeKm = 25.0;
+    {
+        FILE *fp = fopen("C:\\ProgramData\\opencpn\\ncdf_flags.txt", "r");
+        if (fp) {
+            char lb[256];
+            while (fgets(lb, sizeof(lb), fp))
+                if (strncmp(lb, "seamtBridgeKm", 13) == 0) {
+                    const char *eq = strchr(lb, '=');
+                    if (eq) maxBridgeKm = atof(eq + 1);
+                }
+            fclose(fp);
+        }
+    }
+    ncdfLog("[seamt] bridge: maxBridgeKm=%.1f (flags seamtBridgeKm=N, 0=off)\n", maxBridgeKm);
+
+    // 积分方向：Γ_out 在 Γ_in 东边 → 顺流向；西边 → 逆流向反推（用 (-u,-v)）。
+    // 反推段的点顺序要反转后再拼接，且取流速时用真实 (u,v)（2026-10-30）。
+    const double dirSign = (params.lonOut > params.lonIn) ? 1.0 : -1.0;
+    ncdfLog("[seamt] trace direction: %s (dirSign=%+.0f)\n",
+            dirSign > 0 ? "forward along flow" : "REVERSED against flow", dirSign);
+
     for (size_t i = 0; i < seedLat.size(); i++) {
         traceOne(F, params.lonIn, params.lonOut,
                  params.latDomMin, params.latDomMax, lonDomMin, lonDomMax,
-                 params.lonIn, seedLat[i], dtSec, dtDays, nMax, traces[i]);
+                 params.lonIn, seedLat[i], dtSec, dtDays, nMax, maxBridgeKm, dirSign, traces[i]);
         out.reasonCount[traces[i].reason]++;
         out.nDegraded += traces[i].nDegraded;
+        out.nBridged += traces[i].nBridged;
+        // 【诊断】逐条记录起始纬度 / 终止原因 / T。每轮 281 行，
+        // 所以只在 ncdf_flags.txt 里写 seamtTrace=1 时才打（每轮读一次文件，不在热路径）。
+        // min-T 只在 reason==SEAMT_EXIT 的流线里比（下面 G 的收集条件），
+        // 被打断（AGROUND）或出域的流线完全不参与 —— 2026-10-30 就是靠这份 T(φ)
+        // 剖面定位到「入口断面被岛屿堵死、急流核心起不了步」的。
+        if (seamtTraceEnabled()) {
+            ncdfLog("[seamt][trace] lat0=%7.3f reason=%d nSteps=%d bridge=%d T=%.5f end=(%.3f,%.3f)\n",
+                    seedLat[i], (int)traces[i].reason, traces[i].nSteps, traces[i].nBridged, traces[i].T,
+                    traces[i].pts.size() >= 2 ? traces[i].pts[traces[i].pts.size() - 2] : 0.0,
+                    traces[i].pts.size() >= 2 ? traces[i].pts[traces[i].pts.size() - 1] : 0.0);
+        }
         // 出域但离 Γ_out 很近 = 研究域边界在剪流。这类流线本该成功，
         // 被边界吃掉后 min-T 会被次优路径顶掉（2026-10-29 实测踩到）。
         if (traces[i].reason == SEAMT_OUTDOMAIN && traces[i].pts.size() >= 2) {
@@ -774,12 +1076,15 @@ bool SeamtExtractor::extract(const ncdfDataMessage &msg, SeamtResult &out)
         if (traces[i].reason == SEAMT_EXIT) G.push_back(i);
     }
     out.nSuccess = (int)G.size();
-
-    ncdfLog("[seamt] traces=%u  G=%d  reasons EXIT=%d OUTDOMAIN=%d AGROUND=%d MAXSTEP=%d  degraded=%d nearMiss=%d\n",
-            (unsigned)traces.size(), out.nSuccess,
-            out.reasonCount[SEAMT_EXIT], out.reasonCount[SEAMT_OUTDOMAIN],
-            out.reasonCount[SEAMT_AGROUND], out.reasonCount[SEAMT_MAXSTEP],
-            out.nDegraded, out.nNearMiss);
+    {
+        int bridgedTotal = 0;
+        for (size_t i = 0; i < traces.size(); i++) bridgedTotal += traces[i].nBridged;
+        ncdfLog("[seamt] traces=%u  G=%d  reasons EXIT=%d OUTDOMAIN=%d AGROUND=%d MAXSTEP=%d  degraded=%d bridged=%d nearMiss=%d\n",
+                (unsigned)traces.size(), out.nSuccess,
+                out.reasonCount[SEAMT_EXIT], out.reasonCount[SEAMT_OUTDOMAIN],
+                out.reasonCount[SEAMT_AGROUND], out.reasonCount[SEAMT_MAXSTEP],
+                out.nDegraded, bridgedTotal, out.nNearMiss);
+    }
     if (out.nNearMiss > 0) {
         ncdfLog("[seamt] WARN: %d streamlines left the domain within 0.2deg of gamma_out — "
                 "the domain boundary is clipping the flow; widen latDomMin/latDomMax\n",

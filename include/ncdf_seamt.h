@@ -105,6 +105,7 @@ struct SeamtResult {
     int    nSuccess, nTotal;
     int    nNearMiss;      // 出域但离 Γ_out 很近的条数：>0 说明研究域边界在剪流（要放宽）
     int    nDegraded;    // RK4 中间采样点无效、退化为低阶步的次数
+    int    nBridged;     // 跨过小岛/缺测缺口的次数（2026-10-30 小缺口桥接）
     int    reasonCount[SEAMT_STOP_COUNT];
     double elapsedMs;
 
@@ -120,6 +121,11 @@ struct SeamtParams {
     double lonOut;         // Γ_out 经度（日本以南预设 142°E，论文 160°E）
     double latP0Min;       // P₀ 搜索纬度带（论文 28–31°N）
     double latP0Max;
+    double latP0Forced;    // 非 NaN 时强制用它作 P₀，不再自动找。
+                           // 分段拼接时左段用 P*（右段轴起点），否则反推段会按
+                           // "向西流最快"选到黑潮逆流（2026-10-30）
+    double splitLon;       // 非 NaN 时把 [lonIn,lonOut] 拆成两段在此拼接，
+                           // 共用右段轴的起始点 P*（2026-10-30）
     double latDomMin;      // 研究域纬度范围，越界即 OUTDOMAIN
     double latDomMax;
 
