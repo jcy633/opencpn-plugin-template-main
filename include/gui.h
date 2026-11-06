@@ -7,6 +7,16 @@
 
 #pragma once
 
+// 【功能开关】参考轴对照显示（kuroshio_YYYY.nc，白色虚线）。
+// 2026-11-04 暂时停用：先做 SEAMT 算法优化。要恢复把 0 改成 1 —— 受控的只有
+// 「界面 / 交互 / 绘制」入口（本文件、gui.cpp、ncdf.cpp、ncdfoverlayfactory.cpp、
+// ncdf_pi.cpp 里的 #if NCDF_REF_AXIS 块）。
+//
+// 【注意】ncdf_refh5.inc 的 refH5LooksLikeRefFile() 在目录树里的**拦截不能关**：
+// 那是修「展开 kuroshio_2021.nc 就闪退」的，与本功能无关。这类文件 nc_open 会
+// 递归读全部分组元数据（实测 2693 MB），Win32 的 2 GB 地址空间直接打穿。
+#define NCDF_REF_AXIS 0
+
 #include <wx/artprov.h>
 #include <wx/xrc/xmlres.h>
 #include <wx/intl.h>
@@ -163,6 +173,15 @@ class ncdfDialog : public wxDialog
 		virtual void onKuroshioShowClick( wxCommandEvent& event ) { event.Skip(); }
 		wxCheckBox* m_checkBoxKuroshioBdy;
 		virtual void onKuroshioBdyClick( wxCommandEvent& event ) { event.Skip(); }
+#if NCDF_REF_AXIS
+		// 参考轴文件（kuroshio_YYYY.nc）：打开后选日期即可在图上对照显示
+		wxButton* m_btnRefOpen;
+		virtual void onRefOpenClick( wxCommandEvent& event ) { event.Skip(); }
+		wxChoice* m_choiceRefDay;
+		virtual void onRefDayChoice( wxCommandEvent& event ) { event.Skip(); }
+		wxCheckBox* m_checkBoxRefShow;
+		virtual void onRefShowClick( wxCommandEvent& event ) { event.Skip(); }
+#endif
 		// SEAMT 急流核心提取（流线集合分析求最小 T 参数，Udalov2026）
 		// 适用域是黑潮**下游**（日本以南 / 延伸体），与上面的 Wang2026（上游 115–132°E）不混用
 		wxChoice* m_choiceSeamtPreset;

@@ -47,6 +47,8 @@
 extern void ncdfLog(const char* format, ...);
 // 测试型/使用型判定（实现在 ncdf.cpp）：使用型下自动化测试入口完全不生效
 extern bool ncdfAutoTestRequested();
+// 批量会话：一次启动连跑多轮（同上，实现在 ncdf.cpp）
+extern bool ncdfAutoSessionActive();
 
 // Crash dump handler — generates minidump on access violation
 #include <dbghelp.h>
@@ -173,7 +175,11 @@ int ncdf_pi::Init(void)
       // （见 MainDialog::maybeRunSeamtAutoTest）。这样外部脚本只需
       // 「写请求文件 -> 启动 OpenCPN -> 等 -> 读结果文件」，不必手动点界面。
       // 使用型（ncdf_mode.txt 不含 test）下这一段完全不生效 —— 测试不该影响日常使用。
-      if (ncdfAutoTestRequested()) {
+      //
+      // 【批量会话】还有第二种触发：会话标记文件存在也要开面板 ——
+      // 因为批量模式下**启动时还没有请求文件**（请求是逐条下发的），
+      // 只判请求文件会导致面板不建、maybeRunSeamtAutoTest 不被调起、批量轮询根本进不去。
+      if (ncdfAutoTestRequested() || ncdfAutoSessionActive()) {
           ncdfLog("[seamtauto] request file found at plugin init -> opening panel\n");
           OnToolbarToolCallback(0);
       }
@@ -298,6 +304,10 @@ void ncdf_pi::OnToolbarToolCallback(int id)
       {
         m_pncdfDialog = new MainDialog(m_parent_window);
 	    m_pncdfDialog->setPlugIn(this);
+	    // 立刻把宿主交给绘制工厂：参考轴这类不需要流场数据的图层要在
+	    // 「一个数据都没加载」时也能画，不能等 setData() 才有 gui/plugin。
+	    if (m_pncdfOverlayFactory)
+	        m_pncdfOverlayFactory->setHost(m_pncdfDialog, this);
       }
       // Land mask follows panel visibility: opened -> load (idempotent).
       {
@@ -363,7 +373,16 @@ bool ncdf_pi::RenderGLOverlay(wxGLContext *pcontext, PlugIn_ViewPort *vp)
 
 	if (m_pncdfDialog && m_pncdfOverlayFactory)
 	{
-		if (m_pncdfOverlayFactory->isReadyToRender())
+		// 参考轴（kuroshio_YYYY.nc）自带几何，**不依赖流场数据**：没加载 nc 时
+		// isReadyToRender() 是 false，得额外放行才能让 overlay 去画它。
+		// 【功能当前停用】NCDF_REF_AXIS=0 时不放行，回到只认数据就绪的老行为。
+#if NCDF_REF_AXIS
+		const bool refOnly = m_pncdfDialog->IsShown() && m_pncdfDialog->m_bShowRef &&
+		                     m_pncdfDialog->m_refAxis.ok;
+#else
+		const bool refOnly = false;
+#endif
+		if (m_pncdfOverlayFactory->isReadyToRender() || refOnly)
 		{
 			m_pncdfOverlayFactory->SetParentSize(m_display_width, m_display_height);
 			m_pncdfOverlayFactory->RenderGLncdfOverlay(pcontext, vp);

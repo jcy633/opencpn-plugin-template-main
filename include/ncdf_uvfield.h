@@ -228,6 +228,55 @@ struct UVField {
         return true;      // 恒成功：无效处返回 0 而不是失败
     }
 
+    // 【2026-11-02】近岸容错取样：只用有效角做归一化双线性。
+    //
+    // 【动机】sample() 要求 2×2 四角**全部**有效，于是每段海岸线、每个岛屿周围都会被
+    // 啃掉约一个格距的有效海域；`isSea()` 又是靠 sample() 判的，被啃掉的那一圈同时被
+    // 当成"陆地"。在岛链里被啃掉的正是水道。`degraded`/`bridged` 两个计数就是
+    // "取不到速度"的直接证据：全3.nc Γ_in=130 时达 1493/683，132°E（种子在远海）为 0/0。
+    //
+    // 【语义】四个角里**只要有一个**有效就取到值，权重按有效角重新归一化；
+    // 四角全无效才返回 false（真的是陆地）。取值必落在有效角的值域内，
+    // 不会把陆地格点算进来，也不会凭空造速度。
+    //
+    // 【★ 实测：它救不了"轴偏离"，别当解药用】A/B 对照（全3.nc，2026-11-02）：
+    //     Γ_in=130   严格 ū=0.371 offset=35.0km ratio=0.748
+    //               容错 ū=0.369 offset=36.9km ratio=0.717
+    //     Γ_in=131   严格 ū=0.438 offset=26.4km ratio=0.819
+    //               容错 ū=0.424 offset=35.0km ratio=0.570
+    // degraded(1493→1) 与 AGROUND(→0) 确实没了，但轴没变好、131°E 反而更差：
+    // 容错让流线能从"只有一个角是海"的格子里穿过 1–2 格的小岛抄近路。
+    // 结论：四角规则啃掉近岸海域是真的，但急流跟丢另有原因。
+    //
+    // 【共用件并列提供】不动 sample() 的默认语义（Wang2026 用它做控制变量），
+    // 与 sampleZeroFill 一样另加方法，SEAMT 侧按 seamtCoastTolerant 开关选用（默认关）。
+    bool sampleCoast(double lonq, double latq, double &uo, double &vo) const {
+        uo = vo = nanD();
+        if (!u || !v || !lat || !lon || nlat < 1 || nlon < 1) return false;
+        size_t j0, j1, i0, i1;
+        double tj, ti;
+        if (!locate(lat, nlat, latAsc, latUni, dLat, latq, j0, j1, tj)) return false;
+        if (!locate(lon, nlon, lonAsc, lonUni, dLon, lonq, i0, i1, ti)) return false;
+
+        const double w[4] = { (1.0 - ti) * (1.0 - tj), ti * (1.0 - tj),
+                              (1.0 - ti) * tj,         ti * tj };
+        const size_t jj[4] = { j0, j0, j1, j1 };
+        const size_t ii[4] = { i0, i1, i0, i1 };
+        double su = 0.0, sv = 0.0, sw = 0.0;
+        for (int k = 0; k < 4; k++) {
+            double cu = u[jj[k] * stride + ii[k]];
+            double cv = v[jj[k] * stride + ii[k]];
+            if (!finiteSpeed(cu) || !finiteSpeed(cv)) continue;
+            su += w[k] * cu;
+            sv += w[k] * cv;
+            sw += w[k];
+        }
+        if (!(sw > 1.0e-12)) return false;          // 四角全无效 = 陆地
+        uo = su / sw;
+        vo = sv / sw;
+        return finiteSpeed(uo) && finiteSpeed(vo);
+    }
+
     // 把视野裁到 [latMin,latMax] x [lonMin,lonMax]。
     // 【纯性能，不改语义】全球 2041x4320 网格的 u/v 各 70 MB，流线每步插值要读
     // 8 个格点，全在 cache 外；而提取全程只碰研究域那一小块（±4° 追踪边界）。
@@ -255,6 +304,25 @@ struct UVField {
         if (lm && lm->covers(latq, lonq) && lm->isLand(latq, lonq)) return false;
         double a, b;
         return sample(lonq, latq, a, b);
+    }
+
+    // 只查掩膜，不查数据有效性 —— MATLAB 口径。
+    // 官方全程只有 mask_grid 一个陆海判据（撒种子 starts(is_sea,:)、
+    // smooth_path_bd 的 is_sea、correct_axis_transect 的 mask_sect 都是 mask-only），
+    // 数据无效处是靠 `sub_u(isnan|mask<1)=0` 零填充**让流线继续走**的，
+    // 不是把它当陆地截断。
+    // 【并列提供】不动 isSea 的语义：SEAMT 走 isSea，行为完全不变。
+    bool isSeaMask(double lonq, double latq) const {
+        if (lm && lm->covers(latq, lonq) && lm->isLand(latq, lonq)) return false;
+        return true;
+    }
+
+    // 近岸容错版陆海判定，与 sampleCoast 配套。
+    // 掩膜（GSHHG）仍然是硬判据：掩膜说陆就是陆，容错只针对"数据被四角规则啃掉的海域"。
+    bool isSeaCoast(double lonq, double latq) const {
+        if (lm && lm->covers(latq, lonq) && lm->isLand(latq, lonq)) return false;
+        double a, b;
+        return sampleCoast(lonq, latq, a, b);
     }
 
     // 最近格点下标（均匀网格 O(1)，否则线性扫描）

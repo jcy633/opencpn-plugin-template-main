@@ -614,13 +614,61 @@ void FeatureRender::drawAll(const FeatureSet &fs, PlugIn_ViewPort *vp,
 // ---------------------------------------------------------------------------
 // 黑潮主轴 / 左右边界绘制（流线约束最大流速法）
 // 主轴：深色描边 + 黄色主线 + 流向人字标；左右边界：蓝 / 红细线（NaN 处断开）。
+// dashPx > 0 时按**屏幕像素**画虚线（参考轴专用，与自己提取的实线黄轴区分）。
+// 不用 glLineStipple：宽线下部分驱动的虚线支持不可靠，自己按屏幕弧长撒点最稳。
 static void drawLatLonPolylineRaw(PlugIn_ViewPort *vp, const double *xy, size_t n,
                                   float r, float g, float b, float a, float width,
-                                  bool brokenAtNaN)
+                                  bool brokenAtNaN, double dashPx = 0.0)
 {
     if (!xy || n < 2) return;
     glColor4f(r, g, b, a);
     glLineWidth(width);
+
+    if (dashPx > 0.5) {
+        const double onPx = dashPx;
+        const double period = dashPx * 2.2;          // 亮:暗 = 1 : 1.2
+        glBegin(GL_LINES);
+        double acc = 0.0;
+        bool havePrev = false;
+        double px0 = 0.0, py0 = 0.0;
+        for (size_t k = 0; k < n; k++) {
+            double lon = xy[2 * k], lat = xy[2 * k + 1];
+            bool bad = !(lon == lon) || !(lat == lat);   // NaN
+            int sx = 0, sy = 0;
+            if (bad || !visPoint(vp, lon, lat) ||
+                !projectPoint(vp, (float)lon, (float)lat, sx, sy)) {
+                havePrev = false;
+                continue;
+            }
+            if (havePrev) {
+                double dx = (double)sx - px0, dy = (double)sy - py0;
+                double seg = std::sqrt(dx * dx + dy * dy);
+                if (seg > 0.01) {
+                    // 小步 <= 2px：跨虚线边界的相位误差不超过 2px，肉眼不可见。
+                    // 【必须夹紧 nsub】视口缩得很小时 visPoint 那 8° 容差对应的
+                    // 屏幕距离能到上千万像素，不夹紧就是上千万个顶点堆进一个
+                    // glBegin 块里，直接把驱动/堆顶爆。长段一律按 1024 小步近似。
+                    int nsub = (int)(seg / 2.0) + 1;
+                    if (nsub > 1024) nsub = 1024;
+                    for (int s = 0; s < nsub; s++) {
+                        double t0 = (double)s / (double)nsub;
+                        double t1 = (double)(s + 1) / (double)nsub;
+                        double a0 = acc + t0 * seg, a1 = acc + t1 * seg;
+                        if (std::fmod(a0, period) < onPx && std::fmod(a1, period) < onPx) {
+                            glVertex2d(px0 + t0 * dx, py0 + t0 * dy);
+                            glVertex2d(px0 + t1 * dx, py0 + t1 * dy);
+                        }
+                    }
+                    acc += seg;
+                }
+            }
+            px0 = (double)sx; py0 = (double)sy; havePrev = true;
+        }
+        glEnd();
+        glLineWidth(1.0f);
+        return;
+    }
+
     glBegin(GL_LINE_STRIP);
     bool run = false;
     for (size_t k = 0; k < n; k++) {
@@ -645,16 +693,26 @@ static void drawLatLonPolylineRaw(PlugIn_ViewPort *vp, const double *xy, size_t 
 
 static void drawLatLonPolyline(PlugIn_ViewPort *vp, const std::vector<double> &xy,
                                float r, float g, float b, float a, float width,
-                               bool brokenAtNaN)
+                               bool brokenAtNaN, double dashPx = 0.0)
 {
     drawLatLonPolylineRaw(vp, xy.empty() ? NULL : &xy[0], xy.size() / 2,
-                          r, g, b, a, width, brokenAtNaN);
+                          r, g, b, a, width, brokenAtNaN, dashPx);
 }
 
 void FeatureRender::drawKuroshioAxis(const KuroshioAxisResult &k, PlugIn_ViewPort *vp,
-                                     bool showAxis, bool showBoundaries)
+                                     bool showAxis, bool showBoundaries, bool isRef)
 {
     if (!vp) return;
+    // 【一次性探针】必须在任何 k.xxx 成员访问**之前**打点：崩溃若落在这里之前，
+    // 说明传进来的 KuroshioAxisResult 本身是坏的（撕裂/悬垂），不是画线的问题。
+    static int s_kuroDrawDbg = 0;
+    const bool kuroDbgThis = (s_kuroDrawDbg < 3);
+    if (kuroDbgThis) {
+        s_kuroDrawDbg++;
+        ncdfLog("[drawkuro] enter #%d isRef=%d vp=%p ok=%d axis=%u left=%u right=%u\n",
+                s_kuroDrawDbg, (int)isRef, (void*)vp, (int)k.ok,
+                (unsigned)k.axis.size(), (unsigned)k.left.size(), (unsigned)k.right.size());
+    }
     if (!k.ok || k.axis.size() < 4) return;
     if (!showAxis && !showBoundaries) return;
 
@@ -665,41 +723,59 @@ void FeatureRender::drawKuroshioAxis(const KuroshioAxisResult &k, PlugIn_ViewPor
     glHint(GL_LINE_SMOOTH_HINT, GL_NICEST);
 
     // 左右边界先画（在主轴下面）
+    // 参考轴的边界用**虚线 + 低饱和**，让实线的蓝/红（自己提取的）始终是主视觉
     if (showBoundaries && k.left.size() >= 4 && k.right.size() >= 4) {
-        drawLatLonPolyline(vp, k.left,  0.25f, 0.55f, 0.95f, 0.85f, 1.6f, true);
-        drawLatLonPolyline(vp, k.right, 0.92f, 0.30f, 0.25f, 0.85f, 1.6f, true);
+        if (isRef) {
+            drawLatLonPolyline(vp, k.left,  0.78f, 0.84f, 0.95f, 0.75f, 1.4f, true, 8.0);
+            drawLatLonPolyline(vp, k.right, 0.95f, 0.84f, 0.78f, 0.75f, 1.4f, true, 8.0);
+        } else {
+            drawLatLonPolyline(vp, k.left,  0.25f, 0.55f, 0.95f, 0.85f, 1.6f, true);
+            drawLatLonPolyline(vp, k.right, 0.92f, 0.30f, 0.25f, 0.85f, 1.6f, true);
+        }
     }
 
     if (showAxis) {
-        // 深色描边提高在彩色流场上的对比度
-        drawLatLonPolyline(vp, k.axis, 0.10f, 0.10f, 0.10f, 0.55f, 6.0f, false);
-        drawLatLonPolyline(vp, k.axis, 1.00f, 0.88f, 0.20f, 0.95f, 3.0f, false);
+        if (isRef) {            // 参考轴：白色虚线 + 深色虚线描边，压在自己提取的实线黄轴之上。
+            // 合上时是「黄线上走白虚线」，偏了就两条线分开 —— 不用肉眼猜谁是谁。
+            // 不画流向人字标：那是提取结果的方向信息，参考文件里没有对应量。
+            // kRefDashPx<=0 时退化成实线（排查崩溃用的 A/B 开关）
+            const double kRefDashPx = 12.0;
+            drawLatLonPolyline(vp, k.axis, 0.10f, 0.10f, 0.10f, 0.55f, 6.5f, false, kRefDashPx);
+            drawLatLonPolyline(vp, k.axis, 1.00f, 1.00f, 1.00f, 0.95f, 3.0f, false, kRefDashPx);
+        } else {
+            // 深色描边提高在彩色流场上的对比度
+            drawLatLonPolyline(vp, k.axis, 0.10f, 0.10f, 0.10f, 0.55f, 6.0f, false);
+            drawLatLonPolyline(vp, k.axis, 1.00f, 0.88f, 0.20f, 0.95f, 3.0f, false);
 
-        // 流向人字标（沿主轴方向）
-        size_t n = k.axis.size() / 2;
-        size_t stride = (n > 60) ? (n / 24) : 3;
-        if (stride < 2) stride = 2;
-        glColor4f(0.85f, 0.45f, 0.05f, 0.95f);
-        glLineWidth(1.8f);
-        glBegin(GL_LINES);
-        for (size_t i = stride; i + stride < n; i += stride) {
-            int sx0, sy0, sx1, sy1, sx2, sy2;
-            if (!projectPoint(vp, (float)k.axis[2 * (i - stride)], (float)k.axis[2 * (i - stride) + 1], sx0, sy0)) continue;
-            if (!projectPoint(vp, (float)k.axis[2 * i], (float)k.axis[2 * i + 1], sx1, sy1)) continue;
-            if (!projectPoint(vp, (float)k.axis[2 * (i + stride)], (float)k.axis[2 * (i + stride) + 1], sx2, sy2)) continue;
-            if (!visPoint(vp, k.axis[2 * i], k.axis[2 * i + 1])) continue;
-            double dx = (double)(sx2 - sx0), dy = (double)(sy2 - sy0);
-            double L = std::sqrt(dx * dx + dy * dy);
-            if (L < 1e-3) continue;
-            dx /= L; dy /= L;
-            double bx = sx1 - dx * 6, by = sy1 - dy * 6;
-            double px = -dy, py = dx;
-            glVertex2i(sx1, sy1); glVertex2i((int)(bx + px * 4), (int)(by + py * 4));
-            glVertex2i(sx1, sy1); glVertex2i((int)(bx - px * 4), (int)(by - py * 4));
+            // 流向人字标（沿主轴方向）
+            size_t n = k.axis.size() / 2;
+            size_t stride = (n > 60) ? (n / 24) : 3;
+            if (stride < 2) stride = 2;
+            glColor4f(0.85f, 0.45f, 0.05f, 0.95f);
+            glLineWidth(1.8f);
+            glBegin(GL_LINES);
+            for (size_t i = stride; i + stride < n; i += stride) {
+                int sx0, sy0, sx1, sy1, sx2, sy2;
+                if (!projectPoint(vp, (float)k.axis[2 * (i - stride)], (float)k.axis[2 * (i - stride) + 1], sx0, sy0)) continue;
+                if (!projectPoint(vp, (float)k.axis[2 * i], (float)k.axis[2 * i + 1], sx1, sy1)) continue;
+                if (!projectPoint(vp, (float)k.axis[2 * (i + stride)], (float)k.axis[2 * (i + stride) + 1], sx2, sy2)) continue;
+                if (!visPoint(vp, k.axis[2 * i], k.axis[2 * i + 1])) continue;
+                double dx = (double)(sx2 - sx0), dy = (double)(sy2 - sy0);
+                double L = std::sqrt(dx * dx + dy * dy);
+                if (L < 1e-3) continue;
+                dx /= L; dy /= L;
+                double bx = sx1 - dx * 6, by = sy1 - dy * 6;
+                double px = -dy, py = dx;
+                glVertex2i(sx1, sy1); glVertex2i((int)(bx + px * 4), (int)(by + py * 4));
+                glVertex2i(sx1, sy1); glVertex2i((int)(bx - px * 4), (int)(by - py * 4));
+            }
+            glEnd();
+            glLineWidth(1.0f);
         }
-        glEnd();
-        glLineWidth(1.0f);
     }
+
+    if (kuroDbgThis)
+        ncdfLog("[drawkuro] done isRef=%d\n", (int)isRef);
 
     glDisable(GL_LINE_SMOOTH);
     glDisable(GL_BLEND);
@@ -711,6 +787,99 @@ void FeatureRender::drawKuroshioAxis(const KuroshioAxisResult &k, PlugIn_ViewPor
 // 核心绿色粗线（与 Wang2026 的黄线区分，同论文图 2）+ 子射流着色线与出口标记。
 // 只画核心与少量子射流线（几百点量级），不画 141 条集合 —— 那是纯诊断，
 // 全画约 17 万顶点/帧，违反"平移缩放绝不卡顿"的硬约束。
+// ---------------------------------------------------------------------------
+// 接缝平滑（只改绘制副本，SeamtResult::core 里的真几何不动）。
+//
+// 【2026-11-05 用户定】力度必须**和两个点之间的距离挂钩**：缺口小就轻抹，
+// 缺口大就用大窗让两条流线都往中间靠拢。旧做法是固定 ±3 点 + 固定权重，
+// 跟间距无关 —— 缺口两点相隔 25 km 而普通步长只有 0.8 km，窗根本盖不住接缝，
+// 结果只剩一个硬折角（图上看就不像流线）。
+//
+// 实测（海流1.nc，缺口 25.0 km、中位步长 0.77 km，接缝弦转角 94.07°）：
+//   固定 ±3 点            -> 无效
+//   插点 + 高斯           -> 无效（插进缺口的点是共线的，核里全是它们，抹不掉）
+//   不插点 + 高斯 R=1.0×  -> 14.29°
+//   **不插点 + 高斯 R=1.5× + 3 趟 -> 2.23°**，全轴 max 回到原有的 11.70°（别处）
+//   贝塞尔替代缺口        -> 反而 175°（切向接反了），不用
+//
+// 三件事：
+//   ① 量全轴中位步长 stepKm（跳过缺口那段）与缺口 gapKm；
+//   ② **不插点** —— 插进缺口的点共线，高斯平均只会把它们按在直线上；
+//   ③ 高斯窗 R = 1.5 × max(3×步长, 缺口长)，σ = R/2，3 趟。
+//      衰减按「到**缺口段**的距离」算（缺口内 0、两侧才起算），
+//      并用余弦锥度让窗边缘位移归零，否则窗边会造出更尖的折角。
+// ---------------------------------------------------------------------------
+static double seamDistKm(double lon1, double lat1, double lon2, double lat2)
+{
+    const double kRad = 3.14159265358979323846 / 180.0;
+    const double mx = 0.5 * (lat1 + lat2) * kRad;
+    const double dx = (lon2 - lon1) * kRad * 6371000.0 * std::cos(mx);
+    const double dy = (lat2 - lat1) * kRad * 6371000.0;
+    return std::sqrt(dx * dx + dy * dy) / 1000.0;
+}
+
+static void smoothSeamGaussian(std::vector<double> &xy, int seamIdx)
+{
+    int n = (int)(xy.size() / 2);
+    if (seamIdx < 1 || seamIdx + 1 >= n) return;
+
+    // ① 中位步长（缺口那段不参与统计，否则它会把中位数抬高）
+    std::vector<double> steps;
+    steps.reserve((size_t)n);
+    for (int i = 1; i < n; i++) {
+        if (i == seamIdx || i == seamIdx + 1) continue;
+        steps.push_back(seamDistKm(xy[2 * (i - 1)], xy[2 * (i - 1) + 1],
+                                   xy[2 * i], xy[2 * i + 1]));
+    }
+    if (steps.empty()) return;
+    std::sort(steps.begin(), steps.end());
+    const double stepKm = steps[steps.size() / 2];
+    if (!(stepKm > 1.0e-6)) return;
+
+    const double gapKm = seamDistKm(xy[2 * seamIdx], xy[2 * seamIdx + 1],
+                                    xy[2 * (seamIdx + 1)], xy[2 * (seamIdx + 1) + 1]);
+
+    // ③ 窗半径与缺口挂钩：缺口越大抹得越开
+    const double R = 1.5 * ((gapKm > 3.0 * stepKm) ? gapKm : 3.0 * stepKm);
+    const double sig = 0.5 * R;
+    if (!(sig > 0.0)) return;
+
+    std::vector<double> sArc((size_t)n, 0.0);
+    for (int i = 1; i < n; i++)
+        sArc[(size_t)i] = sArc[(size_t)(i - 1)] +
+            seamDistKm(xy[2 * (i - 1)], xy[2 * (i - 1) + 1], xy[2 * i], xy[2 * i + 1]);
+    const double sA = sArc[(size_t)seamIdx];              // 缺口两端
+    const double sB = sArc[(size_t)(seamIdx + 1)];
+
+    for (int pass = 0; pass < 3; pass++) {
+        std::vector<double> tmp = xy;
+        for (int i = 1; i < n - 1; i++) {
+            // 衰减按「到**缺口段**的距离」：缺口内 0，两侧才起算。
+            // 若锚在 seamIdx 那一个点上，缺口另一端正好落在窗边缘（alpha→0），
+            // 只修好一头、另一头还是 94° 的折角（2026-11-05 实测踩到）。
+            double ad = 0.0;
+            if (sArc[(size_t)i] < sA)      ad = sA - sArc[(size_t)i];
+            else if (sArc[(size_t)i] > sB) ad = sArc[(size_t)i] - sB;
+            if (ad > R) continue;
+            double wsum = 0.0, acc0 = 0.0, acc1 = 0.0;
+            for (int j = 0; j < n; j++) {
+                const double d = sArc[(size_t)j] - sArc[(size_t)i];
+                if (d > 3.0 * sig || d < -3.0 * sig) continue;
+                const double w = std::exp(-0.5 * (d / sig) * (d / sig));
+                wsum += w;
+                acc0 += w * tmp[2 * j];
+                acc1 += w * tmp[2 * j + 1];
+            }
+            if (wsum > 0.0) {
+                // 余弦锥度：窗边缘位移归零，否则窗边一刀切会造出更尖的折角
+                const double alpha = 0.5 * (1.0 + std::cos(3.14159265358979323846 * ad / R));
+                xy[2 * i]     = alpha * (acc0 / wsum) + (1.0 - alpha) * tmp[2 * i];
+                xy[2 * i + 1] = alpha * (acc1 / wsum) + (1.0 - alpha) * tmp[2 * i + 1];
+            }
+        }
+    }
+}
+
 void FeatureRender::drawSeamtCore(const SeamtResult &s, PlugIn_ViewPort *vp,
                                   bool showCore, bool showSubjets)
 {
@@ -742,8 +911,12 @@ void FeatureRender::drawSeamtCore(const SeamtResult &s, PlugIn_ViewPort *vp,
 
     // 核心线：深色描边提高在彩色流场上的对比度
     if (showCore) {
-        drawLatLonPolyline(vp, s.core, 0.10f, 0.10f, 0.10f, 0.55f, 6.0f, false);
-        drawLatLonPolyline(vp, s.core, 0.25f, 0.85f, 0.35f, 0.95f, 3.0f, false);
+    // 绘制副本：接缝处做高斯平滑（力度与缺口成正比），core 本身不动
+    std::vector<double> coreDraw = s.core;
+    smoothSeamGaussian(coreDraw, s.seamSmoothIdx);
+
+        drawLatLonPolyline(vp, coreDraw, 0.10f, 0.10f, 0.10f, 0.55f, 6.0f, false);
+        drawLatLonPolyline(vp, coreDraw, 0.25f, 0.85f, 0.35f, 0.95f, 3.0f, false);
     }
 
     // 子射流出口标记（小菱形）
@@ -765,6 +938,73 @@ void FeatureRender::drawSeamtCore(const SeamtResult &s, PlugIn_ViewPort *vp,
     }
 
     glDisable(GL_LINE_SMOOTH);
+    glDisable(GL_BLEND);
+    glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+// ---------------------------------------------------------------------------
+// SEAMT 过程中遇到的涡（椭圆点/汇）与鞍点（双曲点）—— HEPTA 式雅可比分类
+//   涡：速度环边界（细橙圈）+ 涡心（品红点，汇加收敛短划）
+//   鞍点：红色叉号 —— 双曲点正是次级射流的分界（Udalov 2026 §3.2）
+// 画的都是"主轴识别过程中碰到的"临界点（流线停住的地方），不是全图扫描。
+// ---------------------------------------------------------------------------
+void FeatureRender::drawSeamtCriticals(const SeamtResult &s, PlugIn_ViewPort *vp)
+{
+    if (!vp) return;
+
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    // ---- 涡边界（速度环）----
+    if (!s.vortexCircles.empty()) {
+        size_t off = 0;
+        for (size_t k = 0; k < s.vortexCircleLen.size(); k++) {
+            int npts = s.vortexCircleLen[k];
+            if (npts >= 3 && off + (size_t)npts * 2 <= s.vortexCircles.size())
+                drawLatLonPolylineRaw(vp, &s.vortexCircles[off], (size_t)npts,
+                                      1.00f, 0.55f, 0.10f, 0.85f, 1.6f, false);
+            off += (size_t)npts * 2;
+        }
+    }
+    // ---- 涡心 ----
+    for (size_t i = 0; i + 3 < s.vortexCentres.size(); i += 4) {
+        int sx, sy;
+        if (!projectPoint(vp, (float)s.vortexCentres[i], (float)s.vortexCentres[i + 1], sx, sy))
+            continue;
+        const int type = (int)s.vortexCentres[i + 2];
+        glColor4f(1.0f, 0.20f, 0.75f, 0.95f);
+        glLineWidth(2.0f);
+        glBegin(GL_LINE_LOOP);
+        for (int a = 0; a < 24; a++) {
+            double th = 2.0 * M_PI * a / 24.0;
+            glVertex2i(sx + (int)(5.0 * std::cos(th)), sy + (int)(5.0 * std::sin(th)));
+        }
+        glEnd();
+        if (type == 2 || type == 4) {          // 汇：向心短划
+            glBegin(GL_LINES);
+            for (int a = 0; a < 4; a++) {
+                double th = 2.0 * M_PI * a / 4.0 + M_PI / 4.0;
+                glVertex2i(sx + (int)(5.0 * std::cos(th)), sy + (int)(5.0 * std::sin(th)));
+                glVertex2i(sx, sy);
+            }
+            glEnd();
+        }
+    }
+
+    // ---- 鞍点（双曲点）：红色叉号 ----
+    for (size_t i = 0; i + 9 < s.critPoints.size(); i += 10) {
+        if ((int)s.critPoints[i + 2] != 0) continue;
+        int sx, sy;
+        if (!projectPoint(vp, (float)s.critPoints[i], (float)s.critPoints[i + 1], sx, sy))
+            continue;
+        glColor4f(1.0f, 0.15f, 0.15f, 0.95f);
+        glLineWidth(2.0f);
+        glBegin(GL_LINES);
+        glVertex2i(sx - 6, sy - 6); glVertex2i(sx + 6, sy + 6);
+        glVertex2i(sx - 6, sy + 6); glVertex2i(sx + 6, sy - 6);
+        glEnd();
+    }
+    glLineWidth(1.0f);
     glDisable(GL_BLEND);
     glBindTexture(GL_TEXTURE_2D, 0);
 }

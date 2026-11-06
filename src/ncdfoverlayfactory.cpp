@@ -59,6 +59,10 @@ wxPoint(55, -10), wxPoint(55, -25), wxPoint(100, 0), wxPoint(55, 25), wxPoint(55
 ncdfOverlayFactory::ncdfOverlayFactory()
 {
       hash = NULL;
+      // 【必须初始化】gui/plugin 以前是「等 setData 才有值」，而 setData 只在真的
+      // 加载了流场数据时才调。参考轴图层不需要数据就要渲染，野指针一取成员就崩。
+      gui = NULL;
+      plugin = NULL;
       
       m_pbm_current 	= NULL;     
       
@@ -340,8 +344,8 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
     m_vpCopy = *vp;          // snapshot for mouse-time coordinate work
     m_bHasVpCopy = true;
 
-    // Guard: must have valid gui and at least one overlay with prepared data
-    if (!gui) return false;
+    // Guard: must have valid gui/plugin and at least one overlay with prepared data
+    if (!gui || !plugin) return false;
     bool hasCurrentGrid = m_currentOverlay.dataReady;
     bool hasSSTGrid = m_seaTempOverlay.dataReady;
     bool hasSalinityGrid = m_salinityOverlay.dataReady;
@@ -350,17 +354,33 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
     bool hasFeatures = fset.fronts.size() || fset.zones.size();
     FRAME_LOG("[render] DoRenderncdfOverlay: ENTER, hasCurr=%d hasSST=%d hasSal=%d hasZos=%d feat=%d ready=%d\n",
         (int)hasCurrentGrid, (int)hasSSTGrid, (int)hasSalinityGrid, (int)hasZosGrid, (int)hasFeatures, (int)m_bReadyToRender);
-    if (!hasCurrentGrid && !hasSSTGrid && !hasSalinityGrid && !hasZosGrid && !hasFeatures) {
+
+    // ---- 参考轴（kuroshio_YYYY.nc，白色虚线）----
+    // 它是**自带几何**，跟有没有流场数据无关：用户打开参考轴文件就该看得见。
+    // 下面那几个早退分支原本会在「一个数据图层都没有」时直接 return，
+    // 于是没加载 nc 时一条线都画不出来 —— 所以早退前要补画一次。
+    // 有数据时走函数末尾那次绘制（压在自己提取的黄轴之上）。
+    // 【功能当前停用】NCDF_REF_AXIS=0 时这段只剩「照常早退」，见 include/gui.h。
+    auto bailOutWithRef = [&]() -> bool {
+#if NCDF_REF_AXIS
+        if (gui->IsShown() && gui->m_bShowRef && gui->m_refAxis.ok)
+            FeatureRender::drawKuroshioAxis(gui->m_refAxis, vp, true,
+                                            plugin && plugin->m_bShowKuroshioBdy, true);
+#endif
         return false;
+    };
+
+    if (!hasCurrentGrid && !hasSSTGrid && !hasSalinityGrid && !hasZosGrid && !hasFeatures) {
+        return bailOutWithRef();
     }
-    if (gui->myMessage.lonLength < 2 || gui->myMessage.latLength < 2) return false;
-    if (!m_bReadyToRender) return false;
+    if (gui->myMessage.lonLength < 2 || gui->myMessage.latLength < 2) return bailOutWithRef();
+    if (!m_bReadyToRender) return bailOutWithRef();
 
     // Must have at least one rendering feature enabled
     if (!plugin->m_bShowCurrentForce && !plugin->m_bShowCurrentDir &&
         !plugin->m_bShowParticles && !plugin->m_bShowSeaTemp &&
         !plugin->m_bShowSeaTempIso && !plugin->m_bShowSalinity &&
-        !plugin->m_bShowZos && !m_featureEngine.anyEnabled()) return false;
+        !plugin->m_bShowZos && !m_featureEngine.anyEnabled()) return bailOutWithRef();
 
     // Lazy shader compile (first render call, GL context is available)
     // Use ncdf_shader_initialized() to handle factory recreation
@@ -518,12 +538,24 @@ bool ncdfOverlayFactory::DoRenderncdfOverlay(PlugIn_ViewPort *vp )
         FeatureRender::drawKuroshioAxis(gui->m_kuroshioResult, vp,
                                         plugin->m_bShowKuroshio, plugin->m_bShowKuroshioBdy);
 
+#if NCDF_REF_AXIS
+    // ---- 参考轴（kuroshio_YYYY.nc，白色虚线）：压在上面那条实线黄轴之上对照 ----
+    // 画在提取结果**之后**：两者重合时看到「黄线上走白虚线」，偏了就两条分开。
+    if (gui->IsShown() && gui->m_bShowRef && gui->m_refAxis.ok)
+        FeatureRender::drawKuroshioAxis(gui->m_refAxis, vp, true,
+                                        plugin && plugin->m_bShowKuroshioBdy, true);
+#endif
+
     // ---- SEAMT 急流核心（Udalov2026 最小 T 参数法）----
     // 与上面的 Wang2026 并列但互不影响；两法适用域不重叠（上游 vs 下游）。
     // 只画核心与少量子射流线，不画 141 条集合（性能约束，见 ncdf_feature_render.cpp）。
-    if (gui && gui->IsShown() && plugin && (plugin->m_bShowSeamt || plugin->m_bShowSeamtSubjets))
+    if (gui && gui->IsShown() && plugin && (plugin->m_bShowSeamt || plugin->m_bShowSeamtSubjets)) {
         FeatureRender::drawSeamtCore(gui->m_seamtResult, vp,
                                      plugin->m_bShowSeamt, plugin->m_bShowSeamtSubjets);
+        // 涡与鞍点（HEPTA 式临界点）跟核心一起画，省得另设开关
+        if (plugin->m_bShowSeamt)
+            FeatureRender::drawSeamtCriticals(gui->m_seamtResult, vp);
+    }
 
     if (renderSelectionRectangle && rect) RenderSelectionRectangle();
 

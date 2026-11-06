@@ -246,6 +246,12 @@ public:
 
 	 void SetParentSize(int w, int h) { m_ParentSize.SetWidth(w); m_ParentSize.SetHeight(h); }
 	 wxSize  m_ParentSize;
+
+	 // gui/plugin 原先只在 setData()（= 真的有流场数据）里赋值，构造函数又没初始化 ——
+	 // 参考轴这类**不需要数据**的图层要在没数据时渲染，gui 就是个野指针，
+	 // 一进 DoRenderncdfOverlay 取成员就崩（2026-11-04 实测闪退，探针停在 gui->IsShown()）。
+	 // 面板一建好就调这个，别等 setData。
+	 void setHost(MainDialog *g, ncdf_pi *p) { gui = g; plugin = p; }
      
 private:
 	 ncdfDataMessage g2data;

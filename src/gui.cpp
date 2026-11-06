@@ -310,6 +310,22 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 		m_checkBoxKuroshioBdy = new wxCheckBox( m_panelFeatSettings, wxID_ANY, _("显示左右边界 (蓝/红细线)") );
 		sizerFeat->Add( m_checkBoxKuroshioBdy, 0, wxALL, 3 );
 		sizerFeat->AddSpacer(0);
+#if NCDF_REF_AXIS
+		// --- 参考轴文件（kuroshio_YYYY.nc）：与自己提取的轴对照显示 ---
+		{
+			wxBoxSizer* sizerRef = new wxBoxSizer( wxHORIZONTAL );
+			m_btnRefOpen = new wxButton( m_panelFeatSettings, wxID_ANY, _("打开参考轴"), wxDefaultPosition, wxSize( 88,-1 ) );
+			sizerRef->Add( m_btnRefOpen, 0, wxALIGN_CENTER_VERTICAL|wxRIGHT, 5 );
+			m_choiceRefDay = new wxChoice( m_panelFeatSettings, wxID_ANY );
+			m_choiceRefDay->SetMinSize( wxSize( 120,-1 ) );
+			sizerRef->Add( m_choiceRefDay, 1, wxALIGN_CENTER_VERTICAL, 0 );
+			sizerFeat->Add( sizerRef, 0, wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM, 3 );
+			m_checkBoxRefShow = new wxCheckBox( m_panelFeatSettings, wxID_ANY, _("显示参考轴 (白色虚线)") );
+			m_checkBoxRefShow->SetValue( true );
+			sizerFeat->Add( m_checkBoxRefShow, 0, wxALL, 3 );
+			sizerFeat->AddSpacer(0);
+		}
+#endif
 		// --- SEAMT 急流核心提取（流线集合分析求最小 T 参数，Udalov2026） ---
 		// 适用域：黑潮下游。与上面的 Wang2026（上游 115–132°E）不混用。
 		{
@@ -324,6 +340,8 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 			m_choiceSeamtPreset->Append( _("日本以南 (130→142E)") );
 			m_choiceSeamtPreset->Append( _("论文原域 (130→160E)") );
 			m_choiceSeamtPreset->Append( _("自定义") );
+			// 【追加到末尾】m_iSeamtPreset 会落盘，前三项的索引不能移位
+			m_choiceSeamtPreset->Append( _("Wang 上游 (A1→E2)") );
 			m_choiceSeamtPreset->SetSelection( 0 );
 			sizerSeamt1->Add( m_choiceSeamtPreset, 1, wxALIGN_CENTER_VERTICAL|wxRIGHT, 5 );
 			m_btnSeamtExtract = new wxButton( m_panelFeatSettings, wxID_ANY, _("提取核心"), wxDefaultPosition, wxSize( 64,-1 ) );
@@ -414,6 +432,11 @@ ncdfDialog::ncdfDialog( wxWindow* parent, wxWindowID id, const wxString& title, 
 	m_sliderFeatSens->Connect( wxEVT_SCROLL_CHANGED, wxScrollEventHandler( ncdfDialog::onFeatSensChanged ), NULL, this );
 	m_btnKuroshioExtract->Connect( wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler( ncdfDialog::onKuroshioExtractClick ), NULL, this );
 	m_btnKuroshioExport->Connect( wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler( ncdfDialog::onKuroshioExportClick ), NULL, this );
+#if NCDF_REF_AXIS
+	m_btnRefOpen->Connect( wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler( ncdfDialog::onRefOpenClick ), NULL, this );
+	m_choiceRefDay->Connect( wxEVT_COMMAND_CHOICE_SELECTED, wxCommandEventHandler( ncdfDialog::onRefDayChoice ), NULL, this );
+	m_checkBoxRefShow->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onRefShowClick ), NULL, this );
+#endif
 	m_checkBoxKuroshioShow->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onKuroshioShowClick ), NULL, this );
 	m_checkBoxKuroshioBdy->Connect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onKuroshioBdyClick ), NULL, this );
 	m_choiceSeamtPreset->Connect( wxEVT_COMMAND_CHOICE_SELECTED, wxCommandEventHandler( ncdfDialog::onSeamtPresetChoice ), NULL, this );
@@ -463,6 +486,11 @@ ncdfDialog::~ncdfDialog()
 	m_sliderFeatSens->Disconnect( wxEVT_SCROLL_CHANGED, wxScrollEventHandler( ncdfDialog::onFeatSensChanged ), NULL, this );
 	m_btnKuroshioExtract->Disconnect( wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler( ncdfDialog::onKuroshioExtractClick ), NULL, this );
 	m_btnKuroshioExport->Disconnect( wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler( ncdfDialog::onKuroshioExportClick ), NULL, this );
+#if NCDF_REF_AXIS
+	m_btnRefOpen->Disconnect( wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler( ncdfDialog::onRefOpenClick ), NULL, this );
+	m_choiceRefDay->Disconnect( wxEVT_COMMAND_CHOICE_SELECTED, wxCommandEventHandler( ncdfDialog::onRefDayChoice ), NULL, this );
+	m_checkBoxRefShow->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onRefShowClick ), NULL, this );
+#endif
 	m_checkBoxKuroshioShow->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onKuroshioShowClick ), NULL, this );
 	m_checkBoxKuroshioBdy->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onKuroshioBdyClick ), NULL, this );
 	m_checkBoxAnimate->Disconnect( wxEVT_COMMAND_CHECKBOX_CLICKED, wxCommandEventHandler( ncdfDialog::onAnimateClick ), NULL, this );

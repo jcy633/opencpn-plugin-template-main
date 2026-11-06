@@ -255,6 +255,15 @@ bool ncdfAutoTestRequested() {
 	       wxFileExists(_T("C:\\ProgramData\\opencpn\\ncdf_seamt_auto.txt"));
 }
 
+// 【批量会话】测试型 + 会话标记文件存在 => 进入轮询模式，一次 OpenCPN 启动连跑多轮。
+// 起因：每轮都重启 OpenCPN，6 秒启动只换 1–3 秒提取，时间全花在启动上。
+// 会话标记由宿主脚本在启动前创建、收尾时删除；插件见它消失就退出轮询。
+// 没有会话标记时保持原来的「单次」行为，日常使用不受影响。
+bool ncdfAutoSessionActive() {
+	return ncdfIsTestMode() &&
+	       wxFileExists(_T("C:\\ProgramData\\opencpn\\ncdf_seamt_auto_session.txt"));
+}
+
 MainDialog::MainDialog(wxWindow *parent) : ncdfDialog( parent ), m_isTreeUpdating(false)
 {
 	ncdfLog("[ncdf] MainDialog constructor: started\n");
@@ -406,8 +415,11 @@ void MainDialog::setPlugIn(ncdf_pi *p)
   m_textSeamtNpts->SetValue(wxString::Format(_T("%d"), pPlugIn->m_seamtNpts));
   m_textSeamtHalfWidth->SetValue(wxString::Format(_T("%.2f"), pPlugIn->m_seamtHalfWidth));
   // 研究域纬度 / P0 带跟随预设；选"自定义"时沿用当前 m_seamt.params（默认日本以南）
-  if (pPlugIn->m_iSeamtPreset == 0 || pPlugIn->m_iSeamtPreset == 1)
+  if (pPlugIn->m_iSeamtPreset == 0 || pPlugIn->m_iSeamtPreset == 1 ||
+      pPlugIn->m_iSeamtPreset == 3)
       applySeamtPreset(pPlugIn->m_iSeamtPreset);
+  // 陆地容差已不在 UI 上调（2026-11-05 用户定：SEAMT 一律跳岛），
+  // 由 SeamtParams 构造 / 预设 / 请求文件 landmode= 决定。
   syncSeamtParamsFromUi();
   m_textFeatLatMin->SetValue(wxString::Format(_T("%.2f"), pPlugIn->m_featROILatMin));
   m_textFeatLatMax->SetValue(wxString::Format(_T("%.2f"), pPlugIn->m_featROILatMax));
@@ -1760,6 +1772,78 @@ void MainDialog::onKuroshioExportClick(wxCommandEvent& event)
 	exportKuroshioCsv();
 }
 
+#if NCDF_REF_AXIS
+// ---------------------------------------------------------------------------
+// 参考轴文件（kuroshio_YYYY.nc）：打开 -> 下拉框选日期 -> 图上白色粗线对照。
+// 与自己提取的黄轴（drawKuroshioAxis）并排画，用于逐日比对。
+// ---------------------------------------------------------------------------
+void MainDialog::onRefOpenClick(wxCommandEvent& event)
+{
+	// 事件处理器里绝不能让异常逃出去（std::terminate -> 整个 OpenCPN 闪退）
+	try {
+		wxFileDialog dlg(this, wxString::FromUTF8("打开参考轴文件"),
+		                 wxEmptyString, wxEmptyString,
+		                 wxString::FromUTF8("黑潮轴文件 (kuroshio_*.nc)|kuroshio_*.nc|NetCDF 文件 (*.nc)|*.nc|所有文件 (*.*)|*.*"),
+		                 wxFD_OPEN | wxFD_FILE_MUST_EXIST);
+		if (dlg.ShowModal() != wxID_OK) return;
+
+		std::vector<KuroshioRefDay> days;
+		wxString err;
+		if (!loadKuroshioRefFile(dlg.GetPath(), days, err)) {
+			m_textCtrlFeatReadout->SetValue(err.IsEmpty()
+				? wxString::FromUTF8("参考轴文件读取失败") : err);
+			return;
+		}
+
+		// 换文件 = 旧的日期列表与当前参考轴一起作废
+		m_refDays.swap(days);
+		m_refAxis.clear();
+		m_choiceRefDay->Clear();
+		for (size_t i = 0; i < m_refDays.size(); i++)
+			m_choiceRefDay->Append(m_refDays[i].label);
+		if (!m_refDays.empty()) {
+			m_choiceRefDay->SetSelection(0);
+			m_refAxis = m_refDays[0].res;
+		}
+
+		m_bShowRef = m_checkBoxRefShow->GetValue();
+		wxString base = dlg.GetPath().AfterLast(_T('\\')).AfterLast(_T('/'));
+		m_textCtrlFeatReadout->SetValue(wxString::Format(
+			wxString::FromUTF8("参考轴 %s：%u 天已加载，可在下拉框选日期"),
+			base, (unsigned)m_refDays.size()));
+		ncdfLog("[kuroref] open %s -> %u days\n",
+		        (const char*)dlg.GetPath().mb_str(wxConvUTF8), (unsigned)m_refDays.size());
+		RequestRefresh(m_parent);
+	} catch (...) {
+		m_textCtrlFeatReadout->SetValue(wxString::FromUTF8("读取参考轴文件时出错"));
+	}
+}
+
+void MainDialog::onRefDayChoice(wxCommandEvent& event)
+{
+	try {
+		int sel = m_choiceRefDay->GetSelection();
+		if (sel < 0 || sel >= (int)m_refDays.size()) return;
+		m_refAxis = m_refDays[sel].res;
+		m_bShowRef = m_checkBoxRefShow->GetValue();
+		m_textCtrlFeatReadout->SetValue(wxString::Format(
+			wxString::FromUTF8("参考轴：%s（%d 点）"),
+			m_refDays[sel].label, m_refDays[sel].res.nAxis));
+		ncdfLog("[kuroref] select %s nAxis=%d\n",
+		        (const char*)m_refDays[sel].label.mb_str(wxConvUTF8), m_refDays[sel].res.nAxis);
+		RequestRefresh(m_parent);
+	} catch (...) {
+		m_textCtrlFeatReadout->SetValue(wxString::FromUTF8("切换参考轴日期时出错"));
+	}
+}
+
+void MainDialog::onRefShowClick(wxCommandEvent& event)
+{
+	m_bShowRef = m_checkBoxRefShow->GetValue();
+	RequestRefresh(m_parent);
+}
+#endif // NCDF_REF_AXIS
+
 bool MainDialog::runKuroshioExtract()
 {
 	ncdfLog("[kuro] runKuroshioExtract: start\n");
@@ -1797,7 +1881,11 @@ bool MainDialog::runKuroshioExtract()
 	KuroshioAxisResult fresh;
 	{
 		wxBusyCursor busy;
-		wxBusyInfo info(wxString::FromUTF8("正在提取黑潮主轴（流线约束最大流速法）…"));
+		// 【不再用 wxBusyInfo】它是一个**无按钮的浮空小方框**，实测文字渲染不出来，
+		// 每次提取都弹一个空窗（用户反馈"里面什么都没有"）。改成把提示写进面板读数栏，
+		// 提取完成后由结果覆盖 —— 有反馈但不弹窗。
+		if (m_textCtrlFeatReadout)
+			m_textCtrlFeatReadout->SetValue(wxString::FromUTF8("正在提取黑潮主轴（流线约束最大流速法）…"));
 		// 【绝不能让 C++ 异常逃进 wx 事件处理器】
 		// 逃出去会走到 std::terminate -> abort -> OpenCPN 当场闪退，连崩溃对话框都没有
 		// （2026-10-29 实测：全球 2041x4320 数据上点提取按钮就退，日志停在撒种子处）。
@@ -1908,10 +1996,14 @@ bool MainDialog::exportKuroshioCsv()
 // ===========================================================================
 void MainDialog::applySeamtPreset(int which)
 {
-	if (which < 0 || which > 1) return;   // 2 = 自定义，不动框
+	// 0=日本以南 1=论文原域 2=自定义(不动框) 3=Wang 上游(A1→E2)
+	// 【索引不移位】m_iSeamtPreset 会落盘，「自定义」必须保持 2，
+	// 所以新预设追加到末尾而不是插在中间。
+	if (which == 2 || which < 0 || which > 3) return;
 	SeamtParams p;
-	if (which == 0) SeamtParams::presetJapanSouth(p);
-	else            SeamtParams::presetPaperDomain(p);
+	if (which == 0)      SeamtParams::presetJapanSouth(p);
+	else if (which == 1) SeamtParams::presetPaperDomain(p);
+	else                 SeamtParams::presetWangUpstream(p);
 
 	m_textSeamtLonIn->SetValue(wxString::Format(_T("%.2f"), p.lonIn));
 	m_textSeamtLonOut->SetValue(wxString::Format(_T("%.2f"), p.lonOut));
@@ -1920,6 +2012,18 @@ void MainDialog::applySeamtPreset(int which)
 	m_seamt.params.latDomMax = p.latDomMax;
 	m_seamt.params.latP0Min  = p.latP0Min;
 	m_seamt.params.latP0Max  = p.latP0Max;
+	// 【2026-11-02】splitLon / lonPadDeg 必须一起同步。原先只同步上面四项，
+	// 于是 UI 里选完预设后 splitLon 还留着构造时的旧值，**UI 跑的分段状态和
+	// 自动测试对不上**（自动测试是直接写 m_seamt.params 的）。同理 lonPadDeg。
+	m_seamt.params.splitLon  = p.splitLon;
+	m_seamt.params.lonPadDeg = p.lonPadDeg;
+	// 陆地容差模式也随预设走（2026-11-05 起 SEAMT 全域默认跳岛；UI 调节已删）
+	m_seamt.params.landMode = p.landMode;
+	// 【2026-11-04】断面几何与方向容差也要同步，否则选完 Wang 预设仍是经线断面。
+	// 这两个是 Wang 域独有的设置，日本以南 / 论文原域那两个预设的取值一个都不动。
+	m_seamt.params.inSec        = p.inSec;
+	m_seamt.params.outSec       = p.outSec;
+	m_seamt.params.jetAngMaxDeg = p.jetAngMaxDeg;
 }
 
 void MainDialog::syncSeamtParamsFromUi()
@@ -1930,6 +2034,7 @@ void MainDialog::syncSeamtParamsFromUi()
 	if (m_textSeamtHalfWidth->GetValue().ToDouble(&v)) m_seamt.params.halfWidthDeg = v;
 	long n = 0;
 	if (m_textSeamtNpts->GetValue().ToLong(&n))        m_seamt.params.nPts = (int)n;
+	// 陆地容差已不在 UI 上调（2026-11-05），由预设 / 构造 / 请求文件决定。
 	m_seamt.params.normalize();
 	// 同步到插件配置，SaveConfig 时落盘（memory 规则：设置必须跨重启持久化）
 	if (pPlugIn) {
@@ -1954,6 +2059,10 @@ void MainDialog::onSeamtPresetChoice(wxCommandEvent& event)
 void MainDialog::onSeamtParamChanged(wxCommandEvent& event)
 {
 	syncSeamtParamsFromUi();
+	// 手改参数即视为自定义。【同时作废线段断面】线段几何是预设给的（Wang 域的
+	// A1/E2），不能和一个手输的经度并存互相打架 —— 退回经向断面，也就是老域的行为。
+	m_seamt.params.inSec.set  = false;
+	m_seamt.params.outSec.set = false;
 	m_choiceSeamtPreset->SetSelection(2);   // 手改参数即视为自定义
 	m_seamtResult.clear();
 	RequestRefresh(m_parent);
@@ -2014,7 +2123,9 @@ bool MainDialog::runSeamtExtract()
 	SeamtResult fresh;
 	{
 		wxBusyCursor busy;
-		wxBusyInfo info(wxString::FromUTF8("正在提取急流核心（SEAMT 最小 T 参数法）…"));
+		// 同 runKuroshioExtract：不用 wxBusyInfo（会弹空窗），提示写面板读数栏
+		if (m_textCtrlFeatReadout)
+			m_textCtrlFeatReadout->SetValue(wxString::FromUTF8("正在提取急流核心（SEAMT 最小 T 参数法）…"));
 		// 同 runKuroshioExtract：异常绝不能逃进 wx 事件处理器，否则 std::terminate 直接闪退
 		try {
 			m_seamt.extract(myMessage, fresh);
@@ -2141,6 +2252,7 @@ bool MainDialog::exportSeamtCsv()
 //
 // 请求文件（一行一个 key=value，# 开头为注释）：
 //   file=E:\nc1\海流1.nc     必填
+//   mode=seamt               seamt(默认) | kuro | kuroref(只读参考轴文件)
 //   time=0                   时间步下标，默认 0
 //   lonin=131.0 lonout=142.0 npts=141 halfwidth=0.70   可选
 //
@@ -2149,7 +2261,27 @@ bool MainDialog::exportSeamtCsv()
 void MainDialog::maybeRunSeamtAutoTest()
 {
 	static const wxChar *kReq = _T("C:\\ProgramData\\opencpn\\ncdf_seamt_auto.txt");
-	// 使用型下一律不跑（见 ncdfAutoTestRequested）：测试入口不能影响日常使用
+
+	// ---- 批量会话：一次 OpenCPN 启动连跑多轮 ----
+	// 宿主脚本建 ncdf_seamt_auto_session.txt -> 启动 OpenCPN -> 逐条写请求文件；
+	// 插件轮询请求文件，跑完一条（runSeamtAutoTest 会把请求改名 .done）再等下一条；
+	// 会话标记被删除即退出循环。省掉每轮的 OpenCPN 启动开销（约 6 秒/轮）。
+	// 【阻塞 UI 线程】自动化场景可接受；会话标记一撤就恢复，日常使用不进这条路径。
+	if (ncdfAutoSessionActive()) {
+		ncdfLog("[seamtauto] ===== batch session start =====\n");
+		while (ncdfAutoSessionActive()) {
+			if (wxFileExists(kReq)) {
+				runSeamtAutoTest(kReq);
+			} else {
+				wxMilliSleep(120);
+			}
+		}
+		ncdfLog("[seamtauto] ===== batch session end =====\n");
+		return;
+	}
+
+	// 单次模式（向后兼容）：使用型下一律不跑（见 ncdfAutoTestRequested），
+	// 测试入口不能影响日常使用
 	if (!ncdfAutoTestRequested()) return;
 	runSeamtAutoTest(kReq);
 }
@@ -2191,9 +2323,46 @@ void MainDialog::runSeamtAutoTest(const wxString &reqPath)
 
 			if      (key == _T("file"))      srcFile = val;
 			else if (key == _T("mode"))      mode = val.Lower();
+			// 预设：japan=日本以南(135→142) / paper=论文原域(135→160)。
+			// 【必须写在请求文件最前面】后面的 key=value 才能覆盖它。
+			// 不写则沿用默认 JapanSouth。选 paper 会带上它的研究域纬度 27–41°N ——
+			// 用 JapanSouth 的 24–38°N 跑 135→160，黑潮延伸体北抬后会被北墙剪掉（G=0）。
+			else if (key == _T("preset")) {
+				const wxString pv = val.Lower();
+				if (pv.StartsWith(_T("paper")))     SeamtParams::presetPaperDomain(prm);
+				else if (pv.StartsWith(_T("wang"))) SeamtParams::presetWangUpstream(prm);
+				else                                SeamtParams::presetJapanSouth(prm);
+			}
 			else if (key == _T("time"))      timeIdx = wxAtoi(val);
 			else if (key == _T("lonin"))     prm.lonIn = wxAtof(val);
 			else if (key == _T("lonout"))    prm.lonOut = wxAtof(val);
+			// 线段断面覆盖（"lon1,lat1,lon2,lat2"）：用来扫断面几何，不动任何预设。
+			// 与 lonin/lonout 的关系：gin=/gout= 一旦给，就用线段几何，lonin/lonout 仅作日志。
+			else if (key == _T("gin")) {
+				double a = 0, b = 0, c = 0, e = 0;
+				wxString gv = val;
+				gv.Replace(_T(","), _T(" "));
+				if (wxSscanf(gv, _T("%lf %lf %lf %lf"), &a, &b, &c, &e) == 4) {
+					prm.inSec.lon1 = a; prm.inSec.lat1 = b;
+					prm.inSec.lon2 = c; prm.inSec.lat2 = e; prm.inSec.set = true;
+				}
+			}
+			else if (key == _T("gout")) {
+				double a = 0, b = 0, c = 0, e = 0;
+				wxString gv = val;
+				gv.Replace(_T(","), _T(" "));
+				if (wxSscanf(gv, _T("%lf %lf %lf %lf"), &a, &b, &c, &e) == 4) {
+					prm.outSec.lon1 = a; prm.outSec.lat1 = b;
+					prm.outSec.lon2 = c; prm.outSec.lat2 = e; prm.outSec.set = true;
+				}
+			}
+			else if (key == _T("jetang"))    prm.jetAngMaxDeg = wxAtof(val);
+			// 陆地容差：0/trunc = 判陆即截断；1/skip = 跳岛容差（sampleCoast）
+			else if (key == _T("landmode")) {
+				const wxString lv = val.Lower();
+				prm.landMode = (lv == _T("1") || lv.StartsWith(_T("s")))
+					? SEAMT_LAND_SKIP_ISLANDS : SEAMT_LAND_TRUNCATE;
+			}
 			else if (key == _T("npts"))      prm.nPts = wxAtoi(val);
 			else if (key == _T("halfwidth")) prm.halfWidthDeg = wxAtof(val);
 			else if (key == _T("dt"))        prm.dtDays = wxAtof(val);   // <=0 = 自动
@@ -2203,6 +2372,7 @@ void MainDialog::runSeamtAutoTest(const wxString &reqPath)
 			else if (key == _T("p0max"))     prm.latP0Max = wxAtof(val);
 			else if (key == _T("p0forced"))  prm.latP0Forced = wxAtof(val);  // 强制 P₀
 			else if (key == _T("splitlon"))  prm.splitLon = wxAtof(val);     // 分段拼接点
+			else if (key == _T("lonpad"))    prm.lonPadDeg = wxAtof(val);    // 研究域经度外扩
 		}
 	}
 
@@ -2210,10 +2380,93 @@ void MainDialog::runSeamtAutoTest(const wxString &reqPath)
 		ncdfLog("[seamtauto] FAIL: request has no file= entry\n");
 		return;
 	}
+
+	// ---- mode=kuroref：只读参考轴文件（kuroshio_YYYY.nc）----
+	// 验证 loadKuroshioRefFile 能真正解析 NetCDF-4 分组（dayNNN/depth01/六变量）。
+	// 与 kuro/seamt 不同，它不碰流场数据，必须在"加载文件 + 时间步"**之前**返回，
+	// 否则会拿参考轴文件去当 nc 流场读，白白失败。
+	if (mode == _T("kuroref")) {
+		std::vector<KuroshioRefDay> days;
+		wxString err;
+		bool rok = loadKuroshioRefFile(srcFile, days, err);
+		FILE *rf = _wfopen(kRes, L"w");
+		if (rf) {
+			fprintf(rf, "kuroshio reference axis file test report\n");
+			fprintf(rf, "file,%s\n", (const char*)srcFile.mb_str(wxConvUTF8));
+			fprintf(rf, "load_ok,%d\n", (int)rok);
+			fprintf(rf, "error,%s\n", (const char*)err.mb_str(wxConvUTF8));
+			fprintf(rf, "n_days,%u\n", (unsigned)days.size());
+			fprintf(rf, "\n[days]\nidx,day_of_year,label,n_axis,axis_pts,left_pts,right_pts\n");
+			for (size_t i = 0; i < days.size(); i++) {
+				const KuroshioRefDay &d = days[i];
+				fprintf(rf, "%u,%d,%s,%d,%u,%u,%u\n", (unsigned)i, d.dayOfYear,
+				        (const char*)d.label.mb_str(wxConvUTF8), d.res.nAxis,
+				        (unsigned)(d.res.axis.size() / 2),
+				        (unsigned)(d.res.left.size() / 2),
+				        (unsigned)(d.res.right.size() / 2));
+			}
+			if (!days.empty() && days[0].res.axis.size() >= 4) {
+				const std::vector<double> &a = days[0].res.axis;
+				fprintf(rf, "\n[first_day] %s\n", (const char*)days[0].label.mb_str(wxConvUTF8));
+				fprintf(rf, "axis_start,%.6f,%.6f\n", a[0], a[1]);
+				fprintf(rf, "axis_end,%.6f,%.6f\n", a[a.size() - 2], a[a.size() - 1]);
+			}
+			fclose(rf);
+		}
+		ncdfLog("[seamtauto] kuroref ok=%d days=%u err=%s report written\n",
+		        (int)rok, (unsigned)days.size(), (const char*)err.mb_str(wxConvUTF8));
+#if NCDF_REF_AXIS
+		// 走**真实的 UI 处理函数**（不是另写一份等价逻辑）：填下拉框 -> 选一天 ->
+		// onRefDayChoice / onRefShowClick -> m_refAxis -> drawKuroshioAxis。
+		// 这样 handler 的函数体本身也被跑到，渲染线程只读的 m_refAxis 一并被喂上。
+		if (rok && !days.empty()) {
+			m_refDays.swap(days);
+			m_choiceRefDay->Clear();
+			for (size_t i = 0; i < m_refDays.size(); i++)
+				m_choiceRefDay->Append(m_refDays[i].label);
+			m_choiceRefDay->SetSelection(0);
+			m_checkBoxRefShow->SetValue(true);
+			wxCommandEvent dummy;
+			onRefShowClick(dummy);
+			onRefDayChoice(dummy);
+			RequestRefresh(m_parent);
+		}
+#endif
+	// ---- 走一遍目录树的展开路径（addChildren）----
+	// 【这是本次回归的重点】用户报「两个文件都展不开时间然后就崩溃」：
+	// addChildren -> nc_read_metadata -> nc_open 打穿 2 GB 地址空间。
+	// 这里造一个文件节点真调 addChildren，看它是不是被 refH5LooksLikeRefFile 拦下、
+	// 而不是掉进 nc_open。功能停用（NCDF_REF_AXIS=0）时应当只跳过不展开。
+	{
+		wxString base = srcFile.AfterLast(_T('\\')).AfterLast(_T('/'));
+		wxString dir  = srcFile.BeforeLast(_T('\\'));
+		m_textCtrlDir->SetValue(dir);
+		wxTreeItemId root = m_treeCtrl->GetRootItem();
+		if (!root.IsOk()) root = m_treeCtrl->AddRoot(_T("root"));
+		wxTreeItemId iid = m_treeCtrl->AppendItem(root, base);
+		m_treeCtrl->SetItemData(iid, new MyTreeItemData(kFileNodeUnloaded));
+		ncdfLog("[seamtauto] treecheck: calling addChildren for %s\n",
+		        (const char*)base.ToUTF8());
+		try { addChildren(iid, base); }
+		catch (const std::exception &e) {
+			ncdfLog("[seamtauto] treecheck: EXCEPTION %s\n", e.what());
+		}
+		catch (...) { ncdfLog("[seamtauto] treecheck: UNKNOWN EXCEPTION\n"); }
+		ncdfLog("[seamtauto] treecheck: addChildren returned OK (no crash)\n");
+	}
+		ncdfLog("[seamtauto] ===== auto test done =====\n");
+		wxRenameFile(reqPath, reqPath + _T(".done"), true);
+		return;
+	}
 	ncdfLog("[seamtauto] file=%s time=%d lonin=%.3f lonout=%.3f npts=%d halfwidth=%.3f dt=%.6f latdom=%.2f..%.2f\n",
 	        (const char*)srcFile.mb_str(wxConvUTF8), timeIdx,
 	        prm.lonIn, prm.lonOut, prm.nPts, prm.halfWidthDeg, prm.dtDays,
 	        prm.latDomMin, prm.latDomMax);
+	if (prm.inSec.set)
+		ncdfLog("[seamtauto] sections: gin=(%.3f,%.3f)-(%.3f,%.3f)  gout=(%.3f,%.3f)-(%.3f,%.3f)  jetAng=%.0f deg\n",
+		        prm.inSec.lon1, prm.inSec.lat1, prm.inSec.lon2, prm.inSec.lat2,
+		        prm.outSec.lon1, prm.outSec.lat1, prm.outSec.lon2, prm.outSec.lat2,
+		        prm.jetAngMaxDeg);
 
 	// ---- 加载文件 + 时间步 ----
 	{
@@ -2274,6 +2527,9 @@ void MainDialog::runSeamtAutoTest(const wxString &reqPath)
 	m_textSeamtLonOut->SetValue(wxString::Format(_T("%.3f"), prm.lonOut));
 	m_textSeamtNpts->SetValue(wxString::Format(_T("%d"), prm.nPts));
 	m_textSeamtHalfWidth->SetValue(wxString::Format(_T("%.3f"), prm.halfWidthDeg));
+	// 陆地容差复选框也必须一起写：下面 syncSeamtParamsFromUi() 会**从 UI 反向覆盖**
+	// m_seamt.params，只写 params 的话 landMode 会被复选框的默认值吃掉
+	// （2026-11-05 实测踩到：preset=wang 跑出来仍是 TRUNCATE）。
 	m_seamt.params = prm;
 
 	// ---- 主运行 ----
@@ -2355,10 +2611,11 @@ void MainDialog::runSeamtAutoTest(const wxString &reqPath)
 	fprintf(rf, "SEAMT auto test report\n");
 	fprintf(rf, "file,%s\n", (const char*)srcFile.mb_str(wxConvUTF8));
 	fprintf(rf, "time_index,%d\n", m_lastSelectedTimeIndex);
-	fprintf(rf, "domain,gin=%.4f,gout=%.4f,latdom=%.3f,%.3f,p0band=%.3f,%.3f\n",
+	fprintf(rf, "domain,gin=%.4f,gout=%.4f,latdom=%.3f,%.3f,p0band=%.3f,%.3f,lonpad=%.3f,splitlon=%.3f\n",
 	        m_seamt.params.lonIn, m_seamt.params.lonOut,
 	        m_seamt.params.latDomMin, m_seamt.params.latDomMax,
-	        m_seamt.params.latP0Min, m_seamt.params.latP0Max);
+	        m_seamt.params.latP0Min, m_seamt.params.latP0Max,
+	        m_seamt.params.lonPadDeg, m_seamt.params.splitLon);
 	fprintf(rf, "params,npts=%d,halfwidth=%.3f,dt=%.6fd,cfl=%.3f\n",
 	        m_seamt.params.nPts, m_seamt.params.halfWidthDeg, base.dtDays, base.cfl);
 	fprintf(rf, "\n[result]\n");
@@ -2374,6 +2631,7 @@ void MainDialog::runSeamtAutoTest(const wxString &reqPath)
 	        base.reasonCount[SEAMT_EXIT], base.reasonCount[SEAMT_OUTDOMAIN],
 	        base.reasonCount[SEAMT_AGROUND], base.reasonCount[SEAMT_MAXSTEP]);
 	fprintf(rf, "bridged,%d   # 跨过小岛/缺测缺口的次数（seamtBridgeKm 可调）\n", base.nBridged);
+	fprintf(rf, "wrapped,%d   # 涡外缘绕行拼出的流线条数（seamtVortexWrap=0 关）\n", base.nWrapped);
 	fprintf(rf, "degraded,%d   # RK4 中间采样点无效、退化为低阶步的次数\n", base.nDegraded);
 	fprintf(rf, "subjets,%u\n", (unsigned)base.subjets.size());
 	fprintf(rf, "near_miss,%d   # >0 = domain boundary is clipping the flow\n", base.nNearMiss);
@@ -2405,12 +2663,14 @@ void MainDialog::runSeamtAutoTest(const wxString &reqPath)
 		        base.axisFit.profile[i + 1], base.axisFit.profile[i + 2],
 		        base.axisFit.profile[i + 3], base.axisFit.profile[i + 4]);
 
-	fprintf(rf, "\n[traces]  seedLat,reason,nSteps,T_days,latOut,endLon,endLat  (0=EXIT 1=OUTDOMAIN 2=AGROUND 3=MAXSTEP)\n");
-	for (size_t i = 0; i + 6 < base.traceTable.size(); i += 7)
-		fprintf(rf, "%.4f,%d,%d,%.4f,%.6f,%.4f,%.4f\n", base.traceTable[i],
-		        (int)base.traceTable[i + 1], (int)base.traceTable[i + 2],
-		        base.traceTable[i + 3], base.traceTable[i + 4],
-		        base.traceTable[i + 5], base.traceTable[i + 6]);
+	fprintf(rf, "\n[traces]  seedLat,seedLon,reason,nSteps,T_days,latOut,endLon,endLat  (0=EXIT 1=OUTDOMAIN 2=AGROUND 3=MAXSTEP)\n");
+	fprintf(rf, "# seedLat = 沿断面坐标 s（经向断面下就是纬度）；seedLon 是它对应的经度。\n");
+	fprintf(rf, "# Γ_in 是纬向断面（Wang 域的 A1）时所有种子纬度相同，看 seedLon 才分得开。\n");
+	for (size_t i = 0; i + 7 < base.traceTable.size(); i += 8)
+		fprintf(rf, "%.4f,%.4f,%d,%d,%.4f,%.6f,%.4f,%.4f\n", base.traceTable[i],
+		        base.traceTable[i + 1], (int)base.traceTable[i + 2], (int)base.traceTable[i + 3],
+		        base.traceTable[i + 4], base.traceTable[i + 5],
+		        base.traceTable[i + 6], base.traceTable[i + 7]);
 
 	fprintf(rf, "\n[ridge]  lon,lat   (max-speed ridge along the core's cross-sections)\n");
 	for (size_t i = 0; i + 1 < base.axisFit.ridge.size(); i += 2)
@@ -2431,6 +2691,19 @@ void MainDialog::runSeamtAutoTest(const wxString &reqPath)
 	for (size_t i = 0; i + 3 < base.tCurve.size(); i += 4)
 		fprintf(rf, "%.6f,%.4f,%d,%d\n", base.tCurve[i], base.tCurve[i + 1],
 		        (int)base.tCurve[i + 2], (int)base.tCurve[i + 3]);
+
+	// 临界点（HEPTA 式雅可比分类）。流线停住的地方就地线性化：
+	//   type 0=鞍点(双曲) 1=中心(椭圆) 2=螺旋汇(涡心+辐合) 3=螺旋源
+	//        4=汇节点 5=源节点 6=退化
+	// 鞍点才有不稳定方向；螺旋汇没有（两个特征值实部都为负），流线是被涡吃掉的。
+	fprintf(rf, "\n[critpoints]  lon,lat,type,lambdaRe,lambdaIm,det,trace,disc,div,vort\n");
+	fprintf(rf, "# type: 0=saddle 1=centre 2=spiral-sink 3=spiral-source 4=node-sink 5=node-source 6=degenerate\n");
+	for (size_t i = 0; i + 9 < base.critPoints.size(); i += 10)
+		fprintf(rf, "%.4f,%.4f,%d,%.6e,%.6e,%.6e,%.6e,%.6e,%.6e,%.6e\n",
+		        base.critPoints[i], base.critPoints[i + 1], (int)base.critPoints[i + 2],
+		        base.critPoints[i + 3], base.critPoints[i + 4], base.critPoints[i + 5],
+		        base.critPoints[i + 6], base.critPoints[i + 7], base.critPoints[i + 8],
+		        base.critPoints[i + 9]);
 	fclose(rf);
 
 	ncdfLog("[seamtauto] report written: %s\n", (const char*)wxString(kRes).mb_str());
@@ -2741,6 +3014,29 @@ void MainDialog::addChildren(wxTreeItemId id, wxString fn)
 		MyTreeItemData *d = (MyTreeItemData *)this->m_treeCtrl->GetItemData(id);
 		if (d) d->m_index = kFileNodeLoaded;
 		this->m_treeCtrl->SetItemHasChildren(id, false);
+	}
+
+	// 【必须在 nc_open 之前拦下】kuroshio_YYYY.nc 是 /dayNNN/depth01/ 的分组文件，
+	// nc_read_metadata 会去 nc_open 它 —— 而 nc_open 对这种「每天每层一组」的
+	// HDF5 文件会递归读全部分组元数据：kuroshio_2021.nc 实测 2693 MB，Win32 上
+	// 抛 std::bad_alloc，事后 availVirtual 只剩 111 MB，下一个文件再展开就直接闪退
+	// （2026-11-04 实测，E:\ 下 kuroshio_2021.nc + kuroshio_2022.nc 连炸两次）。
+	//
+	// 这条拦截与「参考轴显示功能」无关，**任何时候都不能关**。功能本身当前停用
+	// （NCDF_REF_AXIS=0），所以这里只跳过不展开；要恢复功能就把开关改回 1，
+	// 届时这里改成调 addRefChildren() 列出日期。
+	{
+		const wxScopedCharBuffer u8 = fileName.ToUTF8();
+		if (refH5LooksLikeRefFile(u8.data())) {
+#if NCDF_REF_AXIS
+			ncdfLog("[kuroref] tree: %s recognized as reference axis file\n", (const char*)u8.data());
+			addRefChildren(id, fileName);
+#else
+			ncdfLog("[ncdf] addChildren: %s is a reference-axis file -> skipped (NCDF_REF_AXIS=0)\n",
+				(const char*)u8.data());
+#endif
+			return;
+		}
 	}
 
 	// Lightweight metadata read — no myDataVector allocation, no nc_get overhead

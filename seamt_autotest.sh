@@ -6,6 +6,7 @@
 #   ./seamt_autotest.sh <nc文件路径> [时间步下标] [lonin] [lonout]
 #   MODE=kuro ./seamt_autotest.sh <nc文件路径>        # 跑 Wang2026 而非 SEAMT
 #   NPTS=561  ./seamt_autotest.sh <nc文件路径>        # 覆盖集合规模
+#   PRESET=paper ./seamt_autotest.sh <nc文件路径> 0 135 160   # 论文原域（latDom 27–41N）
 # 例：
 #   ./seamt_autotest.sh 'E:\nc1\海流1.nc' 0 131.0 142.0
 #   MODE=kuro ./seamt_autotest.sh 'E:\nc1\海流1.nc'
@@ -58,17 +59,32 @@ echo "   ncdf_mode.txt -> test （脚本结束时恢复为 $OLD_MODE）"
 
 rm -f "$RES"
 cat > "$REQ" <<REQ_EOF
+preset=${PRESET:-japan}
 file=$NCFILE
 time=$TIMEIDX
 mode=${MODE:-seamt}
 lonin=$LONIN
 lonout=$LONOUT
 npts=${NPTS:-281}
-halfwidth=0.70
+halfwidth=${HALFWIDTH:-0.70}
+lonpad=${LONPAD:-1.5}
 REQ_EOF
+# 附加请求项（EXTRA 里一行一个 key=value，如 EXTRA="splitlon=135"）：
+# 逗号分隔会写进同一行，解析器按行读，所以这里把逗号换成换行
+if [ -n "${EXTRA:-}" ]; then
+    printf '%s\n' "$EXTRA" | tr ',' '\n' | sed '/^$/d' >> "$REQ"
+fi
 cat "$REQ" | sed 's/^/   /'
 
 echo "== [3/4] 启动 OpenCPN 并等待自动测试 =="
+# OpenCPN 用 startcheck.dat 标记"上次是否正常退出"：启动时写、正常退出时删。
+# 本脚本收尾是 taskkill /f 强杀，来不及删 -> 下次启动判定异常退出，弹
+# 「Safe mode start / Normal start」对话框。启动前清掉即可抑制。
+rm -f "C:/ProgramData/opencpn/startcheck.dat"
+# 同理 load_stamps/<插件名>：加载开始时写、结束时删。被强杀会留下，
+# 下次启动就报 "Refusing to load ... failed at last attempt"（插件整个不加载，
+# 自动测试当然也不跑）。必须一并清掉。
+rm -f "C:/ProgramData/opencpn/load_stamps/ncdf_pi"
 : > "$LOG"          # 清空日志，方便只看本次
 start "" "$OCPN"
 
@@ -100,5 +116,10 @@ if taskkill //f //im opencpn.exe >/dev/null 2>&1; then
 else
     echo "   （opencpn.exe 本来就没在运行，或已退出）"
 fi
+# 强杀会留下 startcheck.dat（=「上次异常退出」标记），清掉它，
+# 这样用户手动再开 OpenCPN 也不会弹 Safe mode / Normal start 对话框。
+rm -f "C:/ProgramData/opencpn/startcheck.dat"
+# 同样清 load_stamps/ncdf_pi，否则下次启动 OpenCPN 会拒载插件（见 [3/4] 处说明）。
+rm -f "C:/ProgramData/opencpn/load_stamps/ncdf_pi"
 
 [ -f "$RES" ] || exit 2

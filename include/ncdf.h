@@ -27,6 +27,7 @@
 #include "wx/wfstream.h"
 #include <wx/datetime.h>
 #include <vector>
+#include <map>
 #include <wx/dirdlg.h>
 
 #include <stdio.h>
@@ -212,6 +213,12 @@ protected:
 	virtual void onKuroshioExportClick( wxCommandEvent& event );
 	virtual void onKuroshioShowClick( wxCommandEvent& event );
 	virtual void onKuroshioBdyClick( wxCommandEvent& event );
+#if NCDF_REF_AXIS
+	// 参考轴文件（kuroshio_YYYY.nc）：打开 / 选日期 / 显示开关
+	virtual void onRefOpenClick( wxCommandEvent& event );
+	virtual void onRefDayChoice( wxCommandEvent& event );
+	virtual void onRefShowClick( wxCommandEvent& event );
+#endif
 	virtual void onSeamtPresetChoice( wxCommandEvent& event );
 	virtual void onSeamtExtractClick( wxCommandEvent& event );
 	virtual void onSeamtExportClick( wxCommandEvent& event );
@@ -222,6 +229,18 @@ public:
 	// 黑潮主轴提取结果（每次提取覆盖；渲染线程只读）
 	KuroshioExtractor m_kuroshio;
 	KuroshioAxisResult m_kuroshioResult;
+
+#if NCDF_REF_AXIS
+	// 参考轴文件（kuroshio_YYYY.nc）：加载后按日期切换，与自己提取的轴对照显示
+	std::vector<KuroshioRefDay> m_refDays;
+	KuroshioAxisResult          m_refAxis;
+	bool                        m_bShowRef = true;
+	// 目录树里可能同时展开好几份 kuroshio_YYYY.nc，按**文件全路径**各存各的日期，
+	// 点各自的日期各取各的轴。渲染线程只读上面那个 m_refAxis。
+	std::map<wxString, std::vector<KuroshioRefDay> > m_refCache;
+	void addRefChildren(wxTreeItemId id, const wxString &fileName);
+	bool selectRefDay(wxTreeItemId item, int dayIdx);
+#endif
 	bool m_kuroshioNeedUV = false;      // 为提取主轴强制读入 U/V（不依赖“显示流速”勾选）
 
 	// SEAMT 急流核心提取（Udalov2026，黑潮**下游**：日本以南 / 延伸体）。
@@ -232,7 +251,7 @@ public:
 	bool runSeamtExtract();
 	bool exportSeamtCsv();
 	void syncSeamtParamsFromUi();       // 读 UI 框 -> m_seamt.params
-	void applySeamtPreset(int which);   // 0=日本以南 1=论文原域 2=自定义（只填框）
+	void applySeamtPreset(int which);   // 0=日本以南 1=论文原域 2=自定义(不动框) 3=Wang 上游(A1→E2)
 	// 提取用完后归还 U/V 原始双精度内存（与 Phase 2 的内存纪律一致）。
 	// 渲染用的是 float 网格，这些双精度数组只给提取器；必须 swap-with-empty，
 	// clear() 不归还容量（CLAUDE.md 已记该坑）。
@@ -276,19 +295,24 @@ public:
 };
 
 // MyTreeItemData::m_index 的语义：
-//   >=0  时间步下标（myDataVector 的下标）
+//   >=0                时间步下标（myDataVector 的下标）
 //   kFileNodeUnloaded  文件节点，元数据尚未读取
 //   kFileNodeLoaded    文件节点，元数据已读取
+//   kRefDayNode        参考轴文件的**日期**节点（不是时间步），
+//                      真实下标在 m_refDay，指向 m_refCache[文件路径]
 enum {
 	kFileNodeUnloaded = -2,
-	kFileNodeLoaded   = -3
+	kFileNodeLoaded   = -3,
+	kRefDayNode       = -4
 };
 
 class MyTreeItemData : public wxTreeItemData
 {
 public:
-	MyTreeItemData(int index) : m_index(index) {}
+	MyTreeItemData(int index) : m_index(index), m_refDay(-1) {}
 	int m_index;
+	// 仅当 m_index == kRefDayNode 时有效：m_refCache 里的日期下标
+	int m_refDay;
 };
 
 

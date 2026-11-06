@@ -22,8 +22,11 @@ public:
 
     // 黑潮主轴与左右边界（流线约束最大流速法）：主轴黄色粗线 + 流向人字标，
     // 左边界蓝细线、右边界红细线。仅在渲染线程调用。
+    // isRef=true 画的是**参考轴文件**（kuroshio_YYYY.nc）里的轴，改成白色虚线、
+    // 不画人字标，压在实线黄轴之上 —— 合上时「黄线走白虚线」，偏了就分开。
     static void drawKuroshioAxis(const KuroshioAxisResult &k, PlugIn_ViewPort *vp,
-                                 bool showAxis, bool showBoundaries);
+                                 bool showAxis, bool showBoundaries,
+                                 bool isRef = false);
 
     // SEAMT 急流核心（流线集合分析求最小 T 参数）：核心绿色粗线 + 子射流着色线与出口标记。
     // 与 drawKuroshioAxis 并列但互不影响；两法适用域不重叠（见 docs/SEAMT… §0.2）。
@@ -31,6 +34,9 @@ public:
     // 画了会有约 17 万顶点/帧，违反"平移缩放绝不卡顿"的硬约束。
     static void drawSeamtCore(const SeamtResult &s, PlugIn_ViewPort *vp,
                               bool showCore, bool showSubjets);
+
+    // 主轴识别过程中遇到的涡（边界+涡心）与鞍点（双曲点）
+    static void drawSeamtCriticals(const SeamtResult &s, PlugIn_ViewPort *vp);
 
     // "Data layers only inside features" mode (plan §4.1): write areal-feature
     // polygons into the stencil buffer so subsequent data-layer rendering is

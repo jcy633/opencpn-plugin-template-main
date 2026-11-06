@@ -51,6 +51,30 @@ struct KuroshioAxisResult {
 };
 
 // ---------------------------------------------------------------------------
+// 参考轴文件（kuroshio_YYYY.nc）的一天
+//
+// 文件是 NetCDF-4 分组结构：/dayNNN/depth01/ 下有
+//   main_axis_lon, main_axis_lat, left_bdy_lon, left_bdy_lat, right_bdy_lon, right_bdy_lat
+// 与插件自己提取的 KuroshioAxisResult 同形，故直接复用它装几何（ok/axis/left/right），
+// 省掉 meanSpeed 之类的量（参考文件里没有）。
+// ---------------------------------------------------------------------------
+struct KuroshioRefDay {
+    int    dayOfYear;          // 1..366
+    wxString label;            // "2021-02-09 (day040)"
+    KuroshioAxisResult res;    // 只填 ok/axis/left/right
+};
+
+// 读整份参考轴文件 -> out（按 dayOfYear 升序）。失败返回 false 并填 err。
+bool loadKuroshioRefFile(const wxString &path,
+                         std::vector<KuroshioRefDay> &out, wxString &err);
+
+// 便宜地判断文件是不是参考轴文件（kuroshio_YYYY.nc 那种 /dayNNN/depth01/ 分组）。
+// **任何要 nc_open 的入口之前都必须先问这一句**：这类文件 nc_open 会递归读全部
+// 分组元数据（实测 2693 MB），Win32 上 bad_alloc 并把 2 GB 地址空间打穿，
+// 之后随便一个操作就闪退。传 UTF-8 路径（同 H5Fopen 的要求）。
+bool refH5LooksLikeRefFile(const char *pathUtf8);
+
+// ---------------------------------------------------------------------------
 // 提取器：无状态参数 + 有状态结果；extract() 每次重算
 // ---------------------------------------------------------------------------
 class KuroshioExtractor {

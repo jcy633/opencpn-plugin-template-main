@@ -131,7 +131,7 @@ public:
       // SEAMT 急流核心提取（Udalov2026，黑潮下游）
       bool              m_bShowSeamt;
       bool              m_bShowSeamtSubjets;
-      int               m_iSeamtPreset;     // 0=日本以南 1=论文原域 2=自定义
+      int               m_iSeamtPreset;     // 0=日本以南 1=论文原域 2=自定义 3=Wang 上游
       double            m_seamtLonIn, m_seamtLonOut;
       int               m_seamtNpts;
       double            m_seamtHalfWidth;
